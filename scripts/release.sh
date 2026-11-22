@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Prepare a release PR: branch from origin/main, bump the version everywhere
-# CI compares it (the crate and Cargo.lock, the Pulumi package and its
-# lockfile, and the APP_VERSION the package deploys), turn the unreleased
+# CI compares it (the crate and Cargo.lock, the Pulumi package, and the APP_VERSION the package deploys), turn the unreleased
 # changelog fragments into the release, commit, push and open the PR. Never
 # creates or pushes a tag: merging the PR is what releases.
 #
@@ -77,7 +76,7 @@ rm -f "$crate.bak"
 grep -q "^version = \"$version\"" "$crate"
 
 # The package pins the image it deploys by APP_VERSION, so all three move together.
-(cd deploy/pulumi && npm version "$version" --no-git-tag-version --allow-same-version >/dev/null)
+node -e 'const f = "deploy/pulumi/package.json"; const fs = require("fs"); const p = JSON.parse(fs.readFileSync(f, "utf8")); p.version = process.argv[1]; fs.writeFileSync(f, JSON.stringify(p, null, 2) + "\n");' "$version"
 sed -i.bak "s/^export const APP_VERSION = \"[^\"]*\";/export const APP_VERSION = \"$version\";/" "$versions"
 rm -f "$versions.bak"
 grep -q "^export const APP_VERSION = \"$version\";" "$versions"

@@ -64,9 +64,10 @@ export type DitherArgs = {
     secretAccessKey: pulumi.Input<string>;
   };
   /**
-   * Uploads are refused while the disk holding the images has less than this
-   * free, so a full image store never fills a disk the node depends on. Set it
-   * above the kubelet's eviction threshold. Ignored with a bucket.
+   * Uploads are refused while a disk they write to (the state directory, and
+   * the images without a bucket) has less than this free, so a full image
+   * store never fills a disk the node depends on. Unset, each disk keeps 15%
+   * of its size free, above the kubelet's 10% eviction threshold.
    */
   minFreeBytes?: number;
   maxUploadBytes?: number;
@@ -89,7 +90,8 @@ export function environment(args: DitherArgs) {
           { name: "AWS_ENDPOINT", value: args.bucket.endpoint },
           { name: "AWS_REGION", value: args.bucket.region ?? "auto" },
         ]
-      : [{ name: "MIN_FREE_BYTES", value: String(args.minFreeBytes ?? 0) }]),
+      : []),
+    ...(args.minFreeBytes === undefined ? [] : [{ name: "MIN_FREE_BYTES", value: String(args.minFreeBytes) }]),
     ...(args.maxUploadBytes ? [{ name: "MAX_UPLOAD_BYTES", value: String(args.maxUploadBytes) }] : []),
     { name: "OIDC_ISSUER", value: args.oidc.issuer },
     { name: "OIDC_CLIENT_ID", value: args.oidc.clientId },

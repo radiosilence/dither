@@ -27,7 +27,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json && vitest run",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "tsc -p tsconfig.build.json"
   },
   "peerDependencies": {
     "@pulumi/kubernetes": "^4",

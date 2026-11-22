@@ -40,12 +40,22 @@ pub fn login_url(path: &str) -> String {
     format!("/auth/login?{query}")
 }
 
-/// A path on this site to return to: anything else (another host, a
-/// protocol-relative `//host`, a backslash some browsers read as a slash)
-/// would make the sign-in page an open redirect.
+/// A path on this site to return to: anything else would make the sign-in
+/// page an open redirect. Browsers read a backslash as a slash and drop tabs
+/// and newlines from a URL before parsing it, so `/\t/evil.example` is
+/// `//evil.example`; any such character, or any whitespace at all, refuses
+/// the path, rather than trying to predict what a browser makes of it.
 fn local(next: Option<&str>) -> String {
     match next {
-        Some(p) if p.starts_with('/') && !p.starts_with("//") && !p.contains('\\') => p.to_string(),
+        Some(p)
+            if p.starts_with('/')
+                && !p.starts_with("//")
+                && !p
+                    .chars()
+                    .any(|c| c == '\\' || c.is_whitespace() || c.is_control()) =>
+        {
+            p.to_string()
+        }
         _ => "/".into(),
     }
 }
@@ -142,6 +152,16 @@ mod tests {
         assert_eq!(local(Some("//evil.example/x")), "/");
         assert_eq!(local(Some("https://evil.example")), "/");
         assert_eq!(local(Some("/\\evil.example")), "/");
+        // Browsers strip these before parsing, leaving `//evil.example`.
+        for sneaky in [
+            "/\t/evil.example",
+            "/\n/evil.example",
+            "/\r/evil.example",
+            "/ /evil.example",
+            "/\u{0}/x",
+        ] {
+            assert_eq!(local(Some(sneaky)), "/", "{sneaky:?}");
+        }
         assert_eq!(local(None), "/");
     }
 

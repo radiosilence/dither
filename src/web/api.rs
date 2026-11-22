@@ -143,7 +143,7 @@ pub async fn chunk(
         Err(e) => return e.into_response(),
     };
     if upload.image.is_some() || upload.error.is_some() {
-        return error(StatusCode::CONFLICT, "this upload has already ended");
+        return error(StatusCode::GONE, "this upload has already ended");
     }
     let Some((start, len, size)) = content_range(&headers) else {
         return error(
@@ -174,6 +174,8 @@ pub async fn chunk(
             StatusCode::INSUFFICIENT_STORAGE,
             "the disk is nearly full, so nothing more can be stored",
         ),
+        // No `received`: a client must not read this as a place to resume.
+        Err(ChunkError::Ended) => error(StatusCode::GONE, "this upload has already ended"),
         Err(ChunkError::Io(e)) => {
             tracing::warn!(upload = %id, error = %e, "a chunk failed");
             error(

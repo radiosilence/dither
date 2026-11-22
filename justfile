@@ -11,7 +11,7 @@ check:
     cargo fmt --all -- --check
     cargo clippy --all-targets --locked -- -D warnings
     cargo test --locked
-    cd deploy/pulumi && npm run -s check && npm run -s build
+    cd deploy/pulumi && aube install --frozen-lockfile && aube run check && aube run build
     just css-fresh
     node --check assets/app.js
     python3 -m unittest scripts/test_changelog.py

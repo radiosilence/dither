@@ -39,10 +39,10 @@ pub struct Config {
     /// the memory processing can take.
     pub process_megapixels: u32,
     pub cache_bytes: u64,
-    /// Uploads are refused while the disk under a file store has less than
-    /// this free, so a full image store never fills the disk the rest of the
-    /// machine depends on.
-    pub min_free_bytes: u64,
+    /// Uploads are refused while a disk they write to has less than this
+    /// free, so a full image store never fills the disk the rest of the
+    /// machine depends on. Unset, each disk keeps 15% of its size free.
+    pub min_free_bytes: Option<u64>,
 }
 
 fn var(key: &str) -> Option<String> {
@@ -127,7 +127,13 @@ impl Config {
             max_pixels: num("MAX_PIXELS", 100_000_000)?,
             process_megapixels: num("PROCESS_MEGAPIXELS", 100)?.max(1),
             cache_bytes: num("CACHE_BYTES", 256 << 20)?,
-            min_free_bytes: num("MIN_FREE_BYTES", 0)?,
+            min_free_bytes: var("MIN_FREE_BYTES")
+                .map(|v| {
+                    v.trim()
+                        .parse()
+                        .map_err(|_| anyhow::anyhow!("MIN_FREE_BYTES must be a number"))
+                })
+                .transpose()?,
         })
     }
 
@@ -168,7 +174,7 @@ impl Config {
             max_pixels: 50_000_000,
             process_megapixels: 100,
             cache_bytes: 16 << 20,
-            min_free_bytes: 0,
+            min_free_bytes: Some(0),
         }
     }
 }

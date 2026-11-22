@@ -235,15 +235,23 @@ impl Store {
 
     /// Bytes free on the disk under a file store; `None` for a bucket.
     pub fn free_bytes(&self) -> Option<u64> {
-        let dir = self.dir.as_deref()?;
-        free_bytes(dir)
+        disk(self.dir.as_deref()?).map(|(free, _)| free)
+    }
+
+    /// The directory, for a file store.
+    pub fn dir(&self) -> Option<&FsPath> {
+        self.dir.as_deref()
     }
 }
 
-/// Bytes free on the filesystem holding `dir`.
-pub fn free_bytes(dir: &FsPath) -> Option<u64> {
+/// Bytes free to an unprivileged writer, and the size, of the filesystem
+/// holding `dir`.
+pub fn disk(dir: &FsPath) -> Option<(u64, u64)> {
     let stat = rustix::fs::statvfs(dir).ok()?;
-    Some(stat.f_bavail.saturating_mul(stat.f_frsize))
+    Some((
+        stat.f_bavail.saturating_mul(stat.f_frsize),
+        stat.f_blocks.saturating_mul(stat.f_frsize),
+    ))
 }
 
 /// `url` with any password removed, for logs.

@@ -107,6 +107,25 @@ impl Db {
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     {
+        self.exec(true, f).await
+    }
+
+    /// [`run`](Self::run) for a write nothing watches: an upload's progress,
+    /// which arrives a chunk at a time and which no page draws and no snapshot
+    /// needs (a restored database has none of the partial files it counts).
+    pub async fn run_quiet<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    {
+        self.exec(false, f).await
+    }
+
+    async fn exec<T, F>(&self, announce: bool, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    {
         let pool = self.0.clone();
         match tokio::task::spawn_blocking(move || {
             let mut conn = match pool.idle.lock().pop() {
@@ -119,7 +138,7 @@ impl Db {
             };
             let before = conn.total_changes();
             let out = f(&mut conn);
-            if conn.total_changes() != before {
+            if announce && conn.total_changes() != before {
                 pool.writes.send_modify(|n| *n += 1);
             }
             let mut idle = pool.idle.lock();
@@ -696,25 +715,32 @@ impl Db {
         .await
     }
 
-    pub async fn set_received(&self, id: &str, received: u64) -> Result<()> {
-        let id = id.to_string();
-        self.run(move |c| {
+    /// False when the upload is not `owner`'s or has ended.
+    pub async fn set_received(&self, owner: &str, id: &str, received: u64) -> Result<bool> {
+        let (owner, id) = (owner.to_string(), id.to_string());
+        self.run_quiet(move |c| {
             c.execute(
-                "UPDATE uploads SET received = ?1 WHERE id = ?2",
-                params![received as i64, id],
+                "UPDATE uploads SET received = ?1 \
+                 WHERE id = ?2 AND owner = ?3 AND image IS NULL AND error IS NULL",
+                params![received as i64, id, owner],
             )
-            .map(drop)
+            .map(|n| n == 1)
         })
         .await
     }
 
-    /// The upload's image, added where its upload reserved; false when its
-    /// album went while the file was on its way.
-    pub async fn finish_upload(&self, upload: &str, image: NewImage) -> Result<bool> {
-        let upload = upload.to_string();
+    /// The upload's image, added where its upload reserved. False when the
+    /// upload is gone (its album was deleted while the file was on its way),
+    /// is not `owner`'s, or ended another way first (it was cancelled).
+    pub async fn finish_upload(&self, owner: &str, upload: &str, image: NewImage) -> Result<bool> {
+        let (owner, upload) = (owner.to_string(), upload.to_string());
         self.write(move |tx| {
             let Some((album, position, name)) = tx
-                .query_row("SELECT album, position, name FROM uploads WHERE id = ?1", [&upload], |r| {
+                .query_row(
+                    "SELECT album, position, name FROM uploads \
+                     WHERE id = ?1 AND owner = ?2 AND image IS NULL AND error IS NULL",
+                    params![upload, owner],
+                    |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
                 })
                 .optional()?
@@ -746,12 +772,14 @@ impl Db {
         .await
     }
 
-    pub async fn fail_upload(&self, id: &str, error: &str) -> Result<()> {
-        let (id, error) = (id.to_string(), error.to_string());
+    /// End an upload that has not ended, recording why.
+    pub async fn fail_upload(&self, owner: &str, id: &str, error: &str) -> Result<()> {
+        let (owner, id, error) = (owner.to_string(), id.to_string(), error.to_string());
         self.run(move |c| {
             c.execute(
-                "UPDATE uploads SET error = ?1 WHERE id = ?2",
-                params![error, id],
+                "UPDATE uploads SET error = ?1 \
+                 WHERE id = ?2 AND owner = ?3 AND image IS NULL AND error IS NULL",
+                params![error, id, owner],
             )
             .map(drop)
         })
@@ -892,7 +920,11 @@ pub mod tests {
         let mut ids = Vec::new();
         for u in uploads {
             let id = crate::id::new();
-            assert!(db.finish_upload(&u.id, new_image(&id)).await.unwrap());
+            assert!(
+                db.finish_upload(owner, &u.id, new_image(&id))
+                    .await
+                    .unwrap()
+            );
             ids.push(id);
         }
         (album, ids)
@@ -918,7 +950,7 @@ pub mod tests {
             .unwrap()
             .unwrap();
         for (u, id) in uploads.iter().rev().zip(["C", "B", "A"]) {
-            db.finish_upload(&u.id, new_image(id)).await.unwrap();
+            db.finish_upload("ann", &u.id, new_image(id)).await.unwrap();
         }
         assert_eq!(order(&db, &album.id).await, ["A", "B", "C"]);
         let names: Vec<_> = db
@@ -997,7 +1029,7 @@ pub mod tests {
             .await
             .unwrap()
             .unwrap();
-        db.finish_upload(&uploads[0].id, new_image("EEEEEEEEEE"))
+        db.finish_upload("ann", &uploads[0].id, new_image("EEEEEEEEEE"))
             .await
             .unwrap();
         assert_eq!(order(&db, &album.id).await.last().unwrap(), "EEEEEEEEEE");
@@ -1041,10 +1073,74 @@ pub mod tests {
         assert!(db.upload(&pending[0].id).await.unwrap().is_none());
         // A file that finishes after its album went is not added anywhere.
         assert!(
-            !db.finish_upload(&pending[0].id, new_image("LATELATE00"))
+            !db.finish_upload("ann", &pending[0].id, new_image("LATELATE00"))
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn an_ended_upload_takes_no_more_and_never_becomes_an_image() {
+        let db = Db::temp().await;
+        let album = db.create_album("ann", "").await.unwrap();
+        let uploads = db
+            .begin_uploads("ann", &album.id, vec![("a".into(), 10), ("b".into(), 10)])
+            .await
+            .unwrap()
+            .unwrap();
+        // Someone else's upload is not theirs to finish or fail.
+        assert!(
+            !db.finish_upload("bob", &uploads[0].id, new_image("BOBBOBBOB0"))
+                .await
+                .unwrap()
+        );
+        assert!(!db.set_received("bob", &uploads[0].id, 5).await.unwrap());
+        db.fail_upload("bob", &uploads[0].id, "cancelled")
+            .await
+            .unwrap();
+        assert_eq!(
+            db.upload(&uploads[0].id).await.unwrap().unwrap().error,
+            None
+        );
+        // Cancelled: no more chunks, and no image even if processing finishes.
+        db.fail_upload("ann", &uploads[1].id, "cancelled")
+            .await
+            .unwrap();
+        assert!(!db.set_received("ann", &uploads[1].id, 5).await.unwrap());
+        assert!(
+            !db.finish_upload("ann", &uploads[1].id, new_image("LATELATE01"))
+                .await
+                .unwrap()
+        );
+        assert!(db.images(&album.id).await.unwrap().is_empty());
+        // The first still finishes, once.
+        assert!(
+            db.finish_upload("ann", &uploads[0].id, new_image("ANNANNANN0"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !db.finish_upload("ann", &uploads[0].id, new_image("ANNANNANN1"))
+                .await
+                .unwrap()
+        );
+        assert_eq!(db.images(&album.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn upload_progress_is_not_announced() {
+        let db = Db::temp().await;
+        let album = db.create_album("ann", "").await.unwrap();
+        let upload = db
+            .begin_uploads("ann", &album.id, vec![("a".into(), 10)])
+            .await
+            .unwrap()
+            .unwrap()
+            .remove(0);
+        let rx = db.writes();
+        let before = *rx.borrow();
+        assert!(db.set_received("ann", &upload.id, 5).await.unwrap());
+        assert_eq!(*rx.borrow(), before);
     }
 
     #[tokio::test]
