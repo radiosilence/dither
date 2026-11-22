@@ -1,14 +1,14 @@
 {% extends "app/layout.html" %}
-{% block title %}albums · dither{% endblock %}
+{% block title %}{{ __("albums") }} · dither{% endblock %}
 {% block main %}
 <div class="flex items-baseline justify-between gap-4">
-  <h1>albums</h1>
-  <button class="quiet" data-new-album>{{ icon("plus", 13.0)|safe }} new album</button>
+  <h1>{{ __("albums") }}</h1>
+  <button class="quiet" data-new-album>{{ icon("plus", 13.0)|safe }} {{ __("new album") }}</button>
 </div>
 <div class="dropzone" data-dropzone>
-  <button class="primary" data-pick>choose images</button>
-  <p class="m-0 text-meta text-muted">or drop them anywhere, or paste. Each batch becomes an album.</p>
-  <p class="m-0 text-fine text-muted">JPEG, PNG, GIF or WebP, up to {{ shell.max_label() }} each. Where a photo was taken and what took it are removed before anything is stored.</p>
+  <button class="primary" data-pick>{{ __("choose images") }}</button>
+  <p class="m-0 text-meta text-muted">{{ __("or drop them anywhere, or paste. Each batch becomes an album.") }}</p>
+  <p class="m-0 text-fine text-muted">{{ __("JPEG, PNG, GIF or WebP, up to %{max} each. Where a photo was taken and what took it are removed before anything is stored.").with("max", shell.max_label()) }}</p>
 </div>
 <div data-init="@get('/stream')"></div>
 {{ albums|safe }}

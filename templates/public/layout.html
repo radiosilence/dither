@@ -1,10 +1,12 @@
 {% extends "base.html" %}
-{% block title %}{{ og.title }}{% endblock %}
+{# A title for the preview: the one a person gave, or what the page holds. #}
+{% macro og_title() %}{% if !og.title.is_empty() %}{{ og.title }}{% else if og.album_count.is_some() %}{{ __n("%{count} image", "%{count} images", og.album_count.unwrap_or_default()) }}{% else %}{{ __("an image") }}{% endif %}{% endmacro %}
+{% block title %}{% call og_title() %}{% endblock %}
 {% block head %}
 <meta name="robots" content="noindex">
 <link rel="canonical" href="{{ og.url }}">
 <meta property="og:type" content="website">
-<meta property="og:title" content="{{ og.title }}">
+<meta property="og:title" content="{% call og_title() %}">
 <meta property="og:url" content="{{ og.url }}">
 {% if !og.description.is_empty() %}
 <meta name="description" content="{{ og.description }}">
@@ -19,7 +21,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="{{ img.url }}">
 {% endif %}
-<meta name="twitter:title" content="{{ og.title }}">
+<meta name="twitter:title" content="{% call og_title() %}">
 {% endblock %}
 {% block body %}
 <body class="public">

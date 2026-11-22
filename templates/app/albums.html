@@ -2,11 +2,11 @@
 {% for c in cards %}
   <a class="card" href="/albums/{{ c.id }}">
     <span class="cover">{% if let Some(src) = c.cover.as_ref() %}<img src="{{ src }}" alt="" loading="lazy" decoding="async">{% endif %}</span>
-    <span class="name{% if c.title.is_empty() %} untitled{% endif %}">{% if c.title.is_empty() %}untitled{% else %}{{ c.title }}{% endif %}</span>
-    <span class="text-fine text-muted">{{ c.meta }}{% if c.private %} · private{% endif %}</span>
+    <span class="name{% if c.title.is_empty() %} untitled{% endif %}">{% if c.title.is_empty() %}{{ __("untitled") }}{% else %}{{ c.title }}{% endif %}</span>
+    <span class="text-fine text-muted">{{ __n("%{count} image", "%{count} images", c.count) }}{% if c.bytes > 0 %} · {{ c.size }}{% endif %}{% if c.private %} · {{ __("private") }}{% endif %}</span>
   </a>
 {% endfor %}
 {% if cards.is_empty() %}
-  <p class="col-span-full text-muted">No albums yet. Drop some images in to start one.</p>
+  <p class="col-span-full text-muted">{{ __("No albums yet. Drop some images in to start one.") }}</p>
 {% endif %}
 </div>

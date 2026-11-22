@@ -6,28 +6,76 @@
 {% block body %}
 <body class="app" data-max-upload="{{ shell.max_upload }}" data-chunk="{{ shell.chunk }}">
 <header class="topbar">
-  <a href="/" class="wordmark" aria-label="dither: albums">dither</a>
+  <a href="/" class="wordmark" aria-label="{{ __("dither: your albums") }}">dither</a>
   <span class="flex-1"></span>
   <span class="truncate text-meta text-muted">{{ shell.login }}</span>
-  <a class="text-meta text-muted hover:text-ink hover:no-underline" href="/auth/logout">sign out</a>
+  <a class="text-meta text-muted hover:text-ink hover:no-underline" href="/auth/logout">{{ __("sign out") }}</a>
 </header>
 <main class="page">
   <div id="notice" role="status" hidden></div>
   {% block main %}{% endblock %}
 </main>
-<div id="drop" class="drop" hidden><p>drop to upload</p></div>
-<section id="tray" class="tray" hidden aria-label="uploads"></section>
-<dialog id="viewer" class="viewer" aria-label="image"><div id="viewer-body" class="viewer-body"></div></dialog>
-<dialog id="mover" class="sheet" aria-label="move images"><div id="mover-body"></div></dialog>
-<dialog id="confirm" class="sheet" aria-label="confirm">
+<div id="drop" class="drop" hidden><p>{{ __("drop to upload") }}</p></div>
+<section id="tray" class="tray" hidden aria-label="{{ __("uploads") }}"></section>
+<dialog id="viewer" class="viewer" aria-label="{{ __p("Dialog name", "image") }}"><div id="viewer-body" class="viewer-body"></div></dialog>
+<dialog id="mover" class="sheet" aria-label="{{ __("move images") }}"><div id="mover-body"></div></dialog>
+<dialog id="confirm" class="sheet" aria-label="{{ __p("Dialog name", "confirm") }}">
   <form method="dialog">
     <p id="confirm-text" class="mt-0"></p>
     <div class="mt-6 flex justify-end gap-3">
-      <button value="cancel" class="standard">cancel</button>
-      <button value="ok" id="confirm-ok" class="bad">delete</button>
+      <button value="cancel" class="standard">{{ __p("Button: dismiss a dialog", "cancel") }}</button>
+      <button value="ok" id="confirm-ok" class="bad">{{ __p("Button", "delete") }}</button>
     </div>
   </form>
 </dialog>
 <input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp" hidden>
+{# What the browser's script says, keyed by name. Placeholders it fills itself are left as written. #}
+<template id="copy">
+  <span data-k="dismiss">{{ __p("Button: hide a notice", "dismiss") }}</span>
+  <span data-k="copied">{{ __p("A copy button, after copying", "copied") }}</span>
+  <span data-k="copy refused">{{ __("Couldn't copy: the browser refused. Select the link and copy it by hand.") }}</span>
+  <span data-k="none selected">{{ __("none selected") }}</span>
+  <span data-k="selected">{{ __("%{count} selected") }}</span>
+  <span data-k="cover failed">{{ __("Couldn't set the cover.") }}</span>
+  <span data-k="delete one?">{{ __("Delete this image? Links to it stop working. This can't be undone.") }}</span>
+  <span data-k="delete many?">{{ __("Delete these %{count} images? Links to them stop working. This can't be undone.") }}</span>
+  <span data-k="delete">{{ __p("Button", "delete") }}</span>
+  <span data-k="delete failed">{{ __("Couldn't delete it.") }}</span>
+  <span data-k="delete album?">{{ __("Delete this album and everything in it? Its link stops working. This can't be undone.") }}</span>
+  <span data-k="album delete failed">{{ __("Couldn't delete the album.") }}</span>
+  <span data-k="album failed">{{ __("Couldn't make an album.") }}</span>
+  <span data-k="albums failed">{{ __("Couldn't list your albums.") }}</span>
+  <span data-k="move failed">{{ __("Couldn't move them.") }}</span>
+  <span data-k="moved">{{ __("Moved.") }}</span>
+  <span data-k="open that album">{{ __("open that album") }}</span>
+  <span data-k="order failed">{{ __("Couldn't save the new order; reload to see the album as it is.") }}</span>
+  <span data-k="pasted image">{{ __("pasted image") }}</span>
+  <span data-k="heic">{{ __("HEIC isn't supported yet: export it as JPEG") }}</span>
+  <span data-k="not an image">{{ __("not a JPEG, PNG, GIF or WebP") }}</span>
+  <span data-k="too big">{{ __("%{size} is over the %{max} limit") }}</span>
+  <span data-k="empty">{{ __("the file is empty") }}</span>
+  <span data-k="refused">{{ __("refused (%{status})") }}</span>
+  <span data-k="failed">{{ __("the upload failed") }}</span>
+  <span data-k="signed out">{{ __("signed out: sign in again and add them again") }}</span>
+  <span data-k="server failed">{{ __("the server failed (%{status})") }}</span>
+  <span data-k="dropped">{{ __("the connection dropped") }}</span>
+  <span data-k="cancelled">{{ __p("Upload state", "cancelled") }}</span>
+  <span data-k="processing failed">{{ __("processing failed (%{status})") }}</span>
+  <span data-k="retrying">{{ __("%{why}; retrying") }}</span>
+  <span data-k="cancel">{{ __p("Button: stop uploading", "cancel") }}</span>
+  <span data-k="close">{{ __p("Button: hide the upload tray", "close") }}</span>
+  <span data-k="retry">{{ __p("Button: send a failed upload again", "retry") }}</span>
+  <span data-k="waiting">{{ __p("Upload state", "waiting") }}</span>
+  <span data-k="processing">{{ __p("Upload state", "processing") }}</span>
+  <span data-k="done">{{ __p("Upload state", "done") }}</span>
+  <span data-k="processing count">{{ __("processing %{count}…") }}</span>
+  <span data-k="uploaded of">{{ __("%{done} of %{total} uploaded") }}</span>
+  <span data-k="uploaded failed">{{ __("%{done} uploaded, %{failed} failed") }}</span>
+  <span data-k="rate">{{ __("%{rate}/s · %{left} left") }}</span>
+  <span data-k="bytes of">{{ __("%{sent} of %{total}") }}</span>
+  <span data-k="open the album">{{ __("open the album") }}</span>
+  <span data-k="hide">{{ __p("Button: fold the upload list", "hide") }}</span>
+  <span data-k="details">{{ __p("Button: unfold the upload list", "details") }}</span>
+</template>
 </body>
 {% endblock %}

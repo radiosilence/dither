@@ -141,13 +141,13 @@ jobs:
             printf '%s\n' "$files" | sed 's/^/  /'
             # Anything cargo compiles or that decides how. The server embeds
             # its templates and assets, so they are Rust too.
-            touches '^(src|templates|assets|migrations)/|^Cargo\.(toml|lock)$|^\.cargo/|^rust-toolchain|^\.github/' || rust=false
+            touches '^(src|templates|assets|scripts|migrations|locales)/|^build\.rs$|^Cargo\.(toml|lock)$|^\.cargo/|^rust-toolchain|^\.github/' || rust=false
             # The compiled stylesheet: its sources, everything Tailwind reads
             # class names from, the output itself, the theme it imports, and
             # the recipe and tool pins that build it. The justfile and
             # mise.toml reach no other job: the Rust and Node jobs install
             # their toolchains themselves.
-            touches '^(styles|templates|src|assets)/|^justfile$|^mise\.toml$|^package\.json$|^aube-lock\.yaml$|^\.npmrc$|^\.github/' || web=false
+            touches '^(styles|templates|src|assets|scripts)/|^justfile$|^mise\.toml$|^package\.json$|^aube-lock\.yaml$|^\.npmrc$|^\.github/' || web=false
             touches '^deploy/pulumi/|^\.github/' || package=false
             # The static binaries and the image that copies them in. The Rust
             # jobs already check the code, so a pull request builds these
@@ -357,9 +357,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Compiled stylesheet and typeface match their sources
         run: git diff --exit-code assets/app.css assets/geist-mono.woff2
-      # The browser's script has no build step, so a syntax error would reach
-      # every page.
-      - run: node --check assets/app.js
+
+  # The browser's script is TypeScript. Cargo strips its types as it builds
+  # (build.rs); this typechecks it.
+  js:
+    name: Scripts
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        with:
+          install_args: just github:microsoft/typescript-go
+      - run: just js
 
   # The crate, the Pulumi package and the image it deploys share one version
   # number: the package pins the image by `APP_VERSION`. Runs on pull requests
@@ -492,7 +504,7 @@ jobs:
     name: Checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [changes, actionlint, make-room, test, lint, format, audit, chart, changelog, css, version, linux-build, container]
+    needs: [changes, actionlint, make-room, test, lint, format, audit, chart, changelog, css, js, version, linux-build, container]
     if: always()
     steps:
       - env:

@@ -22,7 +22,7 @@ use crate::error::{AppError, AppResult};
 use crate::media::{DISPLAY_MAX, fit};
 use crate::upload::CHUNK;
 use crate::web::Helpers as _;
-use crate::web::{AppState, count, human, on_public_host, patch, sse};
+use crate::web::{AppState, human, on_public_host, patch, sse};
 
 /// Longest title, description and caption kept.
 const TITLE_MAX: usize = 300;
@@ -76,25 +76,54 @@ struct Albums {
 struct CardView {
     id: String,
     title: String,
-    meta: String,
+    count: u64,
+    bytes: u64,
+    size: String,
     cover: Option<String>,
     private: bool,
 }
 
 impl CardView {
     fn new(c: &Card) -> Self {
-        let mut meta = count(c.count, "image", "images");
-        if c.bytes > 0 {
-            meta.push_str(&format!(" · {}", human(c.bytes)));
-        }
         Self {
             id: c.album.id.clone(),
             title: c.album.title.clone(),
-            meta,
+            count: c.count,
+            bytes: c.bytes,
+            size: human(c.bytes),
             cover: c.cover.as_ref().map(|i| format!("/t/{}.webp", i.id)),
             private: c.album.private,
         }
     }
+}
+
+#[derive(Template)]
+#[template(path = "app/usage.html")]
+struct Usage {
+    albums: u64,
+    images: u64,
+    size: String,
+}
+
+#[derive(Template)]
+#[template(path = "app/summary.html")]
+struct Summary {
+    count: u64,
+    bytes: u64,
+    size: String,
+}
+
+#[derive(Template)]
+#[template(path = "app/deleted.html")]
+struct Deleted;
+
+/// The five ways the viewer offers to share an image.
+struct Links {
+    page: String,
+    file: String,
+    markdown: String,
+    bbcode: String,
+    html: String,
 }
 
 #[derive(Template)]
@@ -151,15 +180,23 @@ struct Viewer {
     width: u32,
     height: u32,
     caption: String,
-    position: String,
+    /// Where it falls in the album, from 1.
+    position: usize,
+    total: usize,
     prev: Option<String>,
     next: Option<String>,
     is_cover: bool,
-    links: Vec<(&'static str, String)>,
+    links: Links,
     file: String,
     download: String,
-    meta: String,
+    name: String,
+    width_full: u32,
+    height_full: u32,
+    size: String,
+    animated: bool,
 }
+
+crate::i18n::translated!(LibraryPage, Albums, AlbumPage, Grid, Viewer, Picker, Usage, Summary, Deleted);
 
 #[derive(Template)]
 #[template(path = "app/picker.html")]
@@ -200,13 +237,12 @@ async fn library_parts(state: &AppState, session: &Session) -> AppResult<(String
     let albums = render(&Albums {
         cards: cards.iter().map(CardView::new).collect(),
     })?;
-    let (n, bytes) = state.db.usage(&session.sub).await?;
-    let usage = format!(
-        "<p id=\"usage\" class=\"mt-8 text-fine text-muted\">{} · {} · {}</p>",
-        count(cards.len() as u64, "album", "albums"),
-        count(n, "image", "images"),
-        human(bytes)
-    );
+    let (images, bytes) = state.db.usage(&session.sub).await?;
+    let usage = render(&Usage {
+        albums: cards.len() as u64,
+        images,
+        size: human(bytes),
+    })?;
     Ok((albums, usage))
 }
 
@@ -253,15 +289,11 @@ async fn album_parts(state: &AppState, album: &crate::db::Album) -> AppResult<(S
         tiles: images.iter().map(Tile::new).collect(),
     })?;
     let bytes: u64 = images.iter().map(|i| i.bytes).sum();
-    let summary = format!(
-        "<span id=\"summary\">{}{}</span>",
-        count(images.len() as u64, "image", "images"),
-        if bytes > 0 {
-            format!(" · {}", human(bytes))
-        } else {
-            String::new()
-        }
-    );
+    let summary = render(&Summary {
+        count: images.len() as u64,
+        bytes,
+        size: human(bytes),
+    })?;
     Ok((grid, summary))
 }
 
@@ -469,30 +501,28 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
         width,
         height,
         caption: image.caption.clone(),
-        position: format!("{} of {}", at + 1, images.len()),
+        position: at + 1,
+        total: images.len(),
         prev: at
             .checked_sub(1)
             .and_then(|p| images.get(p))
             .map(|i| i.id.clone()),
         next: images.get(at + 1).map(|i| i.id.clone()),
         is_cover: cover == Some(image.id.as_str()),
-        links: vec![
-            ("page", page),
-            ("image", direct.clone()),
-            ("markdown", format!("![{alt}]({direct})")),
-            ("bbcode", format!("[img]{direct}[/img]")),
-            ("html", format!("<img src=\"{direct}\" alt=\"{alt}\">")),
-        ],
+        links: Links {
+            page,
+            markdown: format!("![{alt}]({direct})"),
+            bbcode: format!("[img]{direct}[/img]"),
+            html: format!("<img src=\"{direct}\" alt=\"{alt}\">"),
+            file: direct,
+        },
         download: format!("{}.{}", image.id, image.kind.ext()),
         file,
-        meta: format!(
-            "{} · {}×{} · {}{}",
-            name,
-            image.width,
-            image.height,
-            human(image.bytes),
-            if image.animated { " · animated" } else { "" }
-        ),
+        name,
+        width_full: image.width,
+        height_full: image.height,
+        size: human(image.bytes),
+        animated: image.animated,
         id: image.id,
     })
 }
@@ -522,7 +552,7 @@ pub async fn stream(
                     // could not answer (a long write holding the lock) is
                     // logged below and asked again on the next write.
                     Err(AppError::NotFound) => {
-                        yield Ok(patch("<div id=\"grid\" class=\"py-16 text-muted\">This album has been deleted.</div>"));
+                        yield Ok(patch(&Deleted.render().unwrap_or_default()));
                         break;
                     }
                     Err(e) => Err(e),

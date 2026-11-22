@@ -195,6 +195,11 @@ pub trait Helpers {
     fn icon(&self, name: &str, px: f32) -> String {
         crate::icon::named(name, px)
     }
+
+    /// The page's language, for `<html lang>`.
+    fn lang(&self) -> &'static str {
+        crate::i18n::LOCALE
+    }
 }
 
 impl<T: askama::Template> Helpers for T {}

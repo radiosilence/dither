@@ -4,7 +4,7 @@
   <header class="mb-6 px-[22px]">
     {% if !title.is_empty() %}<h1>{{ title }}</h1>{% endif %}
     {% if !description.is_empty() %}<p class="prose">{{ description }}</p>{% endif %}
-    <p class="text-meta text-muted">{{ count }}</p>
+    <p class="text-meta text-muted">{{ __n("%{count} image", "%{count} images", pics.len() as u64) }}</p>
   </header>
   {% for p in pics %}
   <figure id="{{ p.id }}" class="pic">
