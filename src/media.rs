@@ -451,10 +451,11 @@ mod tests {
     fn sixteen_bits_cost_more_and_come_out_as_eight() {
         let deep = png(600, 400, image::ExtendedColorType::Rgba16);
         let shallow = png(600, 400, image::ExtendedColorType::Rgb8);
-        // The decoded buffer is twice the eight-bit one, beside it.
-        assert!(
-            cost(&deep, 0, 100_000_000).unwrap()
-                > cost(&shallow, 0, 100_000_000).unwrap() + 600 * 400 * 4
+        // Eight bytes a pixel decoded where the eight-bit copy takes four; RGB
+        // at three is held to the four its copy takes.
+        assert_eq!(
+            cost(&deep, 0, 100_000_000).unwrap() - cost(&shallow, 0, 100_000_000).unwrap(),
+            4 * 600 * 400
         );
         let p = process(&deep, 100_000_000).unwrap();
         // Opaque, so the alpha channel is dropped too.

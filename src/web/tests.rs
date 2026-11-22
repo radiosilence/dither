@@ -267,7 +267,7 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
     assert_eq!(file.header("content-type"), "image/jpeg");
     assert_eq!(
         file.header("cache-control"),
-        "public, max-age=31536000, immutable"
+        "public, max-age=31536000, s-maxage=600, immutable"
     );
     assert_eq!(file.header("x-content-type-options"), "nosniff");
     assert_eq!(file.header("cross-origin-resource-policy"), "cross-origin");
