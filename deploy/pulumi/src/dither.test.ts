@@ -54,7 +54,8 @@ describe("environment", () => {
 
 describe("egress", () => {
   const backchannel = { url: "http://hydra", podLabels: { app: "hydra" }, port: 4444 };
-  const peers = (args: Parameters<typeof egress>[0]) => egress(args).flatMap((rule) => rule.to);
+  const peers = (args: Parameters<typeof egress>[0]) =>
+    egress(args).flatMap((rule): Record<string, unknown>[] => [...rule.to]);
 
   it("reaches the identity provider in its own namespace when it has one", () => {
     const oidc = { ...base.oidc, backchannel: { ...backchannel, namespace: "auth" } };
