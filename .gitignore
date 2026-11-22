@@ -1,0 +1,8 @@
+/target
+/node_modules
+/.env
+/data
+*.db
+*.db-*
+# Written by `just auth`; holds a GitHub Packages token.
+/.npmrc.auth
