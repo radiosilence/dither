@@ -612,17 +612,31 @@ addEventListener("beforeunload", (ev) => {
   if (pending().length) ev.preventDefault();
 });
 
+/** A status that sending the same request again may get past. */
+const retryable = (status: number): boolean => status === 408 || status === 429 || (status >= 500 && status !== 507);
+
+/** The album being made for a batch: a second drop while it is on its way joins it rather than making another. */
+let making: Promise<string> | null = null;
+
 /** Where this batch goes: the album on show, the one a batch still going went to, or a new one made for it. */
 async function target(running: boolean): Promise<string> {
   const shown = albumId();
   if (shown) return shown;
-  if (queue.album && running) return queue.album;
-  const res = await api("POST", "/api/albums", {});
-  const answer = await json<{ id: string }>(res);
-  if (!res.ok || !answer.id) throw new Failure(say("album failed"), false);
-  queue.album = answer.id;
-  queue.albumIsNew = true;
-  return answer.id;
+  if (running && making) return making;
+  if (running && queue.album) return queue.album;
+  making = (async () => {
+    const res = await api("POST", "/api/albums", {});
+    const answer = await json<{ id: string }>(res);
+    if (!res.ok || !answer.id) throw new Failure(say("album failed"), false);
+    queue.album = answer.id;
+    queue.albumIsNew = true;
+    return answer.id;
+  })();
+  try {
+    return await making;
+  } finally {
+    making = null;
+  }
 }
 
 async function add(list: FileList | File[]): Promise<void> {
@@ -721,7 +735,8 @@ function put(item: Item, start: number, end: number): Promise<number> {
       if (xhr.status === 200 || (xhr.status === 409 && typeof answer.received === "number")) {
         resolve(answer.received ?? start);
       } else if (xhr.status === 401) reject(new Failure(say("signed out"), false));
-      else if (xhr.status >= 500 && xhr.status !== 507) reject(new Failure(say("server failed", { status: xhr.status }), true));
+      else if (retryable(xhr.status))
+        reject(new Failure(answer.error ?? say("server failed", { status: xhr.status }), true));
       else reject(new Failure(answer.error ?? say("refused", { status: xhr.status }), false));
     };
     xhr.onerror = () => {
@@ -764,10 +779,7 @@ async function send(item: Item): Promise<void> {
           item.state = "sending";
           continue;
         }
-        throw new Failure(
-          answer.error ?? say("processing failed", { status: res.status }),
-          res.status >= 500 && res.status !== 507,
-        );
+        throw new Failure(answer.error ?? say("processing failed", { status: res.status }), retryable(res.status));
       } catch (e) {
         if (!(e instanceof Failure) || !e.retry || tries >= RETRIES || cancelled(item)) throw e;
         tries++;

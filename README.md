@@ -54,10 +54,19 @@ Images, and copies of the database, go to one object store chosen by
 (`s3://bucket`, with Cloudflare R2, Hetzner Object Storage or MinIO). The
 database is SQLite in `STATE_DIR`. Two seconds after each burst of changes it
 is compacted (`VACUUM INTO`), gzipped and written to the store as
-`state/dither.db.gz`, with one copy an hour kept for three days; a node that
-starts with no database restores the latest. With a bucket, the store is the
-only thing to back up and the pod's disk is a cache. One replica is assumed,
-as with any SQLite service.
+`state/dither.db.gz`, with one copy an hour kept for three days. A node that
+starts with no database restores the latest copy, and so does one whose
+database is behind it: each copy carries a generation, so a disk an older run
+left behind is told apart from the live one, and is kept beside the restored
+database rather than deleted. With a bucket, the store is the only thing to
+back up and the pod's disk is a cache. One replica is assumed, as with any
+SQLite service.
+
+The database records an image's copies before they are written, and recording
+the image claims them. An hourly sweep deletes copies whose record is an hour
+old and unclaimed: a crash between storing and recording, or a delete the
+store did not confirm. It never deletes a copy because no image names it, so
+a database restored from an older copy leaves newer images in the store.
 
 Uploads are refused while a disk they write to (the state directory, and a
 disk store) has less than `MIN_FREE_BYTES` free, or by default 15% of its
@@ -89,10 +98,13 @@ not the file. Chunks are small enough to arrive within Traefik's default
 files were picked in, whatever order they finish in.
 
 Processing (cleaning, decoding, resizing, encoding) runs under a budget of
-megapixels decoded at once (`PROCESS_MEGAPIXELS`), which is what bounds the
-memory a batch of hundreds of photos can take. It runs in a task the request
-only waits on, so a client that disconnects does not stop it, and asking
-again reads how it ended.
+memory (`PROCESS_MEMORY_BYTES`), which is what bounds what a batch of hundreds
+of photos can take. Each image's share is worked out from its header before
+anything is decoded, in bytes rather than pixels: a 16-bit PNG decodes to
+twice an 8-bit one's size, and a photo turning upright needs a second copy.
+An image that needs more than the whole budget is refused with the reason.
+Processing runs in a task the request only waits on, so a client that
+disconnects does not stop it, and asking again reads how it ended.
 
 The same JSON API serves anything else that wants to upload:
 
@@ -106,7 +118,9 @@ DELETE /api/uploads/{id}
 ```
 
 Every request needs a session and, if it writes, an `X-Dither` or
-`Datastar-Request` header.
+`Datastar-Request` header. A chunk answered 408, 429 or a 5xx other than 507
+is worth sending again, from the `received` that `GET` reports; a 409 carries
+it. Other answers are final.
 
 ## The web UI
 
@@ -169,7 +183,7 @@ startup.
 | `STATE_DIR` | `data/state` | The database and uploads in progress, on a local disk. |
 | `MIN_FREE_BYTES` | 15% of each disk | Uploads are refused below this much free space on a disk they write to. |
 | `MAX_UPLOAD_BYTES`, `MAX_PIXELS` | 64 000 000, 100 000 000 | Per image. |
-| `PROCESS_MEGAPIXELS` | `100` | Megapixels decoded at once, across all uploads. |
+| `PROCESS_MEMORY_BYTES` | 1 GiB | Memory processing takes at once, across all uploads. An image that needs more alone is refused. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 

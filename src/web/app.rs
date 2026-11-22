@@ -365,10 +365,9 @@ pub async fn delete_album(
         .delete_album(&session.sub, &id)
         .await?
         .ok_or(AppError::NotFound)?;
-    for image in &images {
-        state.store.delete_image(image).await;
-    }
-    tracing::info!(album = %id, images = images.len(), "album deleted");
+    let count = images.len();
+    crate::store::discard(&state.store, &state.db, images).await;
+    tracing::info!(album = %id, images = count, "album deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -428,10 +427,9 @@ pub async fn delete_images(
     Json(body): Json<Ids>,
 ) -> AppResult<Json<serde_json::Value>> {
     let deleted = state.db.delete_images(&session.sub, body.ids).await?;
-    for image in &deleted {
-        state.store.delete_image(image).await;
-    }
-    Ok(Json(serde_json::json!({ "deleted": deleted.len() })))
+    let count = deleted.len();
+    crate::store::discard(&state.store, &state.db, deleted).await;
+    Ok(Json(serde_json::json!({ "deleted": count })))
 }
 
 /// The move dialog's list: every other album of the person's.
@@ -532,15 +530,18 @@ pub struct StreamQuery {
     album: Option<String>,
 }
 
-/// The page's live parts, redrawn after every write and sent when they
-/// changed. Writes come in bursts (an upload of three hundred images is three
-/// hundred), so a redraw waits a moment for the burst to settle.
+/// The page's live parts, redrawn after each change to the person's albums
+/// and sent when they changed. Changes come in bursts (an upload of three
+/// hundred images is three hundred), so a redraw waits a moment for the
+/// burst to settle.
 pub async fn stream(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
     Query(q): Query<StreamQuery>,
 ) -> Response {
-    let mut writes = state.db.writes();
+    use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+    let mut changes = state.db.changes();
+    let me: std::sync::Arc<str> = session.sub.as_str().into();
     let mut stopping = state.stopping.clone();
     let events = async_stream::stream! {
         let mut sent: HashMap<&'static str, String> = HashMap::new();
@@ -570,12 +571,24 @@ pub async fn stream(
                 }
                 Err(e) => tracing::warn!(error = %e, "drawing a live part failed"),
             }
-            tokio::select! {
-                changed = writes.changed() => if changed.is_err() { break },
-                _ = stopping.wait_for(|s| *s) => break,
+            let woken = loop {
+                tokio::select! {
+                    change = changes.recv() => match change {
+                        Ok(owner) if owner == me => break true,
+                        Ok(_) => {}
+                        // Missed some, which may have been theirs.
+                        Err(RecvError::Lagged(_)) => break true,
+                        Err(RecvError::Closed) => break false,
+                    },
+                    _ = stopping.wait_for(|s| *s) => break false,
+                }
+            };
+            if !woken {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
-            writes.borrow_and_update();
+            // The redraw covers whatever arrived meanwhile.
+            while !matches!(changes.try_recv(), Err(TryRecvError::Empty | TryRecvError::Closed)) {}
         }
     };
     sse(events)

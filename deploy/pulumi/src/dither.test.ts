@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { environment } from "./dither.ts";
+import { egress, environment } from "./dither.ts";
 
 const base = {
   hostname: "dither.example",
@@ -49,5 +49,30 @@ describe("environment", () => {
       bucket: { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "KEY", secretAccessKey: "SECRET" },
     });
     expect(JSON.stringify(e)).not.toMatch(/KEY|SECRET|"s"/);
+  });
+});
+
+describe("egress", () => {
+  const backchannel = { url: "http://hydra", podLabels: { app: "hydra" }, port: 4444 };
+  const peers = (args: Parameters<typeof egress>[0]) =>
+    egress(args).flatMap((rule): Record<string, unknown>[] => [...rule.to]);
+
+  it("reaches the identity provider in its own namespace when it has one", () => {
+    const oidc = { ...base.oidc, backchannel: { ...backchannel, namespace: "auth" } };
+    expect(peers({ oidc })).toContainEqual({
+      podSelector: { matchLabels: { app: "hydra" } },
+      namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "auth" } },
+    });
+    expect(peers({ oidc: { ...base.oidc, backchannel } })).toContainEqual({
+      podSelector: { matchLabels: { app: "hydra" } },
+    });
+  });
+
+  it("leaves the cluster only when something out there is needed", () => {
+    const internet = (args: Parameters<typeof egress>[0]) => peers(args).some((p) => "ipBlock" in p);
+    const bucket = { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "a", secretAccessKey: "b" };
+    expect(internet({ oidc: { ...base.oidc, backchannel } })).toBe(false);
+    expect(internet({ oidc: { ...base.oidc, backchannel }, bucket })).toBe(true);
+    expect(internet({ oidc: base.oidc })).toBe(true);
   });
 });

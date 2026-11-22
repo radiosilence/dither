@@ -37,7 +37,7 @@ async fn app_with(edit: impl FnOnce(&mut Config)) -> App {
             db.clone(),
             store.clone(),
             &config.state_dir,
-            100,
+            config.process_memory,
             config.max_pixels,
             Some(0),
         )

@@ -49,7 +49,13 @@ export type DitherArgs = {
      * the pod shares a node with the ingress: Cilium drops a pod's traffic to
      * its own node's public address.
      */
-    backchannel?: { url: string; podLabels: Record<string, string>; port: number };
+    backchannel?: {
+      url: string;
+      podLabels: Record<string, string>;
+      port: number;
+      /** The provider's namespace, when it is not this one; `url` then names it too. */
+      namespace?: string;
+    };
   };
   /**
    * An S3-compatible bucket (Cloudflare R2, Hetzner, MinIO) for the images
@@ -97,6 +103,35 @@ export function environment(args: DitherArgs) {
     { name: "OIDC_CLIENT_ID", value: args.oidc.clientId },
     ...(args.oidc.backchannel ? [{ name: "OIDC_TOKEN_URL", value: `${args.oidc.backchannel.url}/oauth2/token` }] : []),
     { name: "RUST_LOG", value: "info" },
+  ];
+}
+
+/**
+ * What the pod may call: the cluster's resolver, the identity provider's
+ * token endpoint, and HTTPS beyond the cluster when a bucket or a provider
+ * reached at its public address needs it. Exported for its test.
+ */
+export function egress(args: Pick<DitherArgs, "oidc" | "bucket">) {
+  const backchannel = args.oidc.backchannel;
+  // A pod selector alone matches pods in this namespace only.
+  const provider = backchannel && {
+    podSelector: { matchLabels: backchannel.podLabels },
+    ...(backchannel.namespace
+      ? { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": backchannel.namespace } } }
+      : {}),
+  };
+  return [
+    {
+      to: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } } }],
+      ports: [
+        { protocol: "UDP", port: 53 },
+        { protocol: "TCP", port: 53 },
+      ],
+    },
+    ...(backchannel && provider ? [{ to: [provider], ports: [{ protocol: "TCP", port: backchannel.port }] }] : []),
+    ...(!backchannel || args.bucket
+      ? [{ to: [{ ipBlock: { cidr: "0.0.0.0/0", except: PRIVATE } }], ports: [{ protocol: "TCP", port: 443 }] }]
+      : []),
   ];
 }
 
@@ -200,9 +235,9 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
                   initialDelaySeconds: 10,
                   periodSeconds: 30,
                 },
-                // Decoding is what takes memory: the service holds the
-                // megapixels being decoded at once to a budget, which a limit
-                // a little over a hundred-megapixel photo's worth allows.
+                // Processing is what takes memory: the service holds it to
+                // a budget (1 GiB by default), which this limit allows beside
+                // the image cache.
                 resources: {
                   limits: args.limits ?? { cpu: "2", memory: "1536Mi" },
                   requests: args.requests ?? { cpu: "10m", memory: "64Mi" },
@@ -233,44 +268,13 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
     options,
   );
 
-  // What it calls: the cluster's resolver, the identity provider's token
-  // endpoint, and a bucket when it has one. No ingress rule: Traefik reaches
-  // it, and an ingress policy that also drops the kubelet's probes gets the
-  // pod killed for failing readiness.
-  const backchannel = args.oidc.backchannel;
+  // No ingress rule: Traefik reaches it, and an ingress policy that also
+  // drops the kubelet's probes gets the pod killed for failing readiness.
   new k8s.networking.v1.NetworkPolicy(
     `${NAME}-netpol`,
     {
       metadata: { name: NAME, namespace },
-      spec: {
-        podSelector: { matchLabels: labels },
-        policyTypes: ["Egress"],
-        egress: [
-          {
-            to: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } } }],
-            ports: [
-              { protocol: "UDP", port: 53 },
-              { protocol: "TCP", port: 53 },
-            ],
-          },
-          ...(backchannel
-            ? [
-                {
-                  to: [{ podSelector: { matchLabels: backchannel.podLabels } }],
-                  ports: [{ protocol: "TCP", port: backchannel.port }],
-                },
-              ]
-            : []),
-          ...(!backchannel || args.bucket
-            ? [
-                {
-                  to: [{ ipBlock: { cidr: "0.0.0.0/0", except: PRIVATE } }],
-                  ports: [{ protocol: "TCP", port: 443 }],
-                },
-              ]
-            : []),
-        ],
-      },
+      spec: { podSelector: { matchLabels: labels }, policyTypes: ["Egress"], egress: egress(args) },
     },
     options,
   );

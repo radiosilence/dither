@@ -1,8 +1,10 @@
 # dither: an image host
 
 # Run it on http://127.0.0.1:8080 with no sign-in and everything under ./data.
+# A laptop's disk is usually fuller than a server's, so uploads stop at 1 GB
+# free here rather than at the default share.
 dev:
-    INSECURE_NO_AUTH=1 cargo run
+    INSECURE_NO_AUTH=1 MIN_FREE_BYTES=1000000000 cargo run
 
 # What CI checks, short of the audit and the release builds.
 check:

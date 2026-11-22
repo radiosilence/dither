@@ -60,12 +60,35 @@ fn decoder(bytes: &[u8], kind: Kind) -> Result<impl ImageDecoder + '_, Reject> {
         .map_err(|e| Reject::Broken(format!("the image can't be read: {e}")))
 }
 
-/// The format and pixel count, from the header alone: what deciding whether
-/// to take the file, and how much memory decoding it will need, costs.
-pub fn inspect(bytes: &[u8]) -> Result<(Kind, u64), Reject> {
+fn check_size(w: u32, h: u32, max_pixels: u64) -> Result<(), Reject> {
+    if w == 0 || h == 0 {
+        return Err(Reject::Broken("the image has no pixels".into()));
+    }
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels > max_pixels {
+        return Err(Reject::TooBig(format!(
+            "{w}×{h} is {} megapixels; the limit is {}",
+            pixels.div_ceil(1_000_000),
+            max_pixels / 1_000_000
+        )));
+    }
+    Ok(())
+}
+
+/// The most memory [`process`] takes for `bytes`, read from the header alone
+/// so the budget can be held before any of it is spent: the file and its
+/// cleaned copy, the decoded pixels (16-bit ones take twice the room) beside
+/// the eight-bit copy made from them, as much again while a photo turns
+/// upright, and the display copy with the resizer's and encoder's working
+/// rows.
+pub fn cost(bytes: &[u8], max_pixels: u64) -> Result<u64, Reject> {
     let kind = sanitize::sniff(bytes).map_err(Reject::Unsupported)?;
-    let (w, h) = decoder(bytes, kind)?.dimensions();
-    Ok((kind, u64::from(w) * u64::from(h)))
+    let decoder = decoder(bytes, kind)?;
+    let (w, h) = decoder.dimensions();
+    check_size(w, h, max_pixels)?;
+    let eight = 4 * u64::from(w) * u64::from(h);
+    let copies = 4 * u64::from(DISPLAY_MAX) * (u64::from(w.max(h)) + u64::from(DISPLAY_MAX));
+    Ok(2 * bytes.len() as u64 + decoder.total_bytes().max(eight) + eight + copies)
 }
 
 pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
@@ -80,26 +103,18 @@ pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
     // proven to decode.
     let mut decoder = decoder(&clean.bytes, kind)?;
     let (w, h) = decoder.dimensions();
-    if w == 0 || h == 0 {
-        return Err(Reject::Broken("the image has no pixels".into()));
-    }
-    let pixels = u64::from(w) * u64::from(h);
-    if pixels > max_pixels {
-        return Err(Reject::TooBig(format!(
-            "{w}×{h} is {} megapixels; the limit is {}",
-            pixels.div_ceil(1_000_000),
-            max_pixels / 1_000_000
-        )));
-    }
+    check_size(w, h, max_pixels)?;
     let icc = decoder
         .icc_profile()
         .ok()
         .flatten()
         .filter(|p| p.get(16..20) == Some(b"RGB "));
-    let mut img = DynamicImage::from_decoder(decoder)
+    let img = DynamicImage::from_decoder(decoder)
         .map_err(|e| Reject::Broken(format!("the image can't be decoded: {e}")))?;
+    // Eight bits first, so the decoded buffer is freed before turning makes
+    // a copy.
+    let mut img = eight_bit(img);
     img.apply_orientation(orientation);
-    let img = eight_bit(img);
     let (width, height) = (img.width(), img.height());
 
     let display = (!clean.animated && width.max(height) > DISPLAY_MAX)
@@ -118,20 +133,29 @@ pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
 }
 
 /// RGB or RGBA at eight bits a channel, which the resizer and the encoder
-/// take. An alpha channel nothing uses is dropped: screenshots arrive as RGBA
-/// with every pixel opaque, and the channel would cost bytes in every copy.
+/// take, converted in one step so no more than the source and the result are
+/// held at once. An alpha channel nothing uses is dropped: screenshots arrive
+/// as RGBA with every pixel opaque, and the channel would cost bytes in every
+/// copy.
 fn eight_bit(img: DynamicImage) -> DynamicImage {
+    let alpha = !opaque(&img);
     match img {
         DynamicImage::ImageRgb8(_) => img,
-        DynamicImage::ImageRgba8(rgba) => {
-            if rgba.pixels().all(|p| p.0[3] == u8::MAX) {
-                DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(rgba).to_rgb8())
-            } else {
-                DynamicImage::ImageRgba8(rgba)
-            }
-        }
-        other if other.color().has_alpha() => eight_bit(DynamicImage::ImageRgba8(other.to_rgba8())),
-        other => DynamicImage::ImageRgb8(other.to_rgb8()),
+        DynamicImage::ImageRgba8(_) if alpha => img,
+        other if alpha => DynamicImage::ImageRgba8(other.into_rgba8()),
+        other => DynamicImage::ImageRgb8(other.into_rgb8()),
+    }
+}
+
+/// Whether every pixel is fully opaque, as an image with no alpha is.
+fn opaque(img: &DynamicImage) -> bool {
+    match img {
+        DynamicImage::ImageRgba8(b) => b.pixels().all(|p| p.0[3] == u8::MAX),
+        DynamicImage::ImageLumaA8(b) => b.pixels().all(|p| p.0[1] == u8::MAX),
+        DynamicImage::ImageRgba16(b) => b.pixels().all(|p| p.0[3] == u16::MAX),
+        DynamicImage::ImageLumaA16(b) => b.pixels().all(|p| p.0[1] == u16::MAX),
+        DynamicImage::ImageRgba32F(b) => b.pixels().all(|p| p.0[3] >= 1.0),
+        other => !other.color().has_alpha(),
     }
 }
 
@@ -392,7 +416,42 @@ mod tests {
     fn too_many_pixels_is_refused_before_decoding() {
         let err = process(&jpeg(2000, 1000), 1_000_000).err().unwrap();
         assert!(matches!(err, Reject::TooBig(_)), "{err}");
-        assert_eq!(inspect(&jpeg(2000, 1000)).unwrap(), (Kind::Jpeg, 2_000_000));
+        assert!(matches!(
+            cost(&jpeg(2000, 1000), 1_000_000),
+            Err(Reject::TooBig(_))
+        ));
+    }
+
+    fn png(w: u32, h: u32, color: image::ExtendedColorType) -> Vec<u8> {
+        let channels = match color {
+            image::ExtendedColorType::Rgb8 => 3,
+            image::ExtendedColorType::Rgba16 => 8,
+            _ => unreachable!(),
+        };
+        let raw = vec![u8::MAX; (w * h) as usize * channels];
+        let mut out = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut out)
+            .write_image(&raw, w, h, color)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn sixteen_bits_cost_more_and_come_out_as_eight() {
+        let deep = png(600, 400, image::ExtendedColorType::Rgba16);
+        let shallow = png(600, 400, image::ExtendedColorType::Rgb8);
+        // The decoded buffer is twice the eight-bit one, beside it.
+        assert!(
+            cost(&deep, 100_000_000).unwrap()
+                > cost(&shallow, 100_000_000).unwrap() + 600 * 400 * 4
+        );
+        let p = process(&deep, 100_000_000).unwrap();
+        // Opaque, so the alpha channel is dropped too.
+        assert_eq!(
+            image::load_from_memory(&p.thumb).unwrap().color(),
+            image::ColorType::Rgb8
+        );
+        assert_eq!((p.width, p.height), (600, 400));
     }
 
     #[test]
