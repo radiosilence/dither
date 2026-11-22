@@ -1,0 +1,16 @@
+{% extends "app/layout.html" %}
+{% block title %}albums · dither{% endblock %}
+{% block main %}
+<div class="flex items-baseline justify-between gap-4">
+  <h1>albums</h1>
+  <button class="quiet" data-new-album>{{ icon("plus", 13.0)|safe }} new album</button>
+</div>
+<div class="dropzone" data-dropzone>
+  <button class="primary" data-pick>choose images</button>
+  <p class="m-0 text-meta text-muted">or drop them anywhere, or paste. Each batch becomes an album.</p>
+  <p class="m-0 text-fine text-muted">JPEG, PNG, GIF or WebP, up to {{ shell.max_label() }} each. Where a photo was taken and what took it are removed before anything is stored.</p>
+</div>
+<div data-init="@get('/stream')"></div>
+{{ albums|safe }}
+{{ usage|safe }}
+{% endblock %}

@@ -1,0 +1,568 @@
+/*
+ * dither's stylesheet, compiled by Tailwind into assets/app.css (`just css`). The compiled file is committed: the
+ * binary embeds it, and building dither must not need the Tailwind CLI.
+ *
+ * The look is kōan's (radiosilence/koan, docs/design/koan-theme.md): Geist Mono throughout, square corners, no
+ * shadows, blur or gradients, regions told apart by space or a hairline, the app's own words in lower case and what a
+ * person wrote in its own. The tokens come from @radiosilence/theme; what is here is element defaults, the controls
+ * koan draws, and the few classes the server, Datastar or app.js toggle.
+ */
+@import "tailwindcss" source(none);
+@source "../templates";
+@source "../src";
+@source "../assets/app.js";
+@import "@radiosilence/theme";
+
+@theme {
+  /* Wider than this, a desktop layout: the viewer's side panel, the tray in a corner. app.js matches on it too. */
+  --breakpoint-wide: 721px;
+  --animate-busy: busy 0.7s linear infinite;
+  --animate-sweep: sweep 1.4s ease-in-out infinite alternate;
+
+  @keyframes busy {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes sweep {
+    from {
+      background-position:
+        0 50%,
+        0 50%;
+    }
+    to {
+      background-position:
+        100% 50%,
+        0 50%;
+    }
+  }
+}
+
+@layer base {
+  :root {
+    /* The toggle's tick, in `bg`: a data URL cannot read a custom property, so it is stated per scheme. */
+    --tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.5l2.5 2.5L11 4.5' fill='none' stroke='%231e1e1e' stroke-width='1.6' stroke-linecap='square'/%3E%3C/svg%3E");
+
+    @media (prefers-color-scheme: light) {
+      --tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.5l2.5 2.5L11 4.5' fill='none' stroke='%23ffffff' stroke-width='1.6' stroke-linecap='square'/%3E%3C/svg%3E");
+    }
+  }
+
+  html,
+  body {
+    @apply overflow-x-hidden;
+  }
+
+  /* Touch screens get no hover, so a tap's highlight is the only sign it landed. Preflight removes it. */
+  html {
+    -webkit-tap-highlight-color: revert;
+  }
+
+  body {
+    @apply min-h-dvh bg-bg text-body text-ink;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  a {
+    @apply text-brand hover:underline;
+  }
+
+  p {
+    @apply my-[1em];
+  }
+
+  /* The app's words are lowercase; a title a person typed keeps its case, which is why public headings say so. */
+  h1 {
+    @apply mt-1 mb-4 text-display font-extralight wrap-anywhere text-strong lowercase max-wide:text-title;
+  }
+
+  .public h1 {
+    @apply normal-case;
+  }
+
+  h2 {
+    @apply mt-8 mb-3 text-title-sm font-light text-strong lowercase;
+  }
+
+  button,
+  summary,
+  label,
+  .button {
+    @apply lowercase;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand;
+  }
+
+  /* Bordered: a button's weight unless the page says otherwise. Square, as every control in the theme is; the
+   * outline is `muted` because `rule` is too faint to show where a control is. */
+  button,
+  .button {
+    @apply inline-flex cursor-pointer items-center gap-1.5 border border-muted bg-transparent px-3 py-1.5 text-meta text-ink select-none hover:bg-hover/30 hover:no-underline active:bg-hover disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent;
+  }
+
+  input,
+  select,
+  textarea {
+    @apply min-w-0 border border-muted bg-transparent px-2.5 py-2 text-input text-ink normal-case;
+  }
+
+  ::placeholder {
+    @apply text-muted opacity-100;
+  }
+
+  /* The theme's toggle: a square box, outlined off, filled with a tick on. */
+  input[type="checkbox"],
+  input[type="radio"] {
+    @apply m-0 size-3.5 flex-none cursor-pointer appearance-none p-0 checked:border-brand;
+  }
+
+  input[type="checkbox"]:checked,
+  input[type="radio"]:checked {
+    background: var(--brand) var(--tick) center / 100% no-repeat;
+  }
+
+  /* The theme's progress bar: a hairline, the part done thicker in the accent. Without a value, before there is
+   * anything to count, a short length of the accent moves along it; under reduced motion it is the thicker track. */
+  progress.meter {
+    @apply block h-[3px] w-full appearance-none border-0 bg-transparent;
+    background: linear-gradient(var(--rule), var(--rule)) 0 50% / 100% 1px no-repeat;
+  }
+
+  progress.meter::-webkit-progress-bar {
+    @apply bg-transparent;
+  }
+
+  progress.meter::-webkit-progress-value {
+    @apply bg-brand;
+  }
+
+  progress.meter::-moz-progress-bar {
+    @apply bg-brand;
+  }
+
+  progress.meter:indeterminate {
+    @apply animate-sweep;
+    background:
+      linear-gradient(var(--brand), var(--brand)) 0 50% / 25% 3px no-repeat,
+      linear-gradient(var(--rule), var(--rule)) 0 50% / 100% 1px no-repeat;
+
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+      background: linear-gradient(var(--rule), var(--rule)) 0 50% / 100% 3px no-repeat;
+    }
+  }
+
+  progress.meter:indeterminate::-moz-progress-bar {
+    @apply bg-transparent;
+  }
+
+  dialog {
+    @apply text-ink;
+  }
+
+  dialog::backdrop {
+    @apply bg-bg/80;
+  }
+}
+
+@layer components {
+  /* The weights beside the bordered default: prominent is what the page is for, and a page has at most one; standard
+   * is the label alone; quiet is a text button; bad is destructive. */
+  .primary {
+    @apply border-brand px-5 py-3 text-body text-brand;
+  }
+
+  .standard {
+    @apply border-transparent px-1 py-2 text-control hover:bg-transparent hover:text-strong;
+  }
+
+  .quiet {
+    @apply border-transparent bg-transparent px-2 text-muted hover:bg-transparent hover:text-ink;
+  }
+
+  .bad {
+    @apply border-bad text-bad;
+  }
+
+  .quiet.bad,
+  .standard.bad {
+    @apply border-transparent hover:text-bad;
+  }
+
+  .icon-button {
+    @apply inline-grid size-10 place-items-center border-0 bg-transparent p-0 text-ink hover:bg-hover/30;
+  }
+
+  .done {
+    @apply border-brand text-brand;
+  }
+
+  .glyph {
+    @apply inline-block shrink-0;
+  }
+
+  /* ── The app's frame ───────────────────────────────────────────────── */
+
+  .topbar {
+    @apply sticky top-0 z-20 flex items-center gap-4 border-b border-rule bg-bg px-[22px] py-3 wide:px-8;
+    padding-top: max(12px, env(safe-area-inset-top));
+  }
+
+  .wordmark {
+    @apply text-title-sm font-light text-strong lowercase hover:no-underline;
+  }
+
+  .page {
+    @apply mx-auto max-w-[1240px] px-[22px] pt-6 pb-32 wide:px-8;
+  }
+
+  .back {
+    @apply inline-flex items-center gap-1 text-meta text-muted lowercase hover:text-ink hover:no-underline;
+  }
+
+  .notice {
+    @apply mb-6 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-l-2 border-brand py-1 pl-3 text-control;
+  }
+
+  .notice.bad {
+    @apply border-bad text-bad;
+  }
+
+  .notice button {
+    @apply ml-auto;
+  }
+
+  /* ── Uploading ─────────────────────────────────────────────────────── */
+
+  .dropzone {
+    @apply my-6 grid justify-items-start gap-3 border border-rule px-5 py-6;
+  }
+
+  .dropzone.compact {
+    @apply flex flex-wrap items-center gap-x-4 gap-y-2 py-4;
+  }
+
+  .dropping .dropzone {
+    @apply border-brand;
+  }
+
+  .drop {
+    @apply fixed inset-0 z-50 grid place-items-center border-2 border-brand bg-bg/90 text-title font-light text-brand lowercase;
+  }
+
+  .tray {
+    @apply fixed inset-x-0 bottom-0 z-40 grid gap-2 border-t border-rule bg-bg px-[22px] pt-3 text-meta wide:inset-x-auto wide:right-6 wide:bottom-6 wide:w-[440px] wide:border wide:px-4;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .tray-line {
+    @apply flex items-center gap-2;
+  }
+
+  .tray-line button {
+    @apply px-1.5 py-0.5 text-fine;
+  }
+
+  .tray-title {
+    @apply text-control text-strong;
+  }
+
+  .tray-rate,
+  .tray-foot {
+    @apply text-fine text-muted tabular-nums;
+  }
+
+  .tray-list {
+    @apply m-0 grid max-h-[40dvh] list-none gap-1 overflow-y-auto overscroll-contain p-0 pr-1;
+  }
+
+  .tray-item {
+    @apply grid grid-cols-[36px_minmax(0,1fr)_auto] items-center gap-3 py-1;
+  }
+
+  .tray-thumb {
+    @apply block size-9 overflow-hidden bg-surface;
+  }
+
+  .tray-thumb img {
+    @apply size-full object-cover;
+  }
+
+  .tray-main {
+    @apply grid gap-1;
+  }
+
+  .tray-text {
+    @apply flex min-w-0 items-baseline gap-2;
+  }
+
+  .tray-name {
+    @apply min-w-0 flex-1 truncate text-ink;
+  }
+
+  .tray-state {
+    @apply shrink-0 text-fine text-muted tabular-nums;
+  }
+
+  .tray-item[data-state="failed"] .tray-state {
+    @apply shrink text-bad;
+  }
+
+  .tray-item[data-state="done"] {
+    @apply opacity-60;
+  }
+
+  .tray-item button {
+    @apply px-1.5 py-0.5 text-fine;
+  }
+
+  /* ── The library ───────────────────────────────────────────────────── */
+
+  .albums {
+    @apply grid grid-cols-2 gap-x-3 gap-y-6 wide:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] wide:gap-x-5;
+  }
+
+  .card {
+    @apply grid content-start gap-1 text-ink hover:no-underline;
+  }
+
+  .card .cover {
+    @apply mb-1 block aspect-square overflow-hidden bg-surface;
+  }
+
+  .card .cover img {
+    @apply size-full object-cover;
+  }
+
+  .card:hover .cover img {
+    @apply opacity-90;
+  }
+
+  .card .name {
+    @apply truncate text-control text-ink;
+  }
+
+  .card .name.untitled {
+    @apply text-muted lowercase;
+  }
+
+  /* ── An album ──────────────────────────────────────────────────────── */
+
+  .album-head {
+    @apply mt-4 grid gap-2;
+  }
+
+  .title-field {
+    @apply w-full border-0 border-b border-transparent bg-transparent px-0 py-1 text-display font-extralight text-strong hover:border-rule focus:border-brand focus:outline-none max-wide:text-title;
+  }
+
+  .text-field {
+    @apply w-full resize-none border-0 border-b border-transparent bg-transparent px-0 py-1 text-body whitespace-pre-wrap hover:border-rule focus:border-brand focus:outline-none;
+    field-sizing: content;
+    min-height: 2lh;
+  }
+
+  .share {
+    @apply mt-5 flex flex-wrap items-center gap-2;
+  }
+
+  .share .link {
+    @apply min-w-[16ch] flex-1 py-1.5 text-meta;
+  }
+
+  .toggle {
+    @apply ml-2 inline-flex cursor-pointer items-center gap-2 text-meta;
+  }
+
+  .toolbar {
+    @apply mt-6 mb-2 flex min-h-10 items-center gap-3;
+  }
+
+  .selectbar {
+    @apply sticky top-[57px] z-10 -mx-[22px] mb-2 flex items-center gap-3 border-y border-rule bg-bg px-[22px] py-1 wide:-mx-8 wide:px-8 max-wide:fixed max-wide:inset-x-0 max-wide:top-auto max-wide:bottom-0 max-wide:mx-0 max-wide:border-b-0;
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+  }
+
+  .tiles {
+    @apply grid grid-cols-3 gap-[3px] wide:grid-cols-[repeat(auto-fill,minmax(168px,1fr))] wide:gap-1;
+  }
+
+  .tile {
+    @apply relative block aspect-square cursor-pointer overflow-hidden border-0 bg-surface p-0 normal-case select-none hover:bg-surface;
+    -webkit-touch-callout: none;
+    touch-action: manipulation;
+  }
+
+  .tile img {
+    @apply pointer-events-none size-full object-cover;
+  }
+
+  .tile .marks {
+    @apply absolute bottom-1 left-1 flex gap-1;
+  }
+
+  .mark {
+    @apply bg-bg/75 px-1 text-fine leading-tight text-ink lowercase;
+  }
+
+  .tile .tick {
+    @apply absolute top-1.5 right-1.5 hidden size-5 place-items-center border border-strong/80 bg-bg/40 text-transparent;
+  }
+
+  .selecting .tile .tick {
+    @apply grid;
+  }
+
+  .tile.selected .tick {
+    @apply border-brand bg-brand text-bg;
+  }
+
+  .tile.selected::after {
+    content: "";
+    @apply pointer-events-none absolute inset-0 border-2 border-brand;
+  }
+
+  .selecting .tile:not(.selected) img {
+    @apply opacity-80;
+  }
+
+  .tile.lifted {
+    @apply z-10 outline-2 outline-offset-0 outline-brand;
+  }
+
+  .tile.dragging {
+    @apply z-20 cursor-grabbing opacity-90 outline-2 outline-brand;
+  }
+
+  /* ── The viewer ────────────────────────────────────────────────────── */
+
+  .viewer {
+    @apply m-0 h-dvh max-h-none w-screen max-w-none border-0 bg-bg p-0;
+  }
+
+  .viewer-body {
+    @apply grid h-full grid-rows-[auto_minmax(0,1fr)_auto] wide:grid-cols-[minmax(0,1fr)_380px] wide:grid-rows-[auto_minmax(0,1fr)];
+  }
+
+  .viewer-body:empty {
+    @apply block;
+  }
+
+  .viewer-bar {
+    @apply flex items-center gap-1 px-3 py-1 wide:col-span-2 wide:border-b wide:border-rule;
+    padding-top: max(4px, env(safe-area-inset-top));
+  }
+
+  /* The picture is placed in the stage rather than sized by it: a percentage height only resolves against a box
+   * whose own height is settled, which the stage's is (the viewer's grid gives it the rest of the screen) and an
+   * auto-sized grid row's is not. */
+  .stage {
+    @apply relative min-h-0 overflow-hidden;
+  }
+
+  .stage img {
+    @apply absolute inset-2 m-auto h-auto max-h-[calc(100%-16px)] w-auto max-w-[calc(100%-16px)] select-none;
+  }
+
+  .nav {
+    @apply absolute top-1/2 grid size-12 -translate-y-1/2 place-items-center border-0 bg-bg/60 p-0 text-ink hover:bg-bg/80;
+  }
+
+  .nav.prev {
+    @apply left-2;
+  }
+
+  .nav.next {
+    @apply right-2;
+  }
+
+  .viewer-panel {
+    @apply grid max-h-[45dvh] content-start gap-4 overflow-y-auto overscroll-contain border-t border-rule px-[22px] py-4 wide:max-h-none wide:border-t-0 wide:border-l wide:px-5;
+    padding-bottom: max(16px, env(safe-area-inset-bottom));
+  }
+
+  .links {
+    @apply m-0 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 text-meta;
+  }
+
+  .links dt {
+    @apply text-fine text-muted lowercase;
+  }
+
+  .links dd {
+    @apply m-0 flex min-w-0 items-center;
+  }
+
+  .links input {
+    @apply min-w-0 flex-1 border-0 border-b border-rule px-0 py-1 text-meta text-ink;
+  }
+
+  .links .icon-button {
+    @apply size-8;
+  }
+
+  /* ── Sheets: the move picker and confirmations ─────────────────────── */
+
+  .sheet {
+    @apply m-auto max-h-[85dvh] w-[min(560px,calc(100vw-32px))] border border-rule bg-bg px-5 pt-4 pb-5;
+  }
+
+  .picker {
+    @apply grid max-h-[50dvh] gap-1 overflow-y-auto overscroll-contain;
+  }
+
+  .choice {
+    @apply grid cursor-pointer grid-cols-[auto_48px_minmax(0,1fr)] items-center gap-3 px-1 py-1.5 normal-case hover:bg-hover/30;
+  }
+
+  .choice .thumb {
+    @apply grid size-12 place-items-center overflow-hidden bg-surface text-muted;
+  }
+
+  .choice .thumb img {
+    @apply size-full object-cover;
+  }
+
+  .choice:has(input:checked) {
+    @apply bg-surface;
+  }
+
+  /* ── Public pages ──────────────────────────────────────────────────── */
+
+  .prose {
+    @apply whitespace-pre-line wrap-anywhere;
+  }
+
+  .pic {
+    @apply mb-10;
+  }
+
+  /* Full width, its height from the width and height attributes, so nothing moves as pictures load. A portrait
+   * one is held narrower so it fits most of a screen rather than several. */
+  .pic img {
+    @apply mx-auto block h-auto w-full bg-surface;
+  }
+
+  .pic img.tall {
+    @apply max-w-[min(100%,620px)];
+  }
+
+  .pic figcaption {
+    @apply mt-3 px-[22px] text-body text-ink;
+  }
+
+  .single {
+    @apply mb-4;
+  }
+
+  .single img {
+    @apply mx-auto block h-auto max-h-[88dvh] w-auto max-w-full bg-surface object-contain;
+  }
+
+  .single figcaption {
+    @apply mx-auto mt-4 max-w-[1000px] px-[22px] text-body;
+  }
+}

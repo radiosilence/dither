@@ -1,0 +1,14 @@
+{% extends "public/layout.html" %}
+{% block main %}
+<main class="mx-auto max-w-[1600px] pb-24">
+  <figure class="single">
+    <a href="{{ pic.file }}">
+      <img src="{{ pic.src }}"{% if !pic.srcset.is_empty() %} srcset="{{ pic.srcset }}" sizes="100vw"{% endif %} width="{{ pic.width }}" height="{{ pic.height }}" alt="{{ pic.caption }}" fetchpriority="high" decoding="async">
+    </a>
+    {% if !pic.caption.is_empty() %}<figcaption class="prose">{{ pic.caption }}</figcaption>{% endif %}
+  </figure>
+  <p class="mx-auto max-w-[1000px] px-[22px] text-meta text-muted">
+    {{ meta }} · <a href="{{ pic.file }}">original</a>{% if let Some(link) = album.as_ref() %} · <a href="{{ link.href }}">{{ link.label }}</a>{% endif %}
+  </p>
+</main>
+{% endblock %}

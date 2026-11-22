@@ -1,0 +1,40 @@
+[package]
+name = "dither"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+askama = "0.16.1"
+async-stream = "0.3.6"
+axum = { version = "0.8.9", features = ["macros"] }
+base64 = "0.23.1"
+bytes = "1.12.2"
+fast_image_resize = { version = "6.2.0", features = ["image"] }
+flate2 = "1.1.11"
+futures-util = "0.3.34"
+http = "1.5.0"
+httpdate = "1.0.3"
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+object_store = { version = "0.14.2", features = ["aws"] }
+parking_lot = "0.13.0"
+quick_cache = "0.7.0"
+rand = "0.10.4"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls"] }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+rustix = { version = "1.1.6", features = ["fs"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+tower-http = { version = "0.7.1", features = ["trace", "compression-br", "compression-gzip", "compression-zstd", "limit"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+url = "2.5.9"
+webp = { version = "0.3.1", default-features = false }
+
+[dev-dependencies]
+http-body-util = "0.1.5"
+tempfile = "3.27.0"
+tower = { version = "0.5.3", features = ["util"] }
