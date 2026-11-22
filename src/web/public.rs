@@ -416,10 +416,13 @@ async fn file(
         Variant::Display => ("image/webp", Served::Display, 'd'),
     };
     let etag = image.etag(tag);
+    // A shared cache (a CDN in front) keeps a file ten minutes, so making its
+    // album private or deleting it stops it being served within that. A
+    // browser keeps it for good: whoever has it has seen it.
     let cache = if album.private {
         "private, no-store"
     } else {
-        "public, max-age=31536000, immutable"
+        "public, max-age=31536000, s-maxage=600, immutable"
     };
     let modified = httpdate::fmt_http_date(
         std::time::UNIX_EPOCH + std::time::Duration::from_millis(image.created_at as u64),

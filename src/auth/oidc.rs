@@ -86,17 +86,22 @@ pub async fn exchange_code(
         .json()
         .await
         .map_err(|e| AppError::Upstream(e.to_string()))?;
-    // The id_token came straight from the issuer over TLS, in answer to a
-    // request made here: no untrusted party is in the path, so there is
-    // nothing a signature check would catch. It exists for tokens that
-    // travel through the browser.
+    // The id_token came from the token endpoint in answer to a request made
+    // here, not through the browser, so its signature is not checked: whoever
+    // could forge it could as well answer as the endpoint. Over TLS that is
+    // the issuer alone. Through an in-cluster `OIDC_TOKEN_URL` it is whatever
+    // the cluster's network lets answer as the issuer's service, which the
+    // deployment trusts as it does every in-cluster call. Its claims are
+    // checked all the same.
     let id_token = token.id_token.ok_or(AppError::Upstream(
         "token response carried no id_token".into(),
     ))?;
-    identity(&id_token)
+    identity(&id_token, oidc)
 }
 
-fn identity(id_token: &str) -> AppResult<Identity> {
+/// The person an id_token names, refusing one minted by another issuer, for
+/// another client, or past its life.
+fn identity(id_token: &str, oidc: &Oidc) -> AppResult<Identity> {
     let payload = id_token
         .split('.')
         .nth(1)
@@ -112,6 +117,26 @@ fn identity(id_token: &str) -> AppResult<Identity> {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
     };
+    if claim("iss").map(|i| i.trim_end_matches('/')) != Some(oidc.issuer.trim_end_matches('/')) {
+        return Err(AppError::Upstream("id_token is from another issuer".into()));
+    }
+    let ours = |v: &serde_json::Value| v.as_str() == Some(oidc.client_id.as_str());
+    let audience = match claims.get("aud") {
+        Some(serde_json::Value::Array(all)) => all.iter().any(ours),
+        Some(one) => ours(one),
+        None => false,
+    };
+    if !audience {
+        return Err(AppError::Upstream("id_token is for another client".into()));
+    }
+    // A minute's grace for the two clocks.
+    let expires = claims
+        .get("exp")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    if expires.saturating_mul(1000) < crate::db::now() - 60_000 {
+        return Err(AppError::Upstream("id_token has expired".into()));
+    }
     let sub = claim("sub").ok_or(AppError::Upstream("id_token carried no sub".into()))?;
     let login = claim("preferred_username")
         .or_else(|| claim("name"))
@@ -174,11 +199,25 @@ mod tests {
         format!("e30.{}.sig", URL_SAFE_NO_PAD.encode(claims.to_string()))
     }
 
+    /// Claims as the issuer mints them for this client, with `extra` over them.
+    fn token(extra: serde_json::Value) -> String {
+        let mut claims = serde_json::json!({
+            "iss": "https://auth.example.com/",
+            "aud": ["dither"],
+            "exp": crate::db::now() / 1000 + 3600,
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            claims[k] = v.clone();
+        }
+        jwt(claims)
+    }
+
     #[test]
     fn the_identity_is_the_subject_with_the_username_beside_it() {
-        let id = identity(&jwt(
-            serde_json::json!({"sub": "github:1", "preferred_username": "ann"}),
-        ))
+        let id = identity(
+            &token(serde_json::json!({"sub": "github:1", "preferred_username": "ann"})),
+            &oidc(),
+        )
         .unwrap();
         assert_eq!(
             id,
@@ -187,9 +226,25 @@ mod tests {
                 login: "ann".into()
             }
         );
-        let id = identity(&jwt(serde_json::json!({"sub": "github:2"}))).unwrap();
+        let id = identity(
+            &token(serde_json::json!({"sub": "github:2", "aud": "dither"})),
+            &oidc(),
+        )
+        .unwrap();
         assert_eq!(id.login, "github:2");
-        assert!(identity(&jwt(serde_json::json!({"name": "x"}))).is_err());
-        assert!(identity("not a jwt").is_err());
+        assert!(identity(&token(serde_json::json!({"name": "x"})), &oidc()).is_err());
+        assert!(identity("not a jwt", &oidc()).is_err());
+    }
+
+    #[test]
+    fn a_token_from_elsewhere_for_someone_else_or_expired_is_refused() {
+        for extra in [
+            serde_json::json!({"sub": "a", "iss": "https://other.example.com"}),
+            serde_json::json!({"sub": "a", "aud": ["another-client"]}),
+            serde_json::json!({"sub": "a", "aud": null}),
+            serde_json::json!({"sub": "a", "exp": crate::db::now() / 1000 - 3600}),
+        ] {
+            assert!(identity(&token(extra.clone()), &oidc()).is_err(), "{extra}");
+        }
     }
 }

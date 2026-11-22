@@ -136,6 +136,15 @@ async fn callback(
 }
 
 async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // Another site's link or script cannot sign anyone out: browsers say
+    // where a navigation came from. One that says nothing, an older browser,
+    // is let through.
+    if headers
+        .get("sec-fetch-site")
+        .is_some_and(|v| v != "same-origin" && v != "none")
+    {
+        return redirect("/", &[]);
+    }
     if let Some(id) = session_id(&headers) {
         state.sessions.delete(id).await;
     }

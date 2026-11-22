@@ -227,6 +227,26 @@ fn located_jpeg() -> Vec<u8> {
     out
 }
 
+#[tokio::test]
+async fn another_site_cannot_sign_anyone_out() {
+    let app = app().await;
+    let ann = app.session("ann").await;
+    let from = |site: &str| {
+        Request::get("/auth/logout")
+            .header(header::HOST, "app.test")
+            .header(header::COOKIE, format!("{SESSION_COOKIE}={ann}"))
+            .header("sec-fetch-site", site)
+            .body(Body::empty())
+            .unwrap()
+    };
+    for elsewhere in ["cross-site", "same-site"] {
+        app.send(from(elsewhere)).await;
+        assert!(app.state.sessions.get(&ann).await.is_some(), "{elsewhere}");
+    }
+    app.send(from("same-origin")).await;
+    assert!(app.state.sessions.get(&ann).await.is_none());
+}
+
 fn image_id(reply: &Reply) -> String {
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
     reply.json()["image"]["id"].as_str().unwrap().to_string()

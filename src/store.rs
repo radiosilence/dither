@@ -159,7 +159,11 @@ impl Store {
     pub async fn put(&self, key: &Path, bytes: impl Into<Bytes>) -> object_store::Result<()> {
         let bytes: Bytes = bytes.into();
         self.inner.put(key, PutPayload::from(bytes.clone())).await?;
-        if (bytes.len() as u64) <= CACHE_ITEM_MAX {
+        // Thumbnails and display copies are what pages ask for next. An
+        // original just stored is not, and a batch of them would push those
+        // out.
+        let original = key.prefix_matches(&Path::from(Variant::Original.prefix()));
+        if !original && (bytes.len() as u64) <= CACHE_ITEM_MAX {
             self.cache.insert(key.clone(), bytes);
         } else {
             self.cache.remove(key);
