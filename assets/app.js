@@ -616,7 +616,11 @@ function put(item, start, end) {
       try {
         answer = JSON.parse(xhr.responseText);
       } catch {}
-      if (xhr.status === 200 || xhr.status === 409) resolve(answer.received ?? start);
+      // A 409 says where the server got to; anything without a place to
+      // resume from is an answer, not a resume point.
+      if (xhr.status === 200 || (xhr.status === 409 && typeof answer.received === "number")) {
+        resolve(answer.received ?? start);
+      }
       else if (xhr.status === 401) reject(new Failure("signed out: sign in again and add them again", false));
       else if (xhr.status >= 500 && xhr.status !== 507) reject(new Failure(`the server failed (${xhr.status})`, true));
       else reject(new Failure(answer.error || `refused (${xhr.status})`, false));
@@ -640,8 +644,10 @@ async function send(item) {
   let tries = 0;
   try {
     for (;;) {
+      if (item.state === "cancelled") throw new Failure("cancelled", false);
       try {
         while (item.acked < item.size) {
+          if (item.state === "cancelled") throw new Failure("cancelled", false);
           const end = Math.min(item.acked + CHUNK, item.size);
           item.acked = await put(item, item.acked, end);
           tries = 0;

@@ -518,10 +518,14 @@ pub async fn stream(
             let parts = match &q.album {
                 Some(id) => match owned(&state, &session, id).await {
                     Ok(album) => album_parts(&state, &album).await.map(|(g, s)| vec![("grid", g), ("summary", s)]),
-                    Err(_) => {
+                    // Only a missing album ends the stream. A database that
+                    // could not answer (a long write holding the lock) is
+                    // logged below and asked again on the next write.
+                    Err(AppError::NotFound) => {
                         yield Ok(patch("<div id=\"grid\" class=\"py-16 text-muted\">This album has been deleted.</div>"));
                         break;
                     }
+                    Err(e) => Err(e),
                 },
                 None => library_parts(&state, &session).await.map(|(a, u)| vec![("albums", a), ("usage", u)]),
             };

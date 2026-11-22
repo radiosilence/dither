@@ -305,14 +305,12 @@ jobs:
         working-directory: deploy/pulumi
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: deploy/pulumi/package-lock.json
-      - run: npm ci
-      - run: npm run check
-      - run: npm run build
+          install_args: node aube
+      - run: aube install --frozen-lockfile
+      - run: aube run check
+      - run: aube run build
 
   # CHANGELOG.md is generated from changelog.d/ (scripts/changelog.py). A pull
   # request adds fragments without regenerating it, so only its fragments and
@@ -632,13 +630,15 @@ jobs:
         working-directory: deploy/pulumi
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
+        with:
+          install_args: node aube
+      # Only for the registry and token npm publishes with; aube installs.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           registry-url: https://npm.pkg.github.com
-          cache: npm
-          cache-dependency-path: deploy/pulumi/package-lock.json
-      - run: npm ci
+      - run: aube install --frozen-lockfile
       # A version cannot be published twice, so a retried release skips one
       # already out and goes on to the GitHub release. Only a 404 means it is
       # not out; any other error fails rather than guessing.

@@ -18,7 +18,11 @@ describe("environment", () => {
     expect(e.AWS_ENDPOINT).toBeUndefined();
   });
 
-  it("uses a bucket when given one, and no disk floor", () => {
+  it("leaves the disk floor to the service's default unless given one", () => {
+    expect(env(base).MIN_FREE_BYTES).toBeUndefined();
+  });
+
+  it("uses a bucket when given one", () => {
     const e = env({
       ...base,
       bucket: { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "a", secretAccessKey: "b" },
@@ -26,7 +30,6 @@ describe("environment", () => {
     expect(e.STORAGE).toBe("s3://pics");
     expect(e.AWS_ENDPOINT).toBe("https://r2.example");
     expect(e.AWS_REGION).toBe("auto");
-    expect(e.MIN_FREE_BYTES).toBeUndefined();
   });
 
   it("links to the public domain when there is one", () => {

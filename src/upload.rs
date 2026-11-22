@@ -19,13 +19,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use futures_util::{Stream, StreamExt};
+use futures_util::{FutureExt as _, Stream, StreamExt};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Semaphore, watch};
 
 use crate::db::{Db, NewImage, Upload};
 use crate::media;
 use crate::store::{self, Store, Variant};
+
+/// The share of a disk uploads leave free when no floor is set.
+const DEFAULT_FREE_SHARE: f64 = 0.15;
 
 /// The largest chunk a client sends. Traefik reads a request's body within
 /// 60 seconds by default, so a chunk this size arrives in time on anything
@@ -53,6 +56,8 @@ pub enum ChunkError {
     TooLong,
     /// The disk is nearly full.
     Full,
+    /// The upload has already finished, failed or been cancelled.
+    Ended,
     Io(String),
 }
 
@@ -63,7 +68,9 @@ pub struct Uploads {
     budget: Arc<Semaphore>,
     budget_mp: u32,
     max_pixels: u64,
-    min_free: u64,
+    /// Free space kept on the disks uploads write to; `None` keeps a share of
+    /// each disk instead ([`DEFAULT_FREE_SHARE`]).
+    min_free: Option<u64>,
     locks: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     running: parking_lot::Mutex<HashMap<String, watch::Receiver<Option<Outcome>>>>,
 }
@@ -75,7 +82,7 @@ impl Uploads {
         state_dir: &Path,
         budget_mp: u32,
         max_pixels: u64,
-        min_free: u64,
+        min_free: Option<u64>,
     ) -> std::io::Result<Self> {
         let dir = state_dir.join("incoming");
         std::fs::create_dir_all(&dir)?;
@@ -104,16 +111,21 @@ impl Uploads {
     }
 
     /// Whether `needed` more bytes fit with room to spare, on the disk the
-    /// chunks land on and the one the store writes to.
+    /// chunks land on and, for a file store, the one it writes to. Each disk
+    /// keeps `min_free`, or by default a share of its size: the kubelet
+    /// starts evicting at 10% free, and the machine's other services share
+    /// the disk.
     pub fn room_for(&self, needed: u64) -> bool {
-        if self.min_free == 0 {
-            return true;
-        }
-        let free = [store::free_bytes(&self.dir), self.store.free_bytes()]
-            .into_iter()
-            .flatten()
-            .min();
-        free.is_none_or(|free| free >= self.min_free.saturating_add(needed))
+        let disks = [Some(self.dir.as_path()), self.store.dir()];
+        disks.into_iter().flatten().all(|dir| {
+            let Some((free, total)) = store::disk(dir) else {
+                return true;
+            };
+            let keep = self
+                .min_free
+                .unwrap_or((total as f64 * DEFAULT_FREE_SHARE) as u64);
+            free >= keep.saturating_add(needed)
+        })
     }
 
     /// Append a chunk that starts at `start` and is `len` bytes long. Returns
@@ -131,13 +143,17 @@ impl Uploads {
     {
         let lock = self.lock(&upload.id);
         let _held = lock.lock().await;
-        // Read again under the lock: a retry may have landed meanwhile.
+        // Read again under the lock: a retry, or a cancel, may have landed
+        // meanwhile.
         let current = self
             .db
             .upload(&upload.id)
             .await
             .map_err(|e| ChunkError::Io(e.to_string()))?
-            .ok_or(ChunkError::Conflict(0))?;
+            .ok_or(ChunkError::Ended)?;
+        if current.image.is_some() || current.error.is_some() {
+            return Err(ChunkError::Ended);
+        }
         if start != current.received {
             return Err(ChunkError::Conflict(current.received));
         }
@@ -187,10 +203,14 @@ impl Uploads {
             .await
             .map_err(|e| ChunkError::Io(e.to_string()))?;
         let received = start + written;
-        self.db
-            .set_received(&upload.id, received)
+        let recorded = self
+            .db
+            .set_received(&upload.owner, &upload.id, received)
             .await
             .map_err(|e| ChunkError::Io(e.to_string()))?;
+        if !recorded {
+            return Err(ChunkError::Ended);
+        }
         Ok(received)
     }
 
@@ -213,7 +233,18 @@ impl Uploads {
                     let this = self.clone();
                     tokio::spawn(async move {
                         let id = upload.id.clone();
-                        let outcome = this.process(upload).await;
+                        // A panic still ends the run: left in `running`, the
+                        // upload could never be finished again, and every
+                        // shutdown would wait out the drain for it.
+                        let outcome = std::panic::AssertUnwindSafe(this.process(upload))
+                            .catch_unwind()
+                            .await
+                            .unwrap_or_else(|_| {
+                                tracing::error!(upload = %id, "processing panicked");
+                                Outcome::Failed(
+                                    "the image could not be processed; try again".into(),
+                                )
+                            });
                         this.running.lock().remove(&id);
                         this.locks.lock().remove(&id);
                         let _ = tx.send(Some(outcome));
@@ -231,7 +262,7 @@ impl Uploads {
     async fn reject(&self, upload: &Upload, why: String) -> Outcome {
         crate::metrics::rejected();
         let _ = tokio::fs::remove_file(self.file(&upload.id)).await;
-        if let Err(e) = self.db.fail_upload(&upload.id, &why).await {
+        if let Err(e) = self.db.fail_upload(&upload.owner, &upload.id, &why).await {
             tracing::warn!(error = %e, "could not record a rejected upload");
         }
         tracing::info!(upload = %upload.id, reason = %why, "upload refused");
@@ -298,7 +329,11 @@ impl Uploads {
             display,
             sha256: processed.sha256.to_vec(),
         };
-        match self.db.finish_upload(&upload.id, image).await {
+        match self
+            .db
+            .finish_upload(&upload.owner, &upload.id, image)
+            .await
+        {
             Ok(true) => {
                 let _ = tokio::fs::remove_file(&path).await;
                 let took = started.elapsed();
@@ -309,7 +344,12 @@ impl Uploads {
             Ok(false) => {
                 self.store.delete_image(&id).await;
                 let _ = tokio::fs::remove_file(&path).await;
-                Outcome::Rejected("its album was deleted while it uploaded".into())
+                // Cancelled while it was processed, or its album deleted.
+                let why = match self.db.upload(&upload.id).await {
+                    Ok(Some(u)) => u.error.unwrap_or_else(|| "it ended another way".into()),
+                    _ => "its album was deleted while it uploaded".into(),
+                };
+                Outcome::Rejected(why)
             }
             Err(e) => {
                 tracing::error!(upload = %upload.id, error = %e, "recording an upload failed");
@@ -332,7 +372,9 @@ impl Uploads {
         let lock = self.lock(&upload.id);
         let _held = lock.lock().await;
         let _ = tokio::fs::remove_file(self.file(&upload.id)).await;
-        self.db.fail_upload(&upload.id, "cancelled").await
+        self.db
+            .fail_upload(&upload.owner, &upload.id, "cancelled")
+            .await
     }
 
     /// Tidy up: uploads abandoned for a day, files no upload names, and
@@ -421,7 +463,15 @@ mod tests {
         let db = Db::temp().await;
         let store = Store::memory();
         let uploads = Arc::new(
-            Uploads::new(db.clone(), store.clone(), dir.path(), 100, 50_000_000, 0).unwrap(),
+            Uploads::new(
+                db.clone(),
+                store.clone(),
+                dir.path(),
+                100,
+                50_000_000,
+                Some(0),
+            )
+            .unwrap(),
         );
         (uploads, db, store, dir)
     }

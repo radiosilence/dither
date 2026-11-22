@@ -59,9 +59,10 @@ starts with no database restores the latest. With a bucket, the store is the
 only thing to back up and the pod's disk is a cache. One replica is assumed,
 as with any SQLite service.
 
-On a disk store, uploads are refused while the disk has less than
-`MIN_FREE_BYTES` free, so a full image store never fills a disk the rest of
-the machine depends on. Set it above the kubelet's eviction threshold.
+Uploads are refused while a disk they write to (the state directory, and a
+disk store) has less than `MIN_FREE_BYTES` free, or by default 15% of its
+size, so a full image store never fills a disk the rest of the machine
+depends on: the kubelet starts evicting pods at 10% free.
 
 ### Moving from a disk to a bucket
 
@@ -166,7 +167,7 @@ startup.
 | `STORAGE` | `file://<cwd>/data/objects` | The object store. |
 | `AWS_ENDPOINT`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | — | For an `s3://` store. R2's region is `auto`. |
 | `STATE_DIR` | `data/state` | The database and uploads in progress, on a local disk. |
-| `MIN_FREE_BYTES` | `0` | Uploads are refused below this much free disk under a file store. |
+| `MIN_FREE_BYTES` | 15% of each disk | Uploads are refused below this much free space on a disk they write to. |
 | `MAX_UPLOAD_BYTES`, `MAX_PIXELS` | 64 000 000, 100 000 000 | Per image. |
 | `PROCESS_MEGAPIXELS` | `100` | Megapixels decoded at once, across all uploads. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |

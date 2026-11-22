@@ -39,7 +39,7 @@ async fn app_with(edit: impl FnOnce(&mut Config)) -> App {
             &config.state_dir,
             100,
             config.max_pixels,
-            0,
+            Some(0),
         )
         .unwrap(),
     );

@@ -229,9 +229,15 @@ fn jpeg(input: &[u8], orientation: u8) -> Result<Vec<u8>, Malformed> {
             // the colour channels are encoded, and decoders need it.
             0xE2 => payload.starts_with(b"ICC_PROFILE\0"),
             0xEE => payload.starts_with(b"Adobe"),
-            // EXIF, XMP, IPTC, maker notes, the multi-picture index, comments.
-            0xE1 | 0xE3..=0xED | 0xEF | 0xFE => false,
-            _ => true,
+            // What decoding needs: frame headers (every SOFn; 0xC4, 0xC8
+            // and 0xCC are not frames), Huffman and arithmetic tables,
+            // quantisation tables, scans, restart interval, line count and
+            // the hierarchical markers. Nothing else, so EXIF, XMP, IPTC,
+            // comments, other APPn and reserved markers all go, as does
+            // whatever a future scheme puts in one.
+            0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => true,
+            0xC4 | 0xCC | 0xDB | 0xDA | 0xDD | 0xDC | 0xDE | 0xDF => true,
+            _ => false,
         };
         if keep {
             body.extend_from_slice(&[0xFF, marker]);
@@ -642,6 +648,19 @@ mod tests {
         );
         assert_eq!(decode(&cleaned).to_rgb8(), decode(&plain_jpeg()).to_rgb8());
         assert!(cleaned.ends_with(&[0xFF, 0xD9]));
+    }
+
+    #[test]
+    fn a_jpeg_segment_nobody_recognises_is_dropped() {
+        let plain = plain_jpeg();
+        let mut input = vec![0xFF, 0xD8];
+        // JPG7 (reserved for extensions) and RES 0x30, both before the frame.
+        input.extend(segment(0xF7, b"secret in an extension marker"));
+        input.extend(segment(0x30, b"secret in a reserved marker"));
+        input.extend_from_slice(&plain[2..]);
+        let cleaned = clean(Kind::Jpeg, &input, 1).unwrap().bytes;
+        assert!(!contains(&cleaned, b"secret"));
+        assert_eq!(decode(&cleaned).to_rgb8(), decode(&plain).to_rgb8());
     }
 
     #[test]
