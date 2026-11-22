@@ -203,8 +203,8 @@ pub trait Helpers {
 
     /// A count from each plural form of the page's language, for the copy
     /// the browser's script reads.
-    fn plural_samples(&self) -> &'static [u64] {
-        crate::i18n::plural_samples()
+    fn plural_samples(&self) -> impl Iterator<Item = u64> {
+        crate::i18n::plural_samples().iter().copied()
     }
 }
 

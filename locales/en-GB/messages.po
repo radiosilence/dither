@@ -18,15 +18,11 @@ msgid_plural "%{count} images"
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/layout.html:38
-msgid "%{count} selected"
-msgstr ""
-
-#: templates/app/layout.html:72
+#: templates/app/layout.html:75
 msgid "%{done} of %{total} uploaded"
 msgstr ""
 
-#: templates/app/layout.html:73
+#: templates/app/layout.html:76
 msgid "%{done} uploaded, %{failed} failed"
 msgstr ""
 
@@ -34,19 +30,19 @@ msgstr ""
 msgid "%{n} of %{total}"
 msgstr ""
 
-#: templates/app/layout.html:74
+#: templates/app/layout.html:77
 msgid "%{rate}/s · %{left} left"
 msgstr ""
 
-#: templates/app/layout.html:75
+#: templates/app/layout.html:78
 msgid "%{sent} of %{total}"
 msgstr ""
 
-#: templates/app/layout.html:55
+#: templates/app/layout.html:59
 msgid "%{size} is over the %{max} limit"
 msgstr ""
 
-#: templates/app/layout.html:64
+#: templates/app/layout.html:68
 msgid "%{why}; retrying"
 msgstr ""
 
@@ -58,45 +54,39 @@ msgstr ""
 msgid "Add a description"
 msgstr ""
 
-#: templates/app/layout.html:36
+#: templates/app/layout.html:43
 msgid "Couldn't copy: the browser refused. Select the link and copy it by hand."
 msgstr ""
 
-#: templates/app/layout.html:43
+#: templates/app/layout.html:47
 msgid "Couldn't delete it."
 msgstr ""
 
-#: templates/app/layout.html:45
+#: templates/app/layout.html:49
 msgid "Couldn't delete the album."
 msgstr ""
 
-#: templates/app/layout.html:47
+#: templates/app/layout.html:51
 msgid "Couldn't list your albums."
 msgstr ""
 
-#: templates/app/layout.html:46
+#: templates/app/layout.html:50
 msgid "Couldn't make an album."
 msgstr ""
 
-#: templates/app/layout.html:48
+#: templates/app/layout.html:52
 msgid "Couldn't move them."
 msgstr ""
 
-#: templates/app/layout.html:51
+#: templates/app/layout.html:55
 msgid "Couldn't save the new order; reload to see the album as it is."
 msgstr ""
 
-#: templates/app/layout.html:39
+#: templates/app/layout.html:45
 msgid "Couldn't set the cover."
 msgstr ""
 
-#: templates/app/layout.html:41
-msgid ""
-"Delete these %{count} images? Links to them stop working. This can't be "
-"undone."
-msgstr ""
-
-#: templates/app/layout.html:44
+#: templates/app/layout.html:48
 msgid ""
 "Delete this album and everything in it? Its link stops working. This can't "
 "be undone."
@@ -106,7 +96,7 @@ msgstr ""
 msgid "Delete this image? Links to it stop working. This can't be undone."
 msgstr ""
 
-#: templates/app/layout.html:53
+#: templates/app/layout.html:57
 msgid "HEIC isn't supported yet: export it as JPEG"
 msgstr ""
 
@@ -116,7 +106,7 @@ msgid ""
 "took it are removed before anything is stored."
 msgstr ""
 
-#: templates/app/layout.html:49
+#: templates/app/layout.html:53
 msgid "Moved."
 msgstr ""
 
@@ -248,11 +238,11 @@ msgstr ""
 msgid "next image"
 msgstr ""
 
-#: templates/app/album.html:28 templates/app/layout.html:37
+#: templates/app/album.html:28 templates/app/layout.html:44
 msgid "none selected"
 msgstr ""
 
-#: templates/app/layout.html:54
+#: templates/app/layout.html:58
 msgid "not a JPEG, PNG, GIF or WebP"
 msgstr ""
 
@@ -260,11 +250,11 @@ msgstr ""
 msgid "nothing here"
 msgstr ""
 
-#: templates/app/layout.html:50
+#: templates/app/layout.html:54
 msgid "open that album"
 msgstr ""
 
-#: templates/app/layout.html:76
+#: templates/app/layout.html:79
 msgid "open the album"
 msgstr ""
 
@@ -280,7 +270,7 @@ msgstr ""
 msgid "original"
 msgstr ""
 
-#: templates/app/layout.html:52
+#: templates/app/layout.html:56
 msgid "pasted image"
 msgstr ""
 
@@ -292,15 +282,11 @@ msgstr ""
 msgid "private"
 msgstr ""
 
-#: templates/app/layout.html:71
-msgid "processing %{count}…"
-msgstr ""
-
-#: templates/app/layout.html:63
+#: templates/app/layout.html:67
 msgid "processing failed (%{status})"
 msgstr ""
 
-#: templates/app/layout.html:57
+#: templates/app/layout.html:61
 msgid "refused (%{status})"
 msgstr ""
 
@@ -308,15 +294,15 @@ msgstr ""
 msgid "sign out"
 msgstr ""
 
-#: templates/app/layout.html:59
+#: templates/app/layout.html:63
 msgid "signed out: sign in again and add them again"
 msgstr ""
 
-#: templates/app/layout.html:61
+#: templates/app/layout.html:65
 msgid "the connection dropped"
 msgstr ""
 
-#: templates/app/layout.html:56
+#: templates/app/layout.html:60
 msgid "the file is empty"
 msgstr ""
 
@@ -336,11 +322,11 @@ msgstr ""
 msgid "the new album's title"
 msgstr ""
 
-#: templates/app/layout.html:60
+#: templates/app/layout.html:64
 msgid "the server failed (%{status})"
 msgstr ""
 
-#: templates/app/layout.html:58
+#: templates/app/layout.html:62
 msgid "the upload failed"
 msgstr ""
 
@@ -356,12 +342,12 @@ msgstr ""
 msgid "uploads"
 msgstr ""
 
-#: templates/app/layout.html:35
+#: templates/app/layout.html:42
 msgctxt "A copy button, after copying"
 msgid "copied"
 msgstr ""
 
-#: templates/app/album.html:32 templates/app/layout.html:27 templates/app/layout.html:42 templates/app/viewer.html:31
+#: templates/app/album.html:32 templates/app/layout.html:27 templates/app/layout.html:46 templates/app/viewer.html:31
 msgctxt "Button"
 msgid "delete"
 msgstr ""
@@ -376,17 +362,17 @@ msgctxt "Button: dismiss a dialog"
 msgid "cancel"
 msgstr ""
 
-#: templates/app/layout.html:77
+#: templates/app/layout.html:80
 msgctxt "Button: fold the upload list"
 msgid "hide"
 msgstr ""
 
-#: templates/app/layout.html:34
+#: templates/app/layout.html:41
 msgctxt "Button: hide a notice"
 msgid "dismiss"
 msgstr ""
 
-#: templates/app/layout.html:66
+#: templates/app/layout.html:70
 msgctxt "Button: hide the upload tray"
 msgid "close"
 msgstr ""
@@ -406,7 +392,7 @@ msgctxt "Button: open the album's public page"
 msgid "open"
 msgstr ""
 
-#: templates/app/layout.html:67
+#: templates/app/layout.html:71
 msgctxt "Button: send a failed upload again"
 msgid "retry"
 msgstr ""
@@ -421,12 +407,12 @@ msgctxt "Button: stop choosing images"
 msgid "done"
 msgstr ""
 
-#: templates/app/layout.html:65
+#: templates/app/layout.html:69
 msgctxt "Button: stop uploading"
 msgid "cancel"
 msgstr ""
 
-#: templates/app/layout.html:78
+#: templates/app/layout.html:81
 msgctxt "Button: unfold the upload list"
 msgid "details"
 msgstr ""
@@ -476,23 +462,45 @@ msgctxt "Share link: the image's page"
 msgid "page"
 msgstr ""
 
-#: templates/app/layout.html:62
+#: templates/app/layout.html:66
 msgctxt "Upload state"
 msgid "cancelled"
 msgstr ""
 
-#: templates/app/layout.html:70
+#: templates/app/layout.html:74
 msgctxt "Upload state"
 msgid "done"
 msgstr ""
 
-#: templates/app/layout.html:69
+#: templates/app/layout.html:73
 msgctxt "Upload state"
 msgid "processing"
 msgstr ""
 
-#: templates/app/layout.html:68
+#: templates/app/layout.html:72
 msgctxt "Upload state"
 msgid "waiting"
 msgstr ""
+
+#: templates/app/layout.html:37
+#, fuzzy
+msgid "%{n} selected"
+msgid_plural "%{n} selected"
+msgstr[0] ""
+msgstr[1] ""
+
+#: templates/app/layout.html:38
+#, fuzzy
+msgid "Delete this image? Links to it stop working. This can't be undone."
+msgid_plural ""
+"Delete these %{n} images? Links to them stop working. This can't be undone."
+msgstr[0] ""
+msgstr[1] ""
+
+#: templates/app/layout.html:39
+#, fuzzy
+msgid "processing %{n}…"
+msgid_plural "processing %{n}…"
+msgstr[0] ""
+msgstr[1] ""
 
