@@ -33,6 +33,22 @@ pub fn translator() -> Translator<'static> {
     Translator::new(&CATALOGS, LOCALE)
 }
 
+/// A count from each plural form the locale has, in the catalogue's order:
+/// the copy the browser's script reads gives a counted line once at each,
+/// and the browser files each under the category its count falls in.
+pub fn plural_samples() -> &'static [u64] {
+    static SAMPLES: LazyLock<Vec<u64>> = LazyLock::new(|| {
+        let forms = askama_gettext::plural::Forms::new(LOCALE)
+            .expect("CLDR has plural rules for the source locale");
+        let mut first = vec![None; forms.count()];
+        for n in 0..1000 {
+            first[forms.index(n)].get_or_insert(n);
+        }
+        first.into_iter().flatten().collect()
+    });
+    &SAMPLES
+}
+
 /// Gives template structs the gettext vocabulary (`__`, `__p`, `__n`, …),
 /// which askama resolves as methods on the template. A macro rather than a
 /// blanket impl, which the orphan rule forbids for the crate's trait.
@@ -119,6 +135,11 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn english_has_a_singular_and_a_plural() {
+        assert_eq!(plural_samples(), [1, 0]);
     }
 
     #[test]

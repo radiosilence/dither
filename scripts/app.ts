@@ -30,20 +30,39 @@ const TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
 // ── Copy ─────────────────────────────────────────────────────────────────
 
+const plural = new Intl.PluralRules(lang);
+const number = new Intl.NumberFormat(lang, { maximumFractionDigits: 1 });
+
+// A line with a count comes once for each plural form the language has,
+// rendered at a count in that form (`data-n`), so it is filed under the
+// category its count falls in here.
 const copy = new Map<string, string>();
+const counted = new Map<string, Map<Intl.LDMLPluralRule, string>>();
 for (const el of $<HTMLTemplateElement>("#copy")?.content.querySelectorAll<HTMLElement>("[data-k]") ?? []) {
-  copy.set(el.dataset["k"] ?? "", el.textContent ?? "");
+  const key = el.dataset["k"] ?? "";
+  const n = el.dataset["n"];
+  if (n === undefined) {
+    copy.set(key, el.textContent ?? "");
+  } else {
+    const forms = counted.get(key) ?? new Map<Intl.LDMLPluralRule, string>();
+    forms.set(plural.select(Number(n)), el.textContent ?? "");
+    counted.set(key, forms);
+  }
 }
+
+const fill = (text: string, values: Record<string, string | number>) =>
+  text.replace(/%\{(\w+)\}/g, (whole, name: string) => (name in values ? String(values[name]) : whole));
 
 /** A line of copy with its `%{name}` placeholders filled. A missing key reads as itself, which is obvious on screen. */
 function say(key: string, values: Record<string, string | number> = {}): string {
-  return (copy.get(key) ?? key).replace(/%\{(\w+)\}/g, (whole, name: string) =>
-    name in values ? String(values[name]) : whole,
-  );
+  return fill(copy.get(key) ?? key, values);
 }
 
-const plural = new Intl.PluralRules(lang);
-const number = new Intl.NumberFormat(lang, { maximumFractionDigits: 1 });
+/** A counted line in the form `n` takes, with `%{n}` filled. */
+function sayN(key: string, n: number, values: Record<string, string | number> = {}): string {
+  const forms = counted.get(key);
+  return fill(forms?.get(plural.select(n)) ?? forms?.get("other") ?? key, { ...values, n: number.format(n) });
+}
 
 function human(bytes: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -226,7 +245,7 @@ function paintSelection(): void {
   }
   const n = selected.size;
   const count = $("[data-selected-count]");
-  const text = n === 0 ? say("none selected") : say("selected", { count: n });
+  const text = n === 0 ? say("none selected") : sayN("n selected", n);
   if (count && count.textContent !== text) count.textContent = text;
   for (const b of $$<HTMLButtonElement>("[data-move], [data-delete]")) if (b.disabled !== (n === 0)) b.disabled = n === 0;
   const cover = $<HTMLButtonElement>("[data-make-cover]");
@@ -289,9 +308,7 @@ document.addEventListener("click", async (ev) => {
     if (res.ok) selecting(false);
     else notice(say("cover failed"), true);
   } else if (t.closest("[data-delete]") && selected.size) {
-    const n = selected.size;
-    const question = plural.select(n) === "one" ? say("delete one?") : say("delete many?", { count: n });
-    if (await ask(question, say("delete"))) {
+    if (await ask(sayN("delete n?", selected.size), say("delete"))) {
       const res = await api("POST", "/images/delete", { ids: [...selected] });
       if (res.ok) selecting(false);
       else notice(say("delete failed"), true);
@@ -300,7 +317,7 @@ document.addEventListener("click", async (ev) => {
     void openMover([t.closest<HTMLElement>("[data-move-one]")?.dataset["moveOne"] ?? ""]);
   } else if (t.closest("[data-delete-one]")) {
     const id = t.closest<HTMLElement>("[data-delete-one]")?.dataset["deleteOne"] ?? "";
-    if (await ask(say("delete one?"), say("delete"))) {
+    if (await ask(sayN("delete n?", 1), say("delete"))) {
       const viewer = $<HTMLDialogElement>("#viewer");
       const next = viewer?.querySelector<HTMLElement>(".nav.next") ?? viewer?.querySelector<HTMLElement>(".nav.prev");
       const res = await api("POST", "/images/delete", { ids: [id] });
@@ -932,7 +949,7 @@ const tray: Tray = (() => {
     if (live.length) {
       title.textContent =
         processing && sent >= total
-          ? say("processing count", { count: processing })
+          ? sayN("processing n", processing)
           : say("uploaded of", { done, total: items.length - failed });
       rate.textContent =
         bps > 0 && sent < total ? say("rate", { rate: human(bps), left: span((total - sent) / bps) }) : "";

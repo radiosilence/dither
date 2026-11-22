@@ -29,16 +29,20 @@
   </form>
 </dialog>
 <input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp" hidden>
-{# What the browser's script says, keyed by name. Placeholders it fills itself are left as written. #}
+{# What the browser's script says, keyed by name. Placeholders it fills itself are left as written. A line with a
+   count comes once per plural form of the language, each rendered at a count in that form, which the script reads
+   to file it; `%{n}` is the count it fills in. #}
 <template id="copy">
+  {% for n in plural_samples() %}
+  <span data-k="n selected" data-n="{{ n }}">{{ __n("%{n} selected", "%{n} selected", *n) }}</span>
+  <span data-k="delete n?" data-n="{{ n }}">{{ __n("Delete this image? Links to it stop working. This can't be undone.", "Delete these %{n} images? Links to them stop working. This can't be undone.", *n) }}</span>
+  <span data-k="processing n" data-n="{{ n }}">{{ __n("processing %{n}…", "processing %{n}…", *n) }}</span>
+  {% endfor %}
   <span data-k="dismiss">{{ __p("Button: hide a notice", "dismiss") }}</span>
   <span data-k="copied">{{ __p("A copy button, after copying", "copied") }}</span>
   <span data-k="copy refused">{{ __("Couldn't copy: the browser refused. Select the link and copy it by hand.") }}</span>
   <span data-k="none selected">{{ __("none selected") }}</span>
-  <span data-k="selected">{{ __("%{count} selected") }}</span>
   <span data-k="cover failed">{{ __("Couldn't set the cover.") }}</span>
-  <span data-k="delete one?">{{ __("Delete this image? Links to it stop working. This can't be undone.") }}</span>
-  <span data-k="delete many?">{{ __("Delete these %{count} images? Links to them stop working. This can't be undone.") }}</span>
   <span data-k="delete">{{ __p("Button", "delete") }}</span>
   <span data-k="delete failed">{{ __("Couldn't delete it.") }}</span>
   <span data-k="delete album?">{{ __("Delete this album and everything in it? Its link stops working. This can't be undone.") }}</span>
@@ -68,7 +72,6 @@
   <span data-k="waiting">{{ __p("Upload state", "waiting") }}</span>
   <span data-k="processing">{{ __p("Upload state", "processing") }}</span>
   <span data-k="done">{{ __p("Upload state", "done") }}</span>
-  <span data-k="processing count">{{ __("processing %{count}…") }}</span>
   <span data-k="uploaded of">{{ __("%{done} of %{total} uploaded") }}</span>
   <span data-k="uploaded failed">{{ __("%{done} uploaded, %{failed} failed") }}</span>
   <span data-k="rate">{{ __("%{rate}/s · %{left} left") }}</span>
