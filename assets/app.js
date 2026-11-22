@@ -524,16 +524,31 @@ addEventListener("beforeunload", (ev) => {
   }
 });
 
+/** A status that sending the same request again may get past. */
+const retryable = (status) => status === 408 || status === 429 || (status >= 500 && status !== 507);
+
+/** The album being made for a batch: a second drop while it is on its way
+ * joins it rather than making another. */
+let making = null;
+
 /** Where this batch goes: the album on show, the one a batch still going
  * went to, or a new one made for it. */
 async function target(running) {
   if (albumId()) return albumId();
-  if (queue.album && running) return queue.album;
-  const res = await api("POST", "/api/albums", {});
-  if (!res.ok) throw new Failure("couldn't make an album for these", false);
-  queue.album = (await json(res)).id;
-  queue.albumIsNew = true;
-  return queue.album;
+  if (running && making) return making;
+  if (running && queue.album) return queue.album;
+  making = (async () => {
+    const res = await api("POST", "/api/albums", {});
+    if (!res.ok) throw new Failure("couldn't make an album for these", false);
+    queue.album = (await json(res)).id;
+    queue.albumIsNew = true;
+    return queue.album;
+  })();
+  try {
+    return await making;
+  } finally {
+    making = null;
+  }
 }
 
 async function add(files) {
@@ -622,7 +637,7 @@ function put(item, start, end) {
         resolve(answer.received ?? start);
       }
       else if (xhr.status === 401) reject(new Failure("signed out: sign in again and add them again", false));
-      else if (xhr.status >= 500 && xhr.status !== 507) reject(new Failure(`the server failed (${xhr.status})`, true));
+      else if (retryable(xhr.status)) reject(new Failure(answer.error || `the server failed (${xhr.status})`, true));
       else reject(new Failure(answer.error || `refused (${xhr.status})`, false));
     };
     xhr.onerror = () => {
@@ -666,7 +681,7 @@ async function send(item) {
           item.state = "sending";
           continue;
         }
-        throw new Failure(answer.error || `processing failed (${res.status})`, res.status >= 500 && res.status !== 507);
+        throw new Failure(answer.error || `processing failed (${res.status})`, retryable(res.status));
       } catch (e) {
         if (!(e instanceof Failure) || !e.retry || tries >= RETRIES) throw e;
         tries++;

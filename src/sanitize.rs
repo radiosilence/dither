@@ -387,9 +387,9 @@ fn gif(input: &[u8]) -> Result<Clean, Malformed> {
                 let label = *input.get(i + 1).ok_or(Malformed("the GIF ends early"))?;
                 let end = gif_blocks_end(input, i + 2)?;
                 let keep = match label {
-                    // Frame timing and transparency, and plain text, which is
-                    // drawn as part of the picture.
-                    0xF9 | 0x01 => true,
+                    // Frame timing and transparency. Plain text (0x01) goes:
+                    // no browser draws it, so it is text nobody sees.
+                    0xF9 => true,
                     // Looping is an application extension; so are XMP and
                     // whatever an editor stored, which are not kept.
                     0xFF => matches!(
@@ -762,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gif_keeps_its_frames_and_loop_and_drops_comments_and_xmp() {
+    fn a_gif_keeps_its_frames_and_loop_and_drops_comments_text_and_xmp() {
         let plain = two_frame_gif();
         // Extensions go straight after the screen descriptor and palette.
         let packed = plain[10];
@@ -774,6 +774,9 @@ mod tests {
         let at = 13 + palette;
         let mut input = plain[..at].to_vec();
         input.extend_from_slice(b"\x21\xFE\x0Da secret note\0");
+        // Plain text: a 12-byte grid header, then the text, which no
+        // browser draws.
+        input.extend_from_slice(b"\x21\x01\x0C\0\0\0\0\x08\0\x08\0\x08\x08\x01\0\x06secret\0");
         input.extend_from_slice(b"\x21\xFF\x0BXMP DataXMP\x06secret\0");
         input.extend_from_slice(&plain[at..]);
         let cleaned = clean(Kind::Gif, &input, 1).unwrap();

@@ -73,7 +73,7 @@ async fn serve() -> anyhow::Result<()> {
         db.clone(),
         store.clone(),
         &config.state_dir,
-        config.process_megapixels,
+        config.process_memory,
         config.max_pixels,
         config.min_free_bytes,
     )?);

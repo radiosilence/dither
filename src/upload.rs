@@ -4,10 +4,16 @@
 //! A file arrives in chunks of at most [`CHUNK`], each a request of its own,
 //! so a large photo on a phone's connection never holds one request open past
 //! a proxy's timeout, and a dropped connection resumes from what arrived. Once
-//! every byte is in, `finish` cleans and resizes it under a budget of
-//! megapixels decoded at once, which is what bounds the memory a batch of
-//! three hundred photos can take, writes the copies to the store, and only
-//! then adds the image's row: a row never names a file that is not there.
+//! every byte is in, `finish` cleans and resizes it under a budget of memory
+//! for processing at once, which is what bounds what a batch of three hundred
+//! photos can take, writes the copies to the store, and only then adds the
+//! image's row: a row never names a file that is not there.
+//!
+//! The copies are recorded as strays before they are written (see the
+//! `strays` table), and recording the image claims them. Copies a failure or
+//! a crash strands are ones the database knows it made, which the sweep
+//! removes; it never deletes a copy merely because no row names it, so a
+//! database restored from an older copy leaves newer images alone.
 //!
 //! Processing runs in a task of its own that the request only waits on, so a
 //! client that disconnects mid-way does not stop it, and asking again joins
@@ -21,7 +27,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures_util::{FutureExt as _, Stream, StreamExt};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore, watch};
 
 use crate::db::{Db, NewImage, Upload};
 use crate::media;
@@ -29,6 +35,8 @@ use crate::store::{self, Store, Variant};
 
 /// The share of a disk uploads leave free when no floor is set.
 const DEFAULT_FREE_SHARE: f64 = 0.15;
+/// The processing budget's unit.
+const MIB: u64 = 1 << 20;
 
 /// The largest chunk a client sends. Traefik reads a request's body within
 /// 60 seconds by default, so a chunk this size arrives in time on anything
@@ -58,21 +66,47 @@ pub enum ChunkError {
     Full,
     /// The upload has already finished, failed or been cancelled.
     Ended,
+    /// The body stopped short or broke off; sending the chunk again works.
+    Broken(String),
+    /// Saving it here failed.
     Io(String),
 }
+
+type Locks = parking_lot::Mutex<HashMap<String, Arc<Mutex<()>>>>;
 
 pub struct Uploads {
     db: Db,
     store: Store,
     dir: PathBuf,
+    /// Memory for processing, in MiB.
     budget: Arc<Semaphore>,
-    budget_mp: u32,
+    budget_bytes: u64,
     max_pixels: u64,
     /// Free space kept on the disks uploads write to; `None` keeps a share of
     /// each disk instead ([`DEFAULT_FREE_SHARE`]).
     min_free: Option<u64>,
-    locks: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    locks: Locks,
     running: parking_lot::Mutex<HashMap<String, watch::Receiver<Option<Outcome>>>>,
+}
+
+/// An upload's lock, held until this drops. A lock lives in the map only
+/// while someone holds or waits for it.
+struct Held<'a> {
+    guard: Option<OwnedMutexGuard<()>>,
+    lock: Arc<Mutex<()>>,
+    id: &'a str,
+    locks: &'a Locks,
+}
+
+impl Drop for Held<'_> {
+    fn drop(&mut self) {
+        self.guard.take();
+        let mut locks = self.locks.lock();
+        // The map's reference and this one: nobody else holds or waits.
+        if Arc::strong_count(&self.lock) == 2 {
+            locks.remove(self.id);
+        }
+    }
 }
 
 impl Uploads {
@@ -80,18 +114,20 @@ impl Uploads {
         db: Db,
         store: Store,
         state_dir: &Path,
-        budget_mp: u32,
+        process_memory: u64,
         max_pixels: u64,
         min_free: Option<u64>,
     ) -> std::io::Result<Self> {
         let dir = state_dir.join("incoming");
         std::fs::create_dir_all(&dir)?;
+        // Whole MiB, and no more than one acquire can ask for.
+        let mib = (process_memory / MIB).clamp(1, u64::from(u32::MAX));
         Ok(Self {
             db,
             store,
             dir,
-            budget: Arc::new(Semaphore::new(budget_mp as usize)),
-            budget_mp,
+            budget: Arc::new(Semaphore::new(mib as usize)),
+            budget_bytes: mib * MIB,
             max_pixels,
             min_free,
             locks: Default::default(),
@@ -106,8 +142,14 @@ impl Uploads {
         self.dir.join(id)
     }
 
-    fn lock(&self, id: &str) -> Arc<tokio::sync::Mutex<()>> {
-        self.locks.lock().entry(id.to_string()).or_default().clone()
+    async fn lock<'a>(&'a self, id: &'a str) -> Held<'a> {
+        let lock = self.locks.lock().entry(id.to_string()).or_default().clone();
+        Held {
+            guard: Some(lock.clone().lock_owned().await),
+            lock,
+            id,
+            locks: &self.locks,
+        }
     }
 
     /// Whether `needed` more bytes fit with room to spare, on the disk the
@@ -141,8 +183,7 @@ impl Uploads {
         S: Stream<Item = Result<Bytes, E>> + Unpin,
         E: std::fmt::Display,
     {
-        let lock = self.lock(&upload.id);
-        let _held = lock.lock().await;
+        let _held = self.lock(&upload.id).await;
         // Read again under the lock: a retry, or a cancel, may have landed
         // meanwhile.
         let current = self
@@ -185,7 +226,7 @@ impl Uploads {
         let mut written = 0u64;
         let mut body = body;
         while let Some(frame) = body.next().await {
-            let frame = frame.map_err(|e| ChunkError::Io(e.to_string()))?;
+            let frame = frame.map_err(|e| ChunkError::Broken(e.to_string()))?;
             written += frame.len() as u64;
             if written > len {
                 return Err(ChunkError::TooLong);
@@ -195,7 +236,7 @@ impl Uploads {
                 .map_err(|e| ChunkError::Io(e.to_string()))?;
         }
         if written != len {
-            return Err(ChunkError::Io(format!(
+            return Err(ChunkError::Broken(format!(
                 "the chunk ended after {written} of {len} bytes"
             )));
         }
@@ -246,7 +287,6 @@ impl Uploads {
                                 )
                             });
                         this.running.lock().remove(&id);
-                        this.locks.lock().remove(&id);
                         let _ = tx.send(Some(outcome));
                     });
                     rx
@@ -278,14 +318,20 @@ impl Uploads {
                 return Outcome::Failed("the upload is incomplete; send it again".into());
             }
         };
-        let pixels = match media::inspect(&bytes) {
-            Ok((_, pixels)) => pixels,
+        let cost = match media::cost(&bytes, self.max_pixels) {
+            Ok(cost) => cost,
             Err(reject) => return self.reject(&upload, reject.to_string()).await,
         };
-        let permits = u32::try_from(pixels.div_ceil(1_000_000))
-            .unwrap_or(u32::MAX)
-            .clamp(1, self.budget_mp);
+        if cost > self.budget_bytes {
+            let why = format!(
+                "the image needs about {} of memory to process, and this server allows {}",
+                crate::web::human(cost),
+                crate::web::human(self.budget_bytes)
+            );
+            return self.reject(&upload, why).await;
+        }
         let processed = {
+            let permits = u32::try_from(cost.div_ceil(MIB)).unwrap_or(u32::MAX).max(1);
             let Ok(_permit) = self.budget.acquire_many(permits).await else {
                 return Outcome::Failed("shutting down".into());
             };
@@ -303,6 +349,10 @@ impl Uploads {
         };
 
         let id = crate::id::new();
+        if let Err(e) = self.db.add_stray(&id).await {
+            tracing::error!(upload = %upload.id, error = %e, "recording an upload's copies failed");
+            return Outcome::Failed("the image could not be saved; try again".into());
+        }
         let size = processed.original.len() as u64;
         let mut puts = vec![
             (Variant::Original, Bytes::from(processed.original)),
@@ -315,7 +365,7 @@ impl Uploads {
         for (variant, bytes) in puts {
             if let Err(e) = self.store.put(&store::key(variant, &id), bytes).await {
                 tracing::error!(upload = %upload.id, error = %e, "storing an upload failed");
-                self.store.delete_image(&id).await;
+                store::discard(&self.store, &self.db, vec![id]).await;
                 return Outcome::Failed("the image could not be stored; try again".into());
             }
         }
@@ -342,18 +392,27 @@ impl Uploads {
                 Outcome::Done(id)
             }
             Ok(false) => {
-                self.store.delete_image(&id).await;
-                let _ = tokio::fs::remove_file(&path).await;
-                // Cancelled while it was processed, or its album deleted.
+                store::discard(&self.store, &self.db, vec![id]).await;
                 let why = match self.db.upload(&upload.id).await {
+                    // Still open: the sweep took the copies' record first,
+                    // which only an hour between storing and recording
+                    // allows. Finishing again works.
+                    Ok(Some(u)) if u.image.is_none() && u.error.is_none() => {
+                        return Outcome::Failed("the image could not be saved; try again".into());
+                    }
                     Ok(Some(u)) => u.error.unwrap_or_else(|| "it ended another way".into()),
-                    _ => "its album was deleted while it uploaded".into(),
+                    Ok(None) => "its album was deleted while it uploaded".into(),
+                    Err(_) => {
+                        return Outcome::Failed("the image could not be saved; try again".into());
+                    }
                 };
+                // Cancelled while it was processed, or its album deleted.
+                let _ = tokio::fs::remove_file(&path).await;
                 Outcome::Rejected(why)
             }
             Err(e) => {
                 tracing::error!(upload = %upload.id, error = %e, "recording an upload failed");
-                self.store.delete_image(&id).await;
+                store::discard(&self.store, &self.db, vec![id]).await;
                 Outcome::Failed("the image could not be saved; try again".into())
             }
         }
@@ -369,8 +428,7 @@ impl Uploads {
 
     /// Give up on an upload that has not finished.
     pub async fn cancel(&self, upload: &Upload) -> crate::db::Result<()> {
-        let lock = self.lock(&upload.id);
-        let _held = lock.lock().await;
+        let _held = self.lock(&upload.id).await;
         let _ = tokio::fs::remove_file(self.file(&upload.id)).await;
         self.db
             .fail_upload(&upload.owner, &upload.id, "cancelled")
@@ -378,14 +436,15 @@ impl Uploads {
     }
 
     /// Tidy up: uploads abandoned for a day, files no upload names, and
-    /// stored copies of images the database does not know (a crash between
-    /// storing and recording, or a delete whose files outlived it).
+    /// stored copies recorded as strays an hour ago that no image claimed (a
+    /// crash between storing and recording, or a delete whose copies
+    /// outlived it).
     pub async fn sweep(&self) {
         self.sweep_older_than(Duration::from_secs(3600)).await;
     }
 
-    /// [`sweep`](Self::sweep), taking stored copies older than `age`: younger
-    /// ones may belong to an upload about to record them.
+    /// [`sweep`](Self::sweep), taking strays older than `age`: younger ones
+    /// may belong to an upload about to record them.
     async fn sweep_older_than(&self, age: Duration) {
         match self.db.sweep_uploads(crate::db::now() - DAY).await {
             Ok(ids) => {
@@ -413,33 +472,26 @@ impl Uploads {
                 }
             }
         }
-        let cutoff = crate::db::now() - age.as_millis() as i64;
-        let mut listing = self.store.originals();
-        let mut batch = Vec::new();
-        loop {
-            let next = listing.next().await;
-            match &next {
-                Some(Ok((id, at))) if *at < cutoff => batch.push(id.clone()),
-                Some(Ok(_)) => {}
-                Some(Err(e)) => {
-                    tracing::warn!(error = %e, "listing the store failed");
-                    return;
+        match self
+            .db
+            .claim_strays(crate::db::now() - age.as_millis() as i64)
+            .await
+        {
+            Ok(ids) => {
+                if !ids.is_empty() {
+                    tracing::info!(count = ids.len(), "removing stored copies no image claimed");
                 }
-                None => {}
-            }
-            if batch.len() >= 500 || (next.is_none() && !batch.is_empty()) {
-                let ids = std::mem::take(&mut batch);
-                let Ok(known) = self.db.known_images(ids.clone()).await else {
-                    return;
-                };
-                for id in ids.iter().filter(|id| !known.contains(*id)) {
-                    tracing::info!(image = %id, "removing stored copies no image names");
-                    self.store.delete_image(id).await;
+                for id in ids {
+                    // Claimed, so the record is gone: one the store would not
+                    // delete is recorded again for the next sweep.
+                    if !self.store.delete_image(&id).await
+                        && let Err(e) = self.db.add_stray(&id).await
+                    {
+                        tracing::warn!(image = %id, error = %e, "recording stored copies again failed");
+                    }
                 }
             }
-            if next.is_none() {
-                break;
-            }
+            Err(e) => tracing::warn!(error = %e, "sweeping stored copies failed"),
         }
     }
 }
@@ -467,7 +519,7 @@ mod tests {
                 db.clone(),
                 store.clone(),
                 dir.path(),
-                100,
+                1 << 30,
                 50_000_000,
                 Some(0),
             )
@@ -596,49 +648,89 @@ mod tests {
         assert_eq!(db.images(&upload.album).await.unwrap().len(), 1);
     }
 
+    async fn stored(store: &Store, id: &str) -> bool {
+        store
+            .read(&store::key(Variant::Original, id))
+            .await
+            .unwrap()
+            .is_some()
+    }
+
     #[tokio::test]
-    async fn the_sweep_removes_copies_no_image_names() {
+    async fn the_sweep_removes_recorded_strays_and_nothing_it_does_not_know() {
         let (uploads, db, store, _dir) = setup().await;
         let (_, ids) = crate::db::tests::album_with(&db, "ann", 1).await;
-        // A stray copy, as a crash between storing and recording leaves.
-        store
-            .put(
-                &store::key(Variant::Original, "strayXXXXX"),
-                Bytes::from_static(b"x"),
-            )
-            .await
-            .unwrap();
-        store
-            .put(
-                &store::key(Variant::Original, &ids[0]),
-                Bytes::from_static(b"x"),
-            )
-            .await
-            .unwrap();
+        // Copies a crash left between storing and recording, which the
+        // database recorded first; and copies it never heard of, as a
+        // database restored from an older copy would not have.
+        db.add_stray("strayXXXXX").await.unwrap();
+        for id in ["strayXXXXX", "unknownXXX", &ids[0]] {
+            store
+                .put(&store::key(Variant::Original, id), Bytes::from_static(b"x"))
+                .await
+                .unwrap();
+        }
         // Too new to sweep: an upload may be about to record it.
         uploads.sweep().await;
-        assert!(
-            store
-                .read(&store::key(Variant::Original, "strayXXXXX"))
-                .await
-                .unwrap()
-                .is_some()
-        );
+        assert!(stored(&store, "strayXXXXX").await);
         tokio::time::sleep(Duration::from_millis(5)).await;
         uploads.sweep_older_than(Duration::ZERO).await;
-        assert!(
-            store
-                .read(&store::key(Variant::Original, "strayXXXXX"))
-                .await
-                .unwrap()
-                .is_none()
+        assert!(!stored(&store, "strayXXXXX").await);
+        assert!(stored(&store, "unknownXXX").await);
+        assert!(stored(&store, &ids[0]).await);
+    }
+
+    #[tokio::test]
+    async fn an_image_too_big_for_the_memory_budget_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::temp().await;
+        let uploads = Arc::new(
+            Uploads::new(
+                db.clone(),
+                Store::memory(),
+                dir.path(),
+                8 << 20,
+                50_000_000,
+                Some(0),
+            )
+            .unwrap(),
         );
+        let file = jpeg(1500, 1500);
+        let upload = begin(&db, file.len() as u64).await;
+        uploads
+            .append(&upload, 0, file.len() as u64, chunks(&file))
+            .await
+            .unwrap();
+        let upload = db.upload(&upload.id).await.unwrap().unwrap();
+        let Outcome::Rejected(why) = uploads.finish(upload).await else {
+            panic!("expected a rejection");
+        };
+        assert!(why.contains("memory"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn locks_go_once_nobody_holds_them() {
+        let (uploads, db, _, _dir) = setup().await;
+        let file = jpeg(64, 64);
+        let upload = begin(&db, file.len() as u64).await;
+        let half = (file.len() / 2) as u64;
+        uploads
+            .append(&upload, 0, half, chunks(&file[..half as usize]))
+            .await
+            .unwrap();
+        assert!(uploads.locks.lock().is_empty());
+        // Held while another waits: it stays until both are done.
+        let held = uploads.lock(&upload.id).await;
+        let waiting = uploads.cancel(&upload);
+        tokio::pin!(waiting);
         assert!(
-            store
-                .read(&store::key(Variant::Original, &ids[0]))
+            tokio::time::timeout(Duration::from_millis(20), &mut waiting)
                 .await
-                .unwrap()
-                .is_some()
+                .is_err()
         );
+        assert_eq!(uploads.locks.lock().len(), 1);
+        drop(held);
+        waiting.await.unwrap();
+        assert!(uploads.locks.lock().is_empty());
     }
 }

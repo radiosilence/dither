@@ -35,9 +35,9 @@ pub struct Config {
     pub oidc: Option<Oidc>,
     pub max_upload_bytes: u64,
     pub max_pixels: u64,
-    /// Megapixels being decoded at once, across every upload: what bounds
-    /// the memory processing can take.
-    pub process_megapixels: u32,
+    /// Memory processing may take at once, across every upload. An image
+    /// that needs more than this alone is refused.
+    pub process_memory: u64,
     pub cache_bytes: u64,
     /// Uploads are refused while a disk they write to has less than this
     /// free, so a full image store never fills the disk the rest of the
@@ -125,7 +125,7 @@ impl Config {
             oidc,
             max_upload_bytes: num("MAX_UPLOAD_BYTES", 64_000_000)?,
             max_pixels: num("MAX_PIXELS", 100_000_000)?,
-            process_megapixels: num("PROCESS_MEGAPIXELS", 100)?.max(1),
+            process_memory: num("PROCESS_MEMORY_BYTES", 1 << 30)?,
             cache_bytes: num("CACHE_BYTES", 256 << 20)?,
             min_free_bytes: var("MIN_FREE_BYTES")
                 .map(|v| {
@@ -172,7 +172,7 @@ impl Config {
             oidc: None,
             max_upload_bytes: 8 << 20,
             max_pixels: 50_000_000,
-            process_megapixels: 100,
+            process_memory: 1 << 30,
             cache_bytes: 16 << 20,
             min_free_bytes: Some(0),
         }

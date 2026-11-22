@@ -210,27 +210,16 @@ impl Store {
         }
     }
 
-    /// Every variant of image `id`.
-    pub async fn delete_image(&self, id: &str) {
+    /// Every variant of image `id`. True when all are gone.
+    pub async fn delete_image(&self, id: &str) -> bool {
+        let mut gone = true;
         for variant in [Variant::Original, Variant::Thumb, Variant::Display] {
             if let Err(e) = self.delete(&key(variant, id)).await {
                 tracing::warn!(image = id, error = %e, "could not delete a stored copy; the sweep will retry");
+                gone = false;
             }
         }
-    }
-
-    /// Ids of originals in the store, with when each was written (ms since the
-    /// epoch).
-    pub fn originals(&self) -> BoxStream<'static, object_store::Result<(String, i64)>> {
-        self.inner
-            .list(Some(&Path::from(Variant::Original.prefix())))
-            .map(|meta| {
-                meta.map(|m| {
-                    let id = m.location.filename().unwrap_or_default().to_string();
-                    (id, m.last_modified.timestamp_millis())
-                })
-            })
-            .boxed()
+        gone
     }
 
     /// Bytes free on the disk under a file store; `None` for a bucket.
@@ -252,6 +241,20 @@ pub fn disk(dir: &FsPath) -> Option<(u64, u64)> {
         stat.f_bavail.saturating_mul(stat.f_frsize),
         stat.f_blocks.saturating_mul(stat.f_frsize),
     ))
+}
+
+/// Delete the copies of images `ids`, recorded as strays, and forget the
+/// record of each one the store confirms gone; the sweep retries the rest.
+pub async fn discard(store: &Store, db: &crate::db::Db, ids: Vec<String>) {
+    let mut gone = Vec::with_capacity(ids.len());
+    for id in ids {
+        if store.delete_image(&id).await {
+            gone.push(id);
+        }
+    }
+    if let Err(e) = db.settle_strays(gone).await {
+        tracing::warn!(error = %e, "forgetting deleted copies failed; the sweep will find them gone");
+    }
 }
 
 /// `url` with any password removed, for logs.
@@ -348,8 +351,7 @@ mod tests {
         store.put(&k, Bytes::from_static(b"jpeg")).await.unwrap();
         assert!(dir.path().join("o/ab/abcdefghij").is_file());
         assert!(store.free_bytes().unwrap() > 0);
-        let ids: Vec<_> = store.originals().map(|r| r.unwrap().0).collect().await;
-        assert_eq!(ids, vec!["abcdefghij".to_string()]);
+        assert_eq!(store.read(&k).await.unwrap().as_deref(), Some(&b"jpeg"[..]));
     }
 
     #[tokio::test]

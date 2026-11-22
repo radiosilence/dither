@@ -176,11 +176,19 @@ pub async fn chunk(
         ),
         // No `received`: a client must not read this as a place to resume.
         Err(ChunkError::Ended) => error(StatusCode::GONE, "this upload has already ended"),
-        Err(ChunkError::Io(e)) => {
-            tracing::warn!(upload = %id, error = %e, "a chunk failed");
+        // Both are worth sending again, which a client knows from the status.
+        Err(ChunkError::Broken(e)) => {
+            tracing::info!(upload = %id, error = %e, "a chunk broke off");
             error(
-                StatusCode::BAD_REQUEST,
+                StatusCode::REQUEST_TIMEOUT,
                 "the chunk did not arrive whole; send it again",
+            )
+        }
+        Err(ChunkError::Io(e)) => {
+            tracing::error!(upload = %id, error = %e, "saving a chunk failed");
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the chunk could not be saved; send it again",
             )
         }
     }

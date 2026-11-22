@@ -300,12 +300,7 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     if !visible(state, headers, &album).await {
         return not_found().await;
     }
-    let siblings = state
-        .db
-        .images(&album.id)
-        .await
-        .map(|v| v.len())
-        .unwrap_or(1) as u64;
+    let siblings = state.db.count(&album.id).await.unwrap_or(1);
     let public = &state.config.public_url;
     let og = Og {
         title: if image.caption.is_empty() {

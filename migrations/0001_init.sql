@@ -68,3 +68,19 @@ CREATE TABLE uploads (
 ) STRICT;
 
 CREATE INDEX uploads_by_age ON uploads (created_at);
+
+-- Copies in the object store that no image row claims: written for an upload
+-- not yet recorded, or left by a deleted image until the store confirms them
+-- gone. The sweep removes those an hour old, so it only ever deletes copies
+-- this database knows it made, never ones it merely does not recognise: a
+-- database restored from an older copy leaves newer images alone.
+CREATE TABLE strays (
+    id TEXT PRIMARY KEY,
+    since INTEGER NOT NULL
+) STRICT;
+
+-- Which copy of the database this is, bumped before each copy to the store.
+-- A database on disk behind the store's latest copy, which only an older run
+-- can leave, is then told apart from one ahead of it.
+CREATE TABLE generation (n INTEGER NOT NULL) STRICT;
+INSERT INTO generation (n) VALUES (0);
