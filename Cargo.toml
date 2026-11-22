@@ -7,6 +7,9 @@ edition = "2024"
 anyhow = "1.0.104"
 askama = "0.16.1"
 askama_gettext = { git = "https://github.com/radiosilence/blit", rev = "e59c04abc9d81d6922028974f233f9c408443f99", version = "0.1.0" }
+# Arc rather than Rc in the plural rules' data, so the catalogues can be shared
+# between the server's threads.
+icu_provider = { version = "2", features = ["sync"] }
 async-stream = "0.3.6"
 axum = { version = "0.8.9", features = ["macros"] }
 base64 = "0.23.1"

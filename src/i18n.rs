@@ -5,8 +5,8 @@
 //!
 //! Only en-GB exists, and the msgids are already en-GB, so nothing is loaded
 //! at run time and the binary needs no catalogue beside it. Adding a locale
-//! is a catalogue, its code in [`LOCALES`], and a choice of locale per
-//! request; the templates need nothing.
+//! is a catalogue, its code in the catalogue test's list, and loading it and
+//! choosing it per request; the templates need nothing.
 //!
 //! The catalogue is extracted from the templates by a test, which fails while
 //! it is stale; `just i18n` rewrites it, keeping any translations.
@@ -22,9 +22,6 @@ use askama_gettext::{Catalogs, Fuzzy, Translator};
 
 /// The source locale: what the msgids are written in.
 pub const LOCALE: &str = "en-GB";
-
-/// Every locale with a catalogue.
-pub const LOCALES: &[&str] = &[LOCALE];
 
 static CATALOGS: LazyLock<Catalogs> = LazyLock::new(|| {
     // The source locale's catalogue holds no translations, so none is read.
@@ -58,6 +55,9 @@ mod tests {
 
     use super::*;
 
+    /// Every locale with a catalogue.
+    const LOCALES: &[&str] = &[LOCALE];
+
     /// Every `.html` under `templates/`, sorted so the catalogue's order holds.
     fn templates(dir: &Path) -> Vec<PathBuf> {
         let mut found = Vec::new();
@@ -83,7 +83,11 @@ mod tests {
         let mut messages = Vec::new();
         for path in templates(&root.join("templates")) {
             // Relative, so a `#:` reference reads the same on every machine.
-            let name = path.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+            let name = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
             let source = std::fs::read_to_string(&path).unwrap();
             messages.extend(
                 askama_gettext::extract::from_str(&source, &name, &syntax)
@@ -121,9 +125,6 @@ mod tests {
     fn untranslated_english_renders_as_written() {
         let t = translator();
         assert_eq!(t.locale(), LOCALE);
-        assert_eq!(
-            CATALOGS.gettext(LOCALE, "choose images"),
-            "choose images"
-        );
+        assert_eq!(CATALOGS.gettext(LOCALE, "choose images"), "choose images");
     }
 }

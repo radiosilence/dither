@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use askama::Template;
+use askama_gettext::Translate as _;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -196,7 +197,17 @@ struct Viewer {
     animated: bool,
 }
 
-crate::i18n::translated!(LibraryPage, Albums, AlbumPage, Grid, Viewer, Picker, Usage, Summary, Deleted);
+crate::i18n::translated!(
+    LibraryPage,
+    Albums,
+    AlbumPage,
+    Grid,
+    Viewer,
+    Picker,
+    Usage,
+    Summary,
+    Deleted
+);
 
 #[derive(Template)]
 #[template(path = "app/picker.html")]

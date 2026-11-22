@@ -607,6 +607,7 @@ dependencies = [
  "http",
  "http-body-util",
  "httpdate",
+ "icu_provider",
  "image",
  "object_store",
  "oxc",

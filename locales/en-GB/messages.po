@@ -1,0 +1,498 @@
+msgid ""
+msgstr ""
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language: en-GB\n"
+"Plural-Forms: nplurals=2; plural=n != 1;\n"
+
+#: templates/app/usage.html:1
+msgid "%{count} album"
+msgid_plural "%{count} albums"
+msgstr[0] ""
+msgstr[1] ""
+
+#: templates/app/albums.html:6 templates/app/picker.html:13 templates/app/summary.html:1 templates/app/usage.html:1 templates/public/album.html:7 templates/public/image.html:11 templates/public/layout.html:3
+msgid "%{count} image"
+msgid_plural "%{count} images"
+msgstr[0] ""
+msgstr[1] ""
+
+#: templates/app/layout.html:38
+msgid "%{count} selected"
+msgstr ""
+
+#: templates/app/layout.html:72
+msgid "%{done} of %{total} uploaded"
+msgstr ""
+
+#: templates/app/layout.html:73
+msgid "%{done} uploaded, %{failed} failed"
+msgstr ""
+
+#: templates/app/viewer.html:3
+msgid "%{n} of %{total}"
+msgstr ""
+
+#: templates/app/layout.html:74
+msgid "%{rate}/s · %{left} left"
+msgstr ""
+
+#: templates/app/layout.html:75
+msgid "%{sent} of %{total}"
+msgstr ""
+
+#: templates/app/layout.html:55
+msgid "%{size} is over the %{max} limit"
+msgstr ""
+
+#: templates/app/layout.html:64
+msgid "%{why}; retrying"
+msgstr ""
+
+#: templates/app/viewer.html:14
+msgid "Add a caption"
+msgstr ""
+
+#: templates/app/album.html:8
+msgid "Add a description"
+msgstr ""
+
+#: templates/app/layout.html:36
+msgid "Couldn't copy: the browser refused. Select the link and copy it by hand."
+msgstr ""
+
+#: templates/app/layout.html:43
+msgid "Couldn't delete it."
+msgstr ""
+
+#: templates/app/layout.html:45
+msgid "Couldn't delete the album."
+msgstr ""
+
+#: templates/app/layout.html:47
+msgid "Couldn't list your albums."
+msgstr ""
+
+#: templates/app/layout.html:46
+msgid "Couldn't make an album."
+msgstr ""
+
+#: templates/app/layout.html:48
+msgid "Couldn't move them."
+msgstr ""
+
+#: templates/app/layout.html:51
+msgid "Couldn't save the new order; reload to see the album as it is."
+msgstr ""
+
+#: templates/app/layout.html:39
+msgid "Couldn't set the cover."
+msgstr ""
+
+#: templates/app/layout.html:41
+msgid ""
+"Delete these %{count} images? Links to them stop working. This can't be "
+"undone."
+msgstr ""
+
+#: templates/app/layout.html:44
+msgid ""
+"Delete this album and everything in it? Its link stops working. This can't "
+"be undone."
+msgstr ""
+
+#: templates/app/layout.html:40
+msgid "Delete this image? Links to it stop working. This can't be undone."
+msgstr ""
+
+#: templates/app/layout.html:53
+msgid "HEIC isn't supported yet: export it as JPEG"
+msgstr ""
+
+#: templates/app/library.html:11
+msgid ""
+"JPEG, PNG, GIF or WebP, up to %{max} each. Where a photo was taken and what "
+"took it are removed before anything is stored."
+msgstr ""
+
+#: templates/app/layout.html:49
+msgid "Moved."
+msgstr ""
+
+#: templates/app/albums.html:10
+msgid "No albums yet. Drop some images in to start one."
+msgstr ""
+
+#: templates/app/grid.html:11
+msgid "Nothing here yet."
+msgstr ""
+
+#: templates/app/deleted.html:1
+msgid "This album has been deleted."
+msgstr ""
+
+#: templates/public/missing.html:8
+msgid "This link doesn't lead to anything, or no longer does."
+msgstr ""
+
+#: templates/app/picker.html:7
+msgid "a new album"
+msgstr ""
+
+#: templates/app/album.html:19
+msgid "add images"
+msgstr ""
+
+#: templates/app/viewer.html:29
+msgid "album cover"
+msgstr ""
+
+#: templates/app/album.html:4 templates/app/library.html:2 templates/app/library.html:5
+msgid "albums"
+msgstr ""
+
+#: templates/public/layout.html:3
+msgid "an image"
+msgstr ""
+
+#: templates/app/viewer.html:33
+msgid "animated"
+msgstr ""
+
+#: templates/app/viewer.html:14
+msgid "caption"
+msgstr ""
+
+#: templates/app/library.html:9
+msgid "choose images"
+msgstr ""
+
+#: templates/app/album.html:13
+msgid "copy link"
+msgstr ""
+
+#: templates/app/viewer.html:24
+msgid "copy the BBCode"
+msgstr ""
+
+#: templates/app/viewer.html:26
+msgid "copy the HTML"
+msgstr ""
+
+#: templates/app/viewer.html:22
+msgid "copy the Markdown"
+msgstr ""
+
+#: templates/app/viewer.html:20
+msgid "copy the link to the image file"
+msgstr ""
+
+#: templates/app/viewer.html:18
+msgid "copy the link to the image's page"
+msgstr ""
+
+#: templates/app/album.html:38
+msgid "delete album"
+msgstr ""
+
+#: templates/app/album.html:8
+msgid "description"
+msgstr ""
+
+#: templates/app/layout.html:9
+msgid "dither: your albums"
+msgstr ""
+
+#: templates/app/viewer.html:5
+msgid "download"
+msgstr ""
+
+#: templates/app/layout.html:18
+msgid "drop to upload"
+msgstr ""
+
+#: templates/app/grid.html:6
+msgid "has a caption"
+msgstr ""
+
+#: templates/app/viewer.html:20
+msgid "link to the image file"
+msgstr ""
+
+#: templates/app/viewer.html:18
+msgid "link to the image's page"
+msgstr ""
+
+#: templates/app/album.html:12
+msgid "link to this album"
+msgstr ""
+
+#: templates/app/viewer.html:29
+msgid "make cover"
+msgstr ""
+
+#: templates/app/layout.html:21
+msgid "move images"
+msgstr ""
+
+#: templates/app/picker.html:2
+msgid "move to"
+msgstr ""
+
+#: templates/app/library.html:6
+msgid "new album"
+msgstr ""
+
+#: templates/app/viewer.html:11
+msgid "next image"
+msgstr ""
+
+#: templates/app/album.html:28 templates/app/layout.html:37
+msgid "none selected"
+msgstr ""
+
+#: templates/app/layout.html:54
+msgid "not a JPEG, PNG, GIF or WebP"
+msgstr ""
+
+#: templates/public/missing.html:2 templates/public/missing.html:7
+msgid "nothing here"
+msgstr ""
+
+#: templates/app/layout.html:50
+msgid "open that album"
+msgstr ""
+
+#: templates/app/layout.html:76
+msgid "open the album"
+msgstr ""
+
+#: templates/app/album.html:20
+msgid "or drop them anywhere, or paste"
+msgstr ""
+
+#: templates/app/library.html:10
+msgid "or drop them anywhere, or paste. Each batch becomes an album."
+msgstr ""
+
+#: templates/public/image.html:11
+msgid "original"
+msgstr ""
+
+#: templates/app/layout.html:52
+msgid "pasted image"
+msgstr ""
+
+#: templates/app/viewer.html:10
+msgid "previous image"
+msgstr ""
+
+#: templates/app/album.html:16 templates/app/albums.html:6
+msgid "private"
+msgstr ""
+
+#: templates/app/layout.html:71
+msgid "processing %{count}…"
+msgstr ""
+
+#: templates/app/layout.html:63
+msgid "processing failed (%{status})"
+msgstr ""
+
+#: templates/app/layout.html:57
+msgid "refused (%{status})"
+msgstr ""
+
+#: templates/app/layout.html:12
+msgid "sign out"
+msgstr ""
+
+#: templates/app/layout.html:59
+msgid "signed out: sign in again and add them again"
+msgstr ""
+
+#: templates/app/layout.html:61
+msgid "the connection dropped"
+msgstr ""
+
+#: templates/app/layout.html:56
+msgid "the file is empty"
+msgstr ""
+
+#: templates/app/viewer.html:24
+msgid "the image in BBCode"
+msgstr ""
+
+#: templates/app/viewer.html:26
+msgid "the image in HTML"
+msgstr ""
+
+#: templates/app/viewer.html:22
+msgid "the image in Markdown"
+msgstr ""
+
+#: templates/app/picker.html:7
+msgid "the new album's title"
+msgstr ""
+
+#: templates/app/layout.html:60
+msgid "the server failed (%{status})"
+msgstr ""
+
+#: templates/app/layout.html:58
+msgid "the upload failed"
+msgstr ""
+
+#: templates/app/album.html:6
+msgid "title"
+msgstr ""
+
+#: templates/app/album.html:2 templates/app/album.html:6 templates/app/albums.html:5 templates/app/picker.html:7 templates/app/picker.html:13
+msgid "untitled"
+msgstr ""
+
+#: templates/app/layout.html:19
+msgid "uploads"
+msgstr ""
+
+#: templates/app/layout.html:35
+msgctxt "A copy button, after copying"
+msgid "copied"
+msgstr ""
+
+#: templates/app/album.html:32 templates/app/layout.html:27 templates/app/layout.html:42 templates/app/viewer.html:31
+msgctxt "Button"
+msgid "delete"
+msgstr ""
+
+#: templates/app/viewer.html:6
+msgctxt "Button: close the viewer"
+msgid "close"
+msgstr ""
+
+#: templates/app/layout.html:26 templates/app/picker.html:18
+msgctxt "Button: dismiss a dialog"
+msgid "cancel"
+msgstr ""
+
+#: templates/app/layout.html:77
+msgctxt "Button: fold the upload list"
+msgid "hide"
+msgstr ""
+
+#: templates/app/layout.html:34
+msgctxt "Button: hide a notice"
+msgid "dismiss"
+msgstr ""
+
+#: templates/app/layout.html:66
+msgctxt "Button: hide the upload tray"
+msgid "close"
+msgstr ""
+
+#: templates/app/album.html:31
+msgctxt "Button: make the chosen image the album's cover"
+msgid "cover"
+msgstr ""
+
+#: templates/app/album.html:30 templates/app/picker.html:19 templates/app/viewer.html:30
+msgctxt "Button: move images to another album"
+msgid "move"
+msgstr ""
+
+#: templates/app/album.html:14
+msgctxt "Button: open the album's public page"
+msgid "open"
+msgstr ""
+
+#: templates/app/layout.html:67
+msgctxt "Button: send a failed upload again"
+msgid "retry"
+msgstr ""
+
+#: templates/app/album.html:25
+msgctxt "Button: start choosing images"
+msgid "select"
+msgstr ""
+
+#: templates/app/album.html:33
+msgctxt "Button: stop choosing images"
+msgid "done"
+msgstr ""
+
+#: templates/app/layout.html:65
+msgctxt "Button: stop uploading"
+msgid "cancel"
+msgstr ""
+
+#: templates/app/layout.html:78
+msgctxt "Button: unfold the upload list"
+msgid "details"
+msgstr ""
+
+#: templates/app/layout.html:22
+msgctxt "Dialog name"
+msgid "confirm"
+msgstr ""
+
+#: templates/app/layout.html:20
+msgctxt "Dialog name"
+msgid "image"
+msgstr ""
+
+#: templates/app/grid.html:6
+msgctxt "Mark on an animated image"
+msgid "gif"
+msgstr ""
+
+#: templates/app/grid.html:6
+msgctxt "Mark on the album's cover image"
+msgid "cover"
+msgstr ""
+
+#: templates/app/viewer.html:19
+msgctxt "Share link: the image file"
+msgid "image"
+msgstr ""
+
+#: templates/app/viewer.html:25
+msgctxt "Share link: the image in HTML"
+msgid "html"
+msgstr ""
+
+#: templates/app/viewer.html:21
+msgctxt "Share link: the image in Markdown"
+msgid "markdown"
+msgstr ""
+
+#: templates/app/viewer.html:23
+msgctxt "Share link: the image in forum BBCode"
+msgid "bbcode"
+msgstr ""
+
+#: templates/app/viewer.html:17
+msgctxt "Share link: the image's page"
+msgid "page"
+msgstr ""
+
+#: templates/app/layout.html:62
+msgctxt "Upload state"
+msgid "cancelled"
+msgstr ""
+
+#: templates/app/layout.html:70
+msgctxt "Upload state"
+msgid "done"
+msgstr ""
+
+#: templates/app/layout.html:69
+msgctxt "Upload state"
+msgid "processing"
+msgstr ""
+
+#: templates/app/layout.html:68
+msgctxt "Upload state"
+msgid "waiting"
+msgstr ""
+

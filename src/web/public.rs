@@ -14,6 +14,7 @@
 //! change under an address, so they are cached for a year.
 
 use askama::Template;
+use askama_gettext::Translate as _;
 use axum::body::Body as HttpBody;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -139,6 +140,7 @@ struct AlbumPage {
     og: Og,
     title: String,
     description: String,
+    count: u64,
     pics: Vec<Pic>,
 }
 
@@ -263,6 +265,7 @@ pub async fn album(
         og,
         title: album.title.clone(),
         description: album.description.clone(),
+        count: images.len() as u64,
         pics: images.iter().map(Pic::new).collect(),
     }
     .render();

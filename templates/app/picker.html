@@ -10,7 +10,7 @@
     <label class="choice">
       <input type="radio" name="to" value="{{ a.id }}">
       <span class="thumb">{% if let Some(src) = a.cover.as_ref() %}<img src="{{ src }}" alt="" loading="lazy">{% endif %}</span>
-      <span class="grow"><span class="block truncate normal-case{% if a.title.is_empty() %} text-muted{% endif %}">{% if a.title.is_empty() %}{{ __("untitled") }}{% else %}{{ a.title }}{% endif %}</span><span class="block text-fine text-muted normal-case">{{ __n("%{count} image", "%{count} images", a.count) }}{% if a.bytes > 0 %} · {{ a.size }}{% endif %}</span></span>
+      <span class="grow"><span class="block truncate normal-case{% if a.title.is_empty() %} text-muted{% endif %}">{% if a.title.is_empty() %}{{ __("untitled") }}{% else %}{{ a.title }}{% endif %}</span><span class="block text-fine text-muted normal-case">{{ __n("%{count} image", "%{count} images", *a.count) }}{% if a.bytes > 0 %} · {{ a.size }}{% endif %}</span></span>
     </label>
     {% endfor %}
   </div>

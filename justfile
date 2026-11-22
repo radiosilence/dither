@@ -59,6 +59,10 @@ css-fresh: theme
 js:
     tsc -p scripts
 
+# Rewrite the message catalogues from the templates, keeping translations. A test fails while they are stale.
+i18n:
+    UPDATE_CATALOGUES=1 cargo test --quiet the_catalogues_are_up_to_date
+
 # Fail unless the crate, the Pulumi package and the image it deploys share one version.
 versions:
     #!/usr/bin/env bash

@@ -239,11 +239,6 @@ pub fn human(bytes: u64) -> String {
     }
 }
 
-/// `n thing` or `n things`.
-pub fn count(n: u64, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
-}
-
 #[cfg(test)]
 mod tests;
 
