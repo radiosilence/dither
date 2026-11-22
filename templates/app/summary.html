@@ -1,1 +1,2 @@
-<span id="summary">{{ __n("%{count} image", "%{count} images", *count) }}{% if bytes > 0 %} · {{ size }}{% endif %}</span>
+{% import "app/macros.html" as m %}
+<span id="summary">{% call m::images(count, size) %}{% endcall %}</span>

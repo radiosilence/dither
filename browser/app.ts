@@ -14,9 +14,9 @@
 // catalogue into <template id="copy">, keyed by name, so every sentence on
 // screen is one a translator can reach.
 
-const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document): T | null =>
+const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) =>
   root.querySelector<T>(sel);
-const $$ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document): T[] => [
+const $$ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => [
   ...root.querySelectorAll<T>(sel),
 ];
 const body = document.body;
@@ -31,7 +31,6 @@ const TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 // ── Copy ─────────────────────────────────────────────────────────────────
 
 const plural = new Intl.PluralRules(lang);
-const number = new Intl.NumberFormat(lang, { maximumFractionDigits: 1 });
 
 // A line with a count comes once for each plural form the language has,
 // rendered at a count in that form (`data-n`), so it is filed under the
@@ -54,28 +53,28 @@ const fill = (text: string, values: Record<string, string | number>) =>
   text.replace(/%\{(\w+)\}/g, (whole, name: string) => (name in values ? String(values[name]) : whole));
 
 /** A line of copy with its `%{name}` placeholders filled. A missing key reads as itself, which is obvious on screen. */
-function say(key: string, values: Record<string, string | number> = {}): string {
+function say(key: string, values: Record<string, string | number> = {}) {
   return fill(copy.get(key) ?? key, values);
 }
 
 /** A counted line in the form `n` takes, with `%{n}` filled. */
-function sayN(key: string, n: number, values: Record<string, string | number> = {}): string {
+function sayN(key: string, n: number, values: Record<string, string | number> = {}) {
   const forms = counted.get(key);
-  return fill(forms?.get(plural.select(n)) ?? forms?.get("other") ?? key, { ...values, n: number.format(n) });
+  return fill(forms?.get(plural.select(n)) ?? forms?.get("other") ?? key, { ...values, n });
 }
 
-function human(bytes: number): string {
+/** Bytes as the server words them (`web::human`), so a size reads the same wherever it is shown. */
+function human(bytes: number) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let u = 0;
   while (bytes >= 1000 && u < units.length - 1) {
     bytes /= 1000;
     u++;
   }
-  const n = u === 0 || bytes >= 100 ? Math.round(bytes) : Math.round(bytes * 10) / 10;
-  return `${number.format(n)} ${units[u]}`;
+  return `${u === 0 || bytes >= 100 ? bytes.toFixed(0) : bytes.toFixed(1)} ${units[u]}`;
 }
 
-function span(seconds: number): string {
+function span(seconds: number) {
   const s = Math.max(0, Math.round(seconds));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -86,7 +85,7 @@ function span(seconds: number): string {
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** A request the server can tell came from here: a cross-site form cannot set the header. */
-function api(method: string, url: string, data?: unknown): Promise<Response> {
+function api(method: string, url: string, data?: unknown) {
   const headers: Record<string, string> = { "x-dither": "1", accept: "application/json" };
   const init: RequestInit = { method, headers, credentials: "same-origin" };
   if (data !== undefined) {
@@ -96,17 +95,14 @@ function api(method: string, url: string, data?: unknown): Promise<Response> {
   return fetch(url, init);
 }
 
-async function json<T>(res: Response): Promise<Partial<T>> {
-  try {
-    return (await res.json()) as Partial<T>;
-  } catch {
-    return {};
-  }
+/** A JSON answer's fields, or none when it carried no JSON. */
+async function json<T>(res: Response) {
+  return (await res.json().catch(() => ({}))) as Partial<T>;
 }
 
 // ── Notices ──────────────────────────────────────────────────────────────
 
-function notice(text: string, bad = false, link?: { href: string; label: string }): void {
+function notice(text: string, bad = false, link?: { href: string; label: string }) {
   const el = $("#notice");
   if (!el) return;
   el.replaceChildren();
@@ -129,12 +125,12 @@ function notice(text: string, bad = false, link?: { href: string; label: string 
 
 // ── Dialogs ──────────────────────────────────────────────────────────────
 
-function show(id: string): void {
+function show(id: string) {
   const d = document.getElementById(id);
   if (d instanceof HTMLDialogElement && !d.open) d.showModal();
 }
 
-function ask(text: string, label: string): Promise<boolean> {
+function ask(text: string, label: string) {
   const d = $<HTMLDialogElement>("#confirm");
   const textEl = $("#confirm-text");
   const ok = $("#confirm-ok");
@@ -143,7 +139,9 @@ function ask(text: string, label: string): Promise<boolean> {
   ok.textContent = label;
   d.returnValue = "";
   d.showModal();
-  return new Promise((resolve) => d.addEventListener("close", () => resolve(d.returnValue === "ok"), { once: true }));
+  return new Promise<boolean>((resolve) =>
+    d.addEventListener("close", () => resolve(d.returnValue === "ok"), { once: true }),
+  );
 }
 
 document.addEventListener("click", (ev) => {
@@ -229,7 +227,7 @@ document.addEventListener("keydown", (ev) => {
 
 // ── The album being shown, if any ────────────────────────────────────────
 
-const albumId = (): string | null => $(".album-head")?.dataset["album"] ?? null;
+const albumId = () => $(".album-head")?.dataset["album"] ?? null;
 
 // ── Selection ────────────────────────────────────────────────────────────
 
@@ -238,7 +236,7 @@ let suppressClick = false;
 
 // Writes only what differs: this also runs from a MutationObserver, and a
 // write that changed nothing would still be a mutation that runs it again.
-function paintSelection(): void {
+function paintSelection() {
   for (const t of $$(".tile")) {
     const on = selected.has(t.dataset["id"] ?? "");
     if (t.classList.contains("selected") !== on) t.classList.toggle("selected", on);
@@ -252,7 +250,7 @@ function paintSelection(): void {
   if (cover && cover.disabled !== (n !== 1)) cover.disabled = n !== 1;
 }
 
-function selecting(on: boolean): void {
+function selecting(on: boolean) {
   body.classList.toggle("selecting", on);
   const bar = $("[data-selectbar]");
   if (bar) bar.hidden = !on;
@@ -260,7 +258,7 @@ function selecting(on: boolean): void {
   paintSelection();
 }
 
-function toggle(id: string): void {
+function toggle(id: string) {
   if (selected.has(id)) selected.delete(id);
   else selected.add(id);
   paintSelection();
@@ -308,10 +306,11 @@ document.addEventListener("click", async (ev) => {
     if (res.ok) selecting(false);
     else notice(say("cover failed"), true);
   } else if (t.closest("[data-delete]") && selected.size) {
-    if (await ask(sayN("delete n?", selected.size), say("delete"))) {
+    const n = selected.size;
+    if (await ask(sayN("delete n?", n), say("delete"))) {
       const res = await api("POST", "/images/delete", { ids: [...selected] });
       if (res.ok) selecting(false);
-      else notice(say("delete failed"), true);
+      else notice(sayN("delete failed n", n), true);
     }
   } else if (t.closest("[data-move-one]")) {
     void openMover([t.closest<HTMLElement>("[data-move-one]")?.dataset["moveOne"] ?? ""]);
@@ -321,7 +320,7 @@ document.addEventListener("click", async (ev) => {
       const viewer = $<HTMLDialogElement>("#viewer");
       const next = viewer?.querySelector<HTMLElement>(".nav.next") ?? viewer?.querySelector<HTMLElement>(".nav.prev");
       const res = await api("POST", "/images/delete", { ids: [id] });
-      if (!res.ok) notice(say("delete failed"), true);
+      if (!res.ok) notice(sayN("delete failed n", 1), true);
       else if (next) next.click();
       else viewer?.close();
     }
@@ -346,7 +345,7 @@ document.addEventListener("click", async (ev) => {
 
 let moving: string[] = [];
 
-async function openMover(ids: string[]): Promise<void> {
+async function openMover(ids: string[]) {
   const album = albumId();
   if (!ids.length || !album) return;
   moving = ids;
@@ -405,7 +404,7 @@ interface Drag {
 }
 
 {
-  const grid = (): HTMLElement | null => $("#grid");
+  const grid = () => $("#grid");
   let drag: Drag | null = null;
   let scrollFrame = 0;
 
@@ -619,24 +618,28 @@ const queue = {
   samples: [] as [number, number][],
 };
 
-const pending = (): Item[] =>
+const pending = () =>
   queue.items.filter((i) => i.state === "queued" || i.state === "sending" || i.state === "processing");
 
 /** A state another part of the script may have changed meanwhile: a cancel lands between awaits. */
-const cancelled = (item: Item): boolean => item.state === "cancelled";
+const cancelled = (item: Item) => item.state === "cancelled";
 
 addEventListener("beforeunload", (ev) => {
-  if (pending().length) ev.preventDefault();
+  if (pending().length) {
+    ev.preventDefault();
+    // What browsers before preventDefault was honoured here read instead.
+    ev.returnValue = "";
+  }
 });
 
 /** A status that sending the same request again may get past. */
-const retryable = (status: number): boolean => status === 408 || status === 429 || (status >= 500 && status !== 507);
+const retryable = (status: number) => status === 408 || status === 429 || (status >= 500 && status !== 507);
 
 /** The album being made for a batch: a second drop while it is on its way joins it rather than making another. */
 let making: Promise<string> | null = null;
 
 /** Where this batch goes: the album on show, the one a batch still going went to, or a new one made for it. */
-async function target(running: boolean): Promise<string> {
+async function target(running: boolean) {
   const shown = albumId();
   if (shown) return shown;
   if (running && making) return making;
@@ -656,7 +659,7 @@ async function target(running: boolean): Promise<string> {
   }
 }
 
-async function add(list: FileList | File[]): Promise<void> {
+async function add(list: FileList | File[]) {
   const files = [...list];
   if (!files.length) return;
   const items: Item[] = files.map((file) => {
@@ -702,7 +705,7 @@ async function add(list: FileList | File[]): Promise<void> {
       files: go.map((i) => ({ name: i.name, size: i.size })),
     });
     const answer = await json<{ uploads: { id: string }[]; error: string }>(res);
-    if (!res.ok || !answer.uploads) throw new Failure(answer.error ?? say("refused", { status: res.status }), false);
+    if (!res.ok || !answer.uploads) throw new Failure(answer.error || say("refused", { status: res.status }), false);
     answer.uploads.forEach((u, n) => {
       const item = go[n];
       if (item) {
@@ -720,7 +723,7 @@ async function add(list: FileList | File[]): Promise<void> {
   pump();
 }
 
-function pump(): void {
+function pump() {
   while (queue.active < PARALLEL) {
     const next = queue.items.find((i) => i.state === "queued" && i.id);
     if (!next) break;
@@ -729,8 +732,8 @@ function pump(): void {
   tray.draw();
 }
 
-function put(item: Item, start: number, end: number): Promise<number> {
-  return new Promise((resolve, reject) => {
+function put(item: Item, start: number, end: number) {
+  return new Promise<number>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     item.xhr = xhr;
     xhr.open("PUT", `/api/uploads/${item.id}`);
@@ -753,8 +756,8 @@ function put(item: Item, start: number, end: number): Promise<number> {
         resolve(answer.received ?? start);
       } else if (xhr.status === 401) reject(new Failure(say("signed out"), false));
       else if (retryable(xhr.status))
-        reject(new Failure(answer.error ?? say("server failed", { status: xhr.status }), true));
-      else reject(new Failure(answer.error ?? say("refused", { status: xhr.status }), false));
+        reject(new Failure(answer.error || say("server failed", { status: xhr.status }), true));
+      else reject(new Failure(answer.error || say("refused", { status: xhr.status }), false));
     };
     xhr.onerror = () => {
       item.flight = 0;
@@ -769,7 +772,7 @@ function put(item: Item, start: number, end: number): Promise<number> {
   });
 }
 
-async function send(item: Item): Promise<void> {
+async function send(item: Item) {
   queue.active++;
   item.state = "sending";
   let tries = 0;
@@ -800,7 +803,7 @@ async function send(item: Item): Promise<void> {
           item.state = "sending";
           continue;
         }
-        throw new Failure(answer.error ?? say("processing failed", { status: res.status }), retryable(res.status));
+        throw new Failure(answer.error || say("processing failed", { status: res.status }), retryable(res.status));
       } catch (e) {
         if (!(e instanceof Failure) || !e.retry || tries >= RETRIES || cancelled(item)) throw e;
         tries++;
@@ -826,14 +829,14 @@ async function send(item: Item): Promise<void> {
   }
 }
 
-function retry(item: Item): void {
+function retry(item: Item) {
   if (!item.id) return;
   item.state = "queued";
   item.error = "";
   pump();
 }
 
-function cancelAll(): void {
+function cancelAll() {
   for (const i of pending()) {
     if (i.state === "processing") continue;
     i.state = "cancelled";
@@ -861,7 +864,7 @@ const tray: Tray = (() => {
   let expanded = matchMedia("(min-width: 721px)").matches;
   let target = { sent: 0, total: 0, live: 0 };
 
-  const make = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = ""): HTMLElementTagNameMap[K] => {
+  const make = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = "") => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
     if (text) e.textContent = text;
@@ -897,7 +900,7 @@ const tray: Tray = (() => {
     };
   };
 
-  const row = (item: Item): Row => {
+  const row = (item: Item) => {
     if (!item.row) {
       const li = make("li", "tray-item");
       const thumb = make("span", "tray-thumb");

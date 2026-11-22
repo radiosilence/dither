@@ -57,7 +57,7 @@ css-fresh: theme
 
 # Typecheck the browser's script. Cargo strips its types as it builds (build.rs); this checks them.
 js:
-    tsc -p scripts
+    tsc -p browser
 
 # Rewrite the message catalogues from the templates, keeping translations. A test fails while they are stale.
 i18n:

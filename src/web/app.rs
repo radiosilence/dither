@@ -78,8 +78,8 @@ struct CardView {
     id: String,
     title: String,
     count: u64,
-    bytes: u64,
-    size: String,
+    /// What its images take, when they take anything.
+    size: Option<String>,
     cover: Option<String>,
     private: bool,
 }
@@ -90,8 +90,7 @@ impl CardView {
             id: c.album.id.clone(),
             title: c.album.title.clone(),
             count: c.count,
-            bytes: c.bytes,
-            size: human(c.bytes),
+            size: (c.bytes > 0).then(|| human(c.bytes)),
             cover: c.cover.as_ref().map(|i| format!("/t/{}.webp", i.id)),
             private: c.album.private,
         }
@@ -110,8 +109,7 @@ struct Usage {
 #[template(path = "app/summary.html")]
 struct Summary {
     count: u64,
-    bytes: u64,
-    size: String,
+    size: Option<String>,
 }
 
 #[derive(Template)]
@@ -302,8 +300,7 @@ async fn album_parts(state: &AppState, album: &crate::db::Album) -> AppResult<(S
     let bytes: u64 = images.iter().map(|i| i.bytes).sum();
     let summary = render(&Summary {
         count: images.len() as u64,
-        bytes,
-        size: human(bytes),
+        size: (bytes > 0).then(|| human(bytes)),
     })?;
     Ok((grid, summary))
 }

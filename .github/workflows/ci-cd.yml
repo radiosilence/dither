@@ -141,13 +141,13 @@ jobs:
             printf '%s\n' "$files" | sed 's/^/  /'
             # Anything cargo compiles or that decides how. The server embeds
             # its templates and assets, so they are Rust too.
-            touches '^(src|templates|assets|scripts|migrations|locales)/|^build\.rs$|^Cargo\.(toml|lock)$|^\.cargo/|^rust-toolchain|^\.github/' || rust=false
+            touches '^(src|templates|assets|browser|migrations|locales)/|^build\.rs$|^Cargo\.(toml|lock)$|^\.cargo/|^rust-toolchain|^\.github/' || rust=false
             # The compiled stylesheet: its sources, everything Tailwind reads
             # class names from, the output itself, the theme it imports, and
             # the recipe and tool pins that build it. The justfile and
             # mise.toml reach no other job: the Rust and Node jobs install
             # their toolchains themselves.
-            touches '^(styles|templates|src|assets|scripts)/|^justfile$|^mise\.toml$|^package\.json$|^aube-lock\.yaml$|^\.npmrc$|^\.github/' || web=false
+            touches '^(styles|templates|src|assets|browser)/|^justfile$|^mise\.toml$|^package\.json$|^aube-lock\.yaml$|^\.npmrc$|^\.github/' || web=false
             touches '^deploy/pulumi/|^\.github/' || package=false
             # The static binaries and the image that copies them in. The Rust
             # jobs already check the code, so a pull request builds these

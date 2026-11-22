@@ -13,7 +13,8 @@
 //!
 //! What the browser's script shows comes from the layout's
 //! `<template id="copy">`, rendered through the same calls. What stays
-//! English is the server's own error text in API answers.
+//! as it is, until there is a second language, is the server's own error
+//! text in API answers and the formatting of numbers, sizes and times.
 
 use std::path::Path;
 use std::sync::LazyLock;
@@ -89,6 +90,36 @@ mod tests {
         found
     }
 
+    /// A catalogue with its references to where each message is used naming
+    /// files alone: references with lines would change whenever a template
+    /// gained one, though none of its words had.
+    fn by_file(po: &str) -> String {
+        let mut out = po
+            .lines()
+            .map(|line| {
+                let Some(refs) = line.strip_prefix("#: ") else {
+                    return line.to_string();
+                };
+                let mut files: Vec<&str> = Vec::new();
+                for r in refs.split_whitespace() {
+                    let file = match r.rsplit_once(':') {
+                        Some((file, at)) if at.chars().all(|c| c.is_ascii_digit()) => file,
+                        _ => r,
+                    };
+                    if !files.contains(&file) {
+                        files.push(file);
+                    }
+                }
+                format!("#: {}", files.join(" "))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if po.ends_with('\n') {
+            out.push('\n');
+        }
+        out
+    }
+
     /// Each locale's catalogue is what extraction makes of the templates now,
     /// so a template's new or changed words reach it. `just i18n` (this test
     /// with `UPDATE_CATALOGUES` set) rewrites them, keeping translations.
@@ -122,7 +153,7 @@ mod tests {
                 askama_gettext::merge::create_catalog(&fresh, locale).unwrap();
             }
             askama_gettext::merge::into_catalog(&fresh, locale, &messages).unwrap();
-            let fresh = std::fs::read_to_string(&fresh).unwrap();
+            let fresh = by_file(&std::fs::read_to_string(&fresh).unwrap());
             if update {
                 std::fs::create_dir_all(committed.parent().unwrap()).unwrap();
                 std::fs::write(&committed, &fresh).unwrap();

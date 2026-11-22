@@ -10,7 +10,7 @@
 @import "tailwindcss" source(none);
 @source "../templates";
 @source "../src";
-@source "../scripts/app.ts";
+@source "../browser/app.ts";
 @import "@radiosilence/theme";
 
 @theme {

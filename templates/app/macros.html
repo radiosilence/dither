@@ -1,0 +1,2 @@
+{# How many images, and what they take when they take anything. #}
+{% macro images(count, size) %}{{ __n("%{count} image", "%{count} images", *count) }}{% if let Some(size) = size %} · {{ size }}{% endif %}{% endmacro %}

@@ -1,4 +1,4 @@
-//! Compiles the browser's script, `scripts/*.ts`, into `OUT_DIR/*.js`, which
+//! Compiles the browser's script, `browser/*.ts`, into `OUT_DIR/*.js`, which
 //! the binary embeds. Only the types are removed: the script is written in
 //! erasable TypeScript for the browsers it runs in, so nothing is lowered or
 //! minified. tsc typechecks it (`just js`); this only strips, as koan's does.
@@ -14,13 +14,13 @@ use oxc::span::SourceType;
 use oxc::transformer::{TransformOptions, Transformer};
 
 fn main() {
-    let src = Path::new("scripts");
+    let src = Path::new("browser");
     let out = std::env::var("OUT_DIR").expect("cargo sets OUT_DIR");
-    println!("cargo:rerun-if-changed=scripts");
+    println!("cargo:rerun-if-changed=browser");
     let mut names: Vec<_> = std::fs::read_dir(src)
-        .expect("scripts/ is readable")
+        .expect("browser/ is readable")
         .map(|e| {
-            e.expect("scripts/ is readable")
+            e.expect("browser/ is readable")
                 .file_name()
                 .into_string()
                 .expect("UTF-8 names")

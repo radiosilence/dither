@@ -219,7 +219,7 @@ typeface, because the binary embeds them; building dither needs no Node.
 `just css` installs `@radiosilence/theme` from GitHub Packages, which needs a
 token even to read (`just auth` writes it from the gh login).
 
-The browser's script is TypeScript (`scripts/app.ts`). Building strips its
+The browser's script is TypeScript (`browser/app.ts`). Building strips its
 types with oxc (`build.rs`) and embeds the result, so a build needs no Node
 either; `just js` typechecks it with typescript-go, as CI does.
 
@@ -232,7 +232,15 @@ Every word a page shows is a gettext message in a template: `{{ __("…") }}`,
 The English is the message id, so en-GB, the only locale for now, needs no
 catalogue at run time. The script's words come from the layout's
 `<template id="copy">`, keyed by name and rendered the same way, so they are
-in the catalogue too.
+in the catalogue too. A line with a count comes once for each plural form of
+the language, rendered at a count in that form, and the browser files each
+under the category `Intl.PluralRules` gives its count.
+
+Two things are not translated yet: the API's error text, which the uploader
+shows as the server words it (an API's answers serve any client, so wording
+them per language means answering with a code a client words), and the
+formatting of numbers, sizes and times, which the server and the script do
+the same way for every language.
 
 `locales/en-GB/messages.po` collects every message with where it is used; a
 test fails while it is out of date, and `just i18n` rewrites it. Adding a
