@@ -75,20 +75,21 @@ fn check_size(w: u32, h: u32, max_pixels: u64) -> Result<(), Reject> {
     Ok(())
 }
 
-/// The most memory [`process`] takes for `bytes`, read from the header alone
-/// so the budget can be held before any of it is spent: the file and its
-/// cleaned copy, the decoded pixels (16-bit ones take twice the room) beside
-/// the eight-bit copy made from them, as much again while a photo turns
-/// upright, and the display copy with the resizer's and encoder's working
-/// rows.
-pub fn cost(bytes: &[u8], max_pixels: u64) -> Result<u64, Reject> {
-    let kind = sanitize::sniff(bytes).map_err(Reject::Unsupported)?;
-    let decoder = decoder(bytes, kind)?;
+/// The most memory [`process`] takes for a file of `size` bytes, read from
+/// its `head` (the first bytes, or all of them) so the budget can be held
+/// before the file is: the file and its cleaned copy, the decoded pixels
+/// (16-bit ones take twice the room) beside the eight-bit copy made from
+/// them, as much again while a photo turns upright, and the display copy with
+/// the resizer's and encoder's working rows. A header that runs past `head`
+/// reads as broken.
+pub fn cost(head: &[u8], size: u64, max_pixels: u64) -> Result<u64, Reject> {
+    let kind = sanitize::sniff(head).map_err(Reject::Unsupported)?;
+    let decoder = decoder(head, kind)?;
     let (w, h) = decoder.dimensions();
     check_size(w, h, max_pixels)?;
     let eight = 4 * u64::from(w) * u64::from(h);
     let copies = 4 * u64::from(DISPLAY_MAX) * (u64::from(w.max(h)) + u64::from(DISPLAY_MAX));
-    Ok(2 * bytes.len() as u64 + decoder.total_bytes().max(eight) + eight + copies)
+    Ok(2 * size + decoder.total_bytes().max(eight) + eight + copies)
 }
 
 pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
@@ -417,9 +418,19 @@ mod tests {
         let err = process(&jpeg(2000, 1000), 1_000_000).err().unwrap();
         assert!(matches!(err, Reject::TooBig(_)), "{err}");
         assert!(matches!(
-            cost(&jpeg(2000, 1000), 1_000_000),
+            cost(&jpeg(2000, 1000), 0, 1_000_000),
             Err(Reject::TooBig(_))
         ));
+    }
+
+    #[test]
+    fn a_photo_is_sized_from_its_first_bytes() {
+        let photo = jpeg(3000, 2000);
+        let size = photo.len() as u64;
+        assert_eq!(
+            cost(&photo[..16 << 10], size, 100_000_000).unwrap(),
+            cost(&photo, size, 100_000_000).unwrap()
+        );
     }
 
     fn png(w: u32, h: u32, color: image::ExtendedColorType) -> Vec<u8> {
@@ -440,10 +451,11 @@ mod tests {
     fn sixteen_bits_cost_more_and_come_out_as_eight() {
         let deep = png(600, 400, image::ExtendedColorType::Rgba16);
         let shallow = png(600, 400, image::ExtendedColorType::Rgb8);
-        // The decoded buffer is twice the eight-bit one, beside it.
-        assert!(
-            cost(&deep, 100_000_000).unwrap()
-                > cost(&shallow, 100_000_000).unwrap() + 600 * 400 * 4
+        // Eight bytes a pixel decoded where the eight-bit copy takes four; RGB
+        // at three is held to the four its copy takes.
+        assert_eq!(
+            cost(&deep, 0, 100_000_000).unwrap() - cost(&shallow, 0, 100_000_000).unwrap(),
+            4 * 600 * 400
         );
         let p = process(&deep, 100_000_000).unwrap();
         // Opaque, so the alpha channel is dropped too.

@@ -785,7 +785,11 @@ async function send(item: Item): Promise<void> {
         }
         item.state = "processing";
         tray.draw();
-        const res = await api("POST", `/api/uploads/${item.id}/finish`);
+        // Processing carries on if the connection drops, and asking again
+        // joins it.
+        const res = await api("POST", `/api/uploads/${item.id}/finish`).catch(() => {
+          throw new Failure("the connection dropped", true);
+        });
         const answer = await json<{ received: number; error: string }>(res);
         if (res.ok) {
           item.state = "done";

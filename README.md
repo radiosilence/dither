@@ -99,12 +99,18 @@ files were picked in, whatever order they finish in.
 
 Processing (cleaning, decoding, resizing, encoding) runs under a budget of
 memory (`PROCESS_MEMORY_BYTES`), which is what bounds what a batch of hundreds
-of photos can take. Each image's share is worked out from its header before
-anything is decoded, in bytes rather than pixels: a 16-bit PNG decodes to
-twice an 8-bit one's size, and a photo turning upright needs a second copy.
-An image that needs more than the whole budget is refused with the reason.
-Processing runs in a task the request only waits on, so a client that
-disconnects does not stop it, and asking again reads how it ended.
+of photos can take. Each image's share is worked out from its header, read
+from the file's first few megabytes before the file is read whole, in bytes
+rather than pixels: a 16-bit PNG decodes to twice an 8-bit one's size, and a
+photo turning upright needs a second copy. An image that needs more than the
+whole budget is refused with the reason. Processing runs in a task the
+request only waits on, so a client that disconnects does not stop it, and
+asking again reads how it ended.
+
+The database counts the bytes that arrived and the file on disk holds them.
+Where the two disagree (a disk restored without an upload's file, or a crash
+before its last bytes reached the disk), the file wins: the count drops to
+what it holds and the client sends the rest.
 
 The same JSON API serves anything else that wants to upload:
 
@@ -140,6 +146,12 @@ has no allowlist of its own: who may sign in is the provider's decision.
 Every person who signs in gets albums of their own and sees nobody else's.
 Sessions are opaque ids in `__Host-` cookies, stored hashed.
 
+The id_token is taken from the token endpoint in answer to a request dither
+makes, never from the browser, so its signature is not checked; its issuer,
+audience and expiry are. That trusts whatever answers at the token endpoint:
+the issuer itself over TLS, or, with `OIDC_TOKEN_URL` pointing at the
+provider's service inside a cluster, the cluster's network.
+
 ## A domain of its own
 
 `PUBLIC_URL` is what share links name. Set it to a different host from
@@ -166,6 +178,12 @@ name out of public repositories, closes both.
   no script at all.
 - A file's type is decided by its signature, never by its name or the type
   the browser claims. Decoding is limited in pixels and allocation.
+- Files in an album that is not private are cached by browsers for a year and
+  by shared caches (a CDN in front) for ten minutes, so making an album
+  private or deleting an image stops it being served within ten minutes. A
+  private album's files are never cached.
+- Signing out is a link, which another site cannot follow on someone's
+  behalf: a navigation the browser says came from elsewhere is ignored.
 
 ## Configuration
 

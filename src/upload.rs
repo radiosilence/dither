@@ -37,6 +37,9 @@ use crate::store::{self, Store, Variant};
 const DEFAULT_FREE_SHARE: f64 = 0.15;
 /// The processing budget's unit.
 const MIB: u64 = 1 << 20;
+/// What processing reads of a file to size it before holding any of the
+/// budget: every header dither takes ends well within it.
+const HEAD: u64 = 4 << 20;
 
 /// The largest chunk a client sends. Traefik reads a request's body within
 /// 60 seconds by default, so a chunk this size arrives in time on anything
@@ -212,6 +215,22 @@ impl Uploads {
             .open(&path)
             .await
             .map_err(|e| ChunkError::Io(e.to_string()))?;
+        // The database counts what arrived and the file holds it. A file short
+        // of the count (a disk restored without it, or a crash before the
+        // bytes reached it) resumes from what it holds, rather than the gap
+        // being filled with zeros.
+        let held = file
+            .metadata()
+            .await
+            .map_err(|e| ChunkError::Io(e.to_string()))?
+            .len();
+        if held < start {
+            self.db
+                .set_received(&upload.owner, &upload.id, held)
+                .await
+                .map_err(|e| ChunkError::Io(e.to_string()))?;
+            return Err(ChunkError::Conflict(held));
+        }
         // Whatever a broken earlier attempt left past the recorded length goes.
         file.set_len(start)
             .await
@@ -309,17 +328,66 @@ impl Uploads {
         Outcome::Rejected(why)
     }
 
+    /// The file is not what the database counts: count again from the file,
+    /// so the client sends the rest.
+    async fn recount(&self, upload: &Upload) -> Outcome {
+        let _held = self.lock(&upload.id).await;
+        let held = tokio::fs::metadata(self.file(&upload.id))
+            .await
+            .map_or(0, |m| m.len())
+            .min(upload.size);
+        if let Err(e) = self.db.set_received(&upload.owner, &upload.id, held).await {
+            tracing::warn!(upload = %upload.id, error = %e, "recounting an upload failed");
+        }
+        Outcome::Failed("the upload is incomplete; send it again".into())
+    }
+
     async fn process(&self, upload: Upload) -> Outcome {
+        // Read again: a run that finished first, or a cancel, may have ended
+        // it since this request read it.
+        match self.db.upload(&upload.id).await {
+            Ok(Some(u)) => {
+                if let Some(image) = u.image {
+                    return Outcome::Done(image);
+                }
+                if let Some(error) = u.error {
+                    return Outcome::Rejected(error);
+                }
+            }
+            Ok(None) => return Outcome::Rejected("its album was deleted while it uploaded".into()),
+            Err(_) => return Outcome::Failed("the image could not be saved; try again".into()),
+        }
         let started = Instant::now();
         let path = self.file(&upload.id);
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(b) if b.len() as u64 == upload.size => b,
-            Ok(_) | Err(_) => {
-                return Outcome::Failed("the upload is incomplete; send it again".into());
-            }
+        // Sized from its first bytes, so the files waiting for the budget are
+        // not held in memory beside it.
+        let mut head = Vec::new();
+        let read = async {
+            use tokio::io::AsyncReadExt as _;
+            tokio::fs::File::open(&path)
+                .await?
+                .take(HEAD)
+                .read_to_end(&mut head)
+                .await
         };
-        let cost = match media::cost(&bytes, self.max_pixels) {
+        if read.await.is_err() || (head.len() as u64) < upload.size.min(HEAD) {
+            return self.recount(&upload).await;
+        }
+        let cost = match media::cost(&head, upload.size, self.max_pixels) {
             Ok(cost) => cost,
+            // A header longer than the first bytes: size it from the whole file.
+            Err(media::Reject::Broken(_)) if (head.len() as u64) < upload.size => {
+                match tokio::fs::read(&path).await {
+                    Ok(all) => {
+                        head = all;
+                        match media::cost(&head, upload.size, self.max_pixels) {
+                            Ok(cost) => cost,
+                            Err(reject) => return self.reject(&upload, reject.to_string()).await,
+                        }
+                    }
+                    Err(_) => return self.recount(&upload).await,
+                }
+            }
             Err(reject) => return self.reject(&upload, reject.to_string()).await,
         };
         if cost > self.budget_bytes {
@@ -334,6 +402,14 @@ impl Uploads {
             let permits = u32::try_from(cost.div_ceil(MIB)).unwrap_or(u32::MAX).max(1);
             let Ok(_permit) = self.budget.acquire_many(permits).await else {
                 return Outcome::Failed("shutting down".into());
+            };
+            let bytes = if head.len() as u64 == upload.size {
+                head
+            } else {
+                match tokio::fs::read(&path).await {
+                    Ok(b) if b.len() as u64 == upload.size => b,
+                    _ => return self.recount(&upload).await,
+                }
             };
             let max = self.max_pixels;
             match tokio::task::spawn_blocking(move || media::process(&bytes, max)).await {
@@ -732,5 +808,74 @@ mod tests {
         drop(held);
         waiting.await.unwrap();
         assert!(uploads.locks.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_lost_file_resumes_from_what_it_holds_rather_than_zeros() {
+        let (uploads, db, _, _dir) = setup().await;
+        let file = jpeg(300, 200);
+        let upload = begin(&db, file.len() as u64).await;
+        let half = file.len() / 2;
+        uploads
+            .append(&upload, 0, half as u64, chunks(&file[..half]))
+            .await
+            .unwrap();
+        // The disk lost it, while the database still counts half.
+        std::fs::remove_file(uploads.file(&upload.id)).unwrap();
+        let rest = (file.len() - half) as u64;
+        assert_eq!(
+            uploads
+                .append(&upload, half as u64, rest, chunks(&file[half..]))
+                .await,
+            Err(ChunkError::Conflict(0))
+        );
+        assert_eq!(db.upload(&upload.id).await.unwrap().unwrap().received, 0);
+    }
+
+    #[tokio::test]
+    async fn a_file_short_of_its_count_is_counted_again_and_sent_again() {
+        let (uploads, db, _, _dir) = setup().await;
+        let file = jpeg(300, 200);
+        let size = file.len() as u64;
+        let upload = begin(&db, size).await;
+        uploads
+            .append(&upload, 0, size, chunks(&file))
+            .await
+            .unwrap();
+        // The tail never reached the disk.
+        let half = size / 2;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(uploads.file(&upload.id))
+            .unwrap()
+            .set_len(half)
+            .unwrap();
+        let stale = db.upload(&upload.id).await.unwrap().unwrap();
+        assert!(matches!(uploads.finish(stale).await, Outcome::Failed(_)));
+        let upload = db.upload(&upload.id).await.unwrap().unwrap();
+        assert_eq!(upload.received, half);
+        uploads
+            .append(&upload, half, size - half, chunks(&file[half as usize..]))
+            .await
+            .unwrap();
+        let upload = db.upload(&upload.id).await.unwrap().unwrap();
+        assert!(matches!(uploads.finish(upload).await, Outcome::Done(_)));
+    }
+
+    #[tokio::test]
+    async fn a_finish_read_before_another_run_ended_reads_how_it_ended() {
+        let (uploads, db, _, _dir) = setup().await;
+        let file = jpeg(64, 64);
+        let upload = begin(&db, file.len() as u64).await;
+        uploads
+            .append(&upload, 0, file.len() as u64, chunks(&file))
+            .await
+            .unwrap();
+        let stale = db.upload(&upload.id).await.unwrap().unwrap();
+        let Outcome::Done(id) = uploads.finish(stale.clone()).await else {
+            panic!("expected an image");
+        };
+        // Read while the first run was going, asked after it ended.
+        assert_eq!(uploads.finish(stale).await, Outcome::Done(id));
     }
 }
