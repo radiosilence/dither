@@ -1,0 +1,411 @@
+//! From uploaded bytes to what is stored: the original with its metadata
+//! removed, a thumbnail for grids, and a display copy for pictures too large to
+//! send whole to a phone.
+//!
+//! Derived copies are lossy WebP: a third smaller than JPEG at the same
+//! quality, and they keep transparency. They carry the original's colour
+//! profile, so a wide-gamut photo looks the same in its thumbnail as in the
+//! original; a profile for some other colour model (CMYK) is left off, since
+//! the pixels have been converted to RGB by then.
+
+use std::io::Cursor;
+
+use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
+use image::metadata::Orientation;
+use image::{DynamicImage, ImageDecoder, ImageReader};
+use sha2::{Digest, Sha256};
+
+use crate::sanitize::{self, Kind};
+
+/// A thumbnail's shorter side: sharp in a grid tile on a 3× phone screen.
+pub const THUMB_SHORT: u32 = 480;
+/// A thumbnail's longer side at most, so a panorama's stays small.
+pub const THUMB_LONG: u32 = 1440;
+/// A picture longer than this on either side gets a display copy this long.
+pub const DISPLAY_MAX: u32 = 2048;
+const THUMB_QUALITY: f32 = 74.0;
+const DISPLAY_QUALITY: f32 = 82.0;
+
+pub struct Processed {
+    pub kind: Kind,
+    /// As shown: after the orientation is applied.
+    pub width: u32,
+    pub height: u32,
+    pub animated: bool,
+    pub original: Vec<u8>,
+    pub thumb: Vec<u8>,
+    pub display: Option<Vec<u8>>,
+    pub sha256: [u8; 32],
+}
+
+/// Why an upload was refused, in words for the person who sent it.
+#[derive(Debug, thiserror::Error)]
+pub enum Reject {
+    #[error("{0}")]
+    Unsupported(&'static str),
+    #[error("{0}")]
+    TooBig(String),
+    #[error("{0}")]
+    Broken(String),
+}
+
+fn decoder(bytes: &[u8], kind: Kind) -> Result<impl ImageDecoder + '_, Reject> {
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), kind.image_format());
+    let mut limits = image::Limits::default();
+    // A 100-megapixel picture at 16 bits a channel, and a little over.
+    limits.max_alloc = Some(1 << 30);
+    reader.limits(limits);
+    reader
+        .into_decoder()
+        .map_err(|e| Reject::Broken(format!("the image can't be read: {e}")))
+}
+
+/// The format and pixel count, from the header alone: what deciding whether
+/// to take the file, and how much memory decoding it will need, costs.
+pub fn inspect(bytes: &[u8]) -> Result<(Kind, u64), Reject> {
+    let kind = sanitize::sniff(bytes).map_err(Reject::Unsupported)?;
+    let (w, h) = decoder(bytes, kind)?.dimensions();
+    Ok((kind, u64::from(w) * u64::from(h)))
+}
+
+pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
+    let kind = sanitize::sniff(bytes).map_err(Reject::Unsupported)?;
+    let orientation = decoder(bytes, kind)?
+        .orientation()
+        .unwrap_or(Orientation::NoTransforms);
+    let clean = sanitize::clean(kind, bytes, orientation.to_exif())
+        .map_err(|e| Reject::Broken(format!("the file is damaged: {e}")))?;
+
+    // Everything from here reads the cleaned file, so what is stored is
+    // proven to decode.
+    let mut decoder = decoder(&clean.bytes, kind)?;
+    let (w, h) = decoder.dimensions();
+    if w == 0 || h == 0 {
+        return Err(Reject::Broken("the image has no pixels".into()));
+    }
+    let pixels = u64::from(w) * u64::from(h);
+    if pixels > max_pixels {
+        return Err(Reject::TooBig(format!(
+            "{w}×{h} is {} megapixels; the limit is {}",
+            pixels.div_ceil(1_000_000),
+            max_pixels / 1_000_000
+        )));
+    }
+    let icc = decoder
+        .icc_profile()
+        .ok()
+        .flatten()
+        .filter(|p| p.get(16..20) == Some(b"RGB "));
+    let mut img = DynamicImage::from_decoder(decoder)
+        .map_err(|e| Reject::Broken(format!("the image can't be decoded: {e}")))?;
+    img.apply_orientation(orientation);
+    let img = eight_bit(img);
+    let (width, height) = (img.width(), img.height());
+
+    let display = (!clean.animated && width.max(height) > DISPLAY_MAX)
+        .then(|| resize(&img, fit(width, height, DISPLAY_MAX)));
+    let thumb = resize(display.as_ref().unwrap_or(&img), thumb_size(width, height));
+    Ok(Processed {
+        kind,
+        width,
+        height,
+        animated: clean.animated,
+        sha256: Sha256::digest(&clean.bytes).into(),
+        original: clean.bytes,
+        thumb: webp(&thumb, THUMB_QUALITY, icc.as_deref()),
+        display: display.map(|d| webp(&d, DISPLAY_QUALITY, icc.as_deref())),
+    })
+}
+
+/// RGB or RGBA at eight bits a channel, which the resizer and the encoder
+/// take. An alpha channel nothing uses is dropped: screenshots arrive as RGBA
+/// with every pixel opaque, and the channel would cost bytes in every copy.
+fn eight_bit(img: DynamicImage) -> DynamicImage {
+    match img {
+        DynamicImage::ImageRgb8(_) => img,
+        DynamicImage::ImageRgba8(rgba) => {
+            if rgba.pixels().all(|p| p.0[3] == u8::MAX) {
+                DynamicImage::ImageRgb8(DynamicImage::ImageRgba8(rgba).to_rgb8())
+            } else {
+                DynamicImage::ImageRgba8(rgba)
+            }
+        }
+        other if other.color().has_alpha() => eight_bit(DynamicImage::ImageRgba8(other.to_rgba8())),
+        other => DynamicImage::ImageRgb8(other.to_rgb8()),
+    }
+}
+
+/// `w`×`h` scaled down, keeping its shape, until neither side passes `max`.
+pub fn fit(w: u32, h: u32, max: u32) -> (u32, u32) {
+    if w.max(h) <= max {
+        return (w, h);
+    }
+    let scale = |a: u32, b: u32| {
+        ((u64::from(a) * u64::from(max) + u64::from(b) / 2) / u64::from(b)).max(1) as u32
+    };
+    if w >= h {
+        (max, scale(h, w))
+    } else {
+        (scale(w, h), max)
+    }
+}
+
+/// A thumbnail's size: the shorter side `THUMB_SHORT`, so a square crop of it
+/// fills a tile, with the longer side held to `THUMB_LONG`.
+pub fn thumb_size(w: u32, h: u32) -> (u32, u32) {
+    let short = w.min(h);
+    let (tw, th) = if short > THUMB_SHORT {
+        let scale = |a: u32| {
+            ((u64::from(a) * u64::from(THUMB_SHORT) + u64::from(short) / 2) / u64::from(short))
+                .max(1) as u32
+        };
+        (scale(w), scale(h))
+    } else {
+        (w, h)
+    };
+    fit(tw, th, THUMB_LONG)
+}
+
+fn resize(src: &DynamicImage, (w, h): (u32, u32)) -> DynamicImage {
+    if (w, h) == (src.width(), src.height()) {
+        return src.clone();
+    }
+    let alpha = src.color().has_alpha();
+    let pixel_type = if alpha {
+        PixelType::U8x4
+    } else {
+        PixelType::U8x3
+    };
+    let mut dst = fast_image_resize::images::Image::new(w, h, pixel_type);
+    Resizer::new()
+        .resize(
+            src,
+            &mut dst,
+            &ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Lanczos3)),
+        )
+        .expect("an RGB or RGBA source resizes into a buffer of its own pixel type");
+    let buf = dst.into_vec();
+    if alpha {
+        DynamicImage::ImageRgba8(image::RgbaImage::from_raw(w, h, buf).expect("w×h×4 bytes"))
+    } else {
+        DynamicImage::ImageRgb8(image::RgbImage::from_raw(w, h, buf).expect("w×h×3 bytes"))
+    }
+}
+
+fn webp(img: &DynamicImage, quality: f32, icc: Option<&[u8]>) -> Vec<u8> {
+    let encoded = match img {
+        DynamicImage::ImageRgba8(b) => {
+            webp::Encoder::from_rgba(b.as_raw(), b.width(), b.height()).encode(quality)
+        }
+        DynamicImage::ImageRgb8(b) => {
+            webp::Encoder::from_rgb(b.as_raw(), b.width(), b.height()).encode(quality)
+        }
+        _ => unreachable!("eight_bit makes every image RGB or RGBA"),
+    };
+    match icc {
+        Some(profile) => with_icc(
+            &encoded,
+            profile,
+            img.width(),
+            img.height(),
+            img.color().has_alpha(),
+        ),
+        None => encoded.to_vec(),
+    }
+}
+
+/// `webp` with an ICC profile: the extended header, flagged as carrying one,
+/// then the profile, then the image. libwebp's simple encoder writes neither.
+fn with_icc(webp: &[u8], icc: &[u8], w: u32, h: u32, alpha: bool) -> Vec<u8> {
+    let Ok(chunks) = sanitize::riff_chunks(webp) else {
+        return webp.to_vec();
+    };
+    let (mut header, rest) = match chunks.split_first() {
+        Some((([b'V', b'P', b'8', b'X'], data), rest)) => (data.to_vec(), rest),
+        _ => {
+            let mut x = vec![if alpha { 0x10 } else { 0 }, 0, 0, 0];
+            x.extend_from_slice(&(w - 1).to_le_bytes()[..3]);
+            x.extend_from_slice(&(h - 1).to_le_bytes()[..3]);
+            (x, &chunks[..])
+        }
+    };
+    header[0] |= 0x20;
+    let mut all = vec![(*b"VP8X", &header[..]), (*b"ICCP", icc)];
+    all.extend(rest.iter().copied());
+    sanitize::riff_write(&all)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{ImageEncoder, ImageReader};
+
+    fn jpeg(w: u32, h: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 90])
+        });
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
+            .write_image(img.as_raw(), w, h, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        out
+    }
+
+    fn with_segment(jpeg: &[u8], marker: u8, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![0xFF, 0xD8, 0xFF, marker];
+        out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(payload);
+        out.extend_from_slice(&jpeg[2..]);
+        out
+    }
+
+    fn dims(webp: &[u8]) -> (u32, u32) {
+        let img = image::load_from_memory_with_format(webp, image::ImageFormat::WebP).unwrap();
+        (img.width(), img.height())
+    }
+
+    #[test]
+    fn sizes_keep_their_shape() {
+        assert_eq!(fit(4000, 3000, 2048), (2048, 1536));
+        assert_eq!(fit(3000, 4000, 2048), (1536, 2048));
+        assert_eq!(fit(100, 50, 2048), (100, 50));
+        assert_eq!(fit(100_000, 10, 2048), (2048, 1));
+        assert_eq!(thumb_size(4032, 3024), (640, 480));
+        assert_eq!(thumb_size(3024, 4032), (480, 640));
+        assert_eq!(thumb_size(300, 200), (300, 200));
+        // A panorama: the long side caps before the short side reaches 480.
+        assert_eq!(thumb_size(16000, 2000), (1440, 180));
+    }
+
+    #[test]
+    fn a_large_photo_gets_a_display_copy_and_a_thumbnail() {
+        let p = process(&jpeg(3000, 2000), 100_000_000).unwrap();
+        assert_eq!((p.width, p.height), (3000, 2000));
+        assert_eq!(p.kind, Kind::Jpeg);
+        assert!(!p.animated);
+        assert_eq!(
+            dims(p.display.as_ref().expect("a display copy")),
+            (2048, 1365)
+        );
+        assert_eq!(dims(&p.thumb), (720, 480));
+        assert_eq!(p.sha256, <[u8; 32]>::from(Sha256::digest(&p.original)));
+    }
+
+    #[test]
+    fn a_small_picture_is_its_own_display_copy() {
+        let p = process(&jpeg(800, 600), 100_000_000).unwrap();
+        assert!(p.display.is_none());
+        assert_eq!(dims(&p.thumb), (640, 480));
+    }
+
+    #[test]
+    fn orientation_turns_the_reported_size_and_the_copies() {
+        // EXIF orientation 6: stored landscape, shown portrait.
+        let mut exif = b"Exif\0\0MM\0*\0\0\0\x08\0\x01".to_vec();
+        exif.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
+        let input = with_segment(&jpeg(3000, 2000), 0xE1, &exif);
+        let p = process(&input, 100_000_000).unwrap();
+        assert_eq!((p.width, p.height), (2000, 3000));
+        assert_eq!(dims(p.display.as_ref().unwrap()), (1365, 2048));
+        assert_eq!(dims(&p.thumb), (480, 720));
+    }
+
+    #[test]
+    fn an_rgb_profile_travels_into_the_copies_and_a_cmyk_one_does_not() {
+        let mut rgb = vec![0u8; 128];
+        rgb[16..20].copy_from_slice(b"RGB ");
+        let mut payload = b"ICC_PROFILE\0\x01\x01".to_vec();
+        payload.extend_from_slice(&rgb);
+        let p = process(&with_segment(&jpeg(64, 64), 0xE2, &payload), 100_000_000).unwrap();
+        let chunks = sanitize::riff_chunks(&p.thumb).unwrap();
+        assert_eq!(chunks[0].0, *b"VP8X");
+        assert_eq!(chunks[0].1[0] & 0x20, 0x20);
+        assert_eq!(chunks[1], (*b"ICCP", &rgb[..]));
+        let mut decoder = ImageReader::new(Cursor::new(&p.thumb))
+            .with_guessed_format()
+            .unwrap()
+            .into_decoder()
+            .unwrap();
+        assert_eq!(decoder.icc_profile().unwrap(), Some(rgb.clone()));
+
+        let mut cmyk = rgb.clone();
+        cmyk[16..20].copy_from_slice(b"CMYK");
+        let mut payload = b"ICC_PROFILE\0\x01\x01".to_vec();
+        payload.extend_from_slice(&cmyk);
+        let p = process(&with_segment(&jpeg(64, 64), 0xE2, &payload), 100_000_000).unwrap();
+        assert!(
+            sanitize::riff_chunks(&p.thumb)
+                .unwrap()
+                .iter()
+                .all(|(c, _)| c != b"ICCP")
+        );
+    }
+
+    #[test]
+    fn transparency_is_kept_and_an_unused_alpha_channel_dropped() {
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_fn(32, 32, |x, _| {
+            image::Rgba([255, 0, 0, if x < 16 { 0 } else { 255 }])
+        });
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(img.as_raw(), 32, 32, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let p = process(&png, 100_000_000).unwrap();
+        let thumb = image::load_from_memory(&p.thumb).unwrap();
+        assert!(thumb.color().has_alpha());
+
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_pixel(32, 32, image::Rgba([0, 0, 255, 255]));
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(img.as_raw(), 32, 32, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let p = process(&png, 100_000_000).unwrap();
+        assert!(
+            !image::load_from_memory(&p.thumb)
+                .unwrap()
+                .color()
+                .has_alpha()
+        );
+    }
+
+    #[test]
+    fn an_animated_gif_is_kept_whole_with_a_still_thumbnail() {
+        let mut gif = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+            for shade in [0u8, 255] {
+                let frame = image::RgbaImage::from_pixel(2400, 40, image::Rgba([shade, 0, 0, 255]));
+                encoder.encode_frame(image::Frame::new(frame)).unwrap();
+            }
+        }
+        let p = process(&gif, 100_000_000).unwrap();
+        assert!(p.animated);
+        assert!(
+            p.display.is_none(),
+            "a display copy would stop the animation"
+        );
+        assert_eq!(p.kind, Kind::Gif);
+        assert_eq!(dims(&p.thumb), (1440, 24));
+    }
+
+    #[test]
+    fn too_many_pixels_is_refused_before_decoding() {
+        let err = process(&jpeg(2000, 1000), 1_000_000).err().unwrap();
+        assert!(matches!(err, Reject::TooBig(_)), "{err}");
+        assert_eq!(inspect(&jpeg(2000, 1000)).unwrap(), (Kind::Jpeg, 2_000_000));
+    }
+
+    #[test]
+    fn garbage_is_refused_with_a_reason() {
+        assert!(matches!(
+            process(b"hello", 1_000_000),
+            Err(Reject::Unsupported(_))
+        ));
+        let mut truncated = jpeg(64, 64);
+        truncated.truncate(200);
+        assert!(matches!(
+            process(&truncated, 1_000_000),
+            Err(Reject::Broken(_))
+        ));
+    }
+}

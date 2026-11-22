@@ -1,0 +1,12 @@
+/**
+ * The version this chart deploys: the crate's version, and the package's.
+ * dither and the chart that deploys it ship together, so one number says
+ * exactly which build a pin gets. CI refuses a release where `Cargo.toml`,
+ * `package.json` and this disagree.
+ */
+export const APP_VERSION = "0.1.0";
+
+export const VERSIONS = {
+  dither: `ghcr.io/radiosilence/dither:v${APP_VERSION}`,
+  alpine: "alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf",
+} as const;

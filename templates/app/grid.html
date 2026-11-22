@@ -1,0 +1,13 @@
+<div id="grid" class="tiles" data-album="{{ album }}">
+{% for t in tiles %}
+  <button type="button" class="tile" id="i-{{ t.id }}" data-id="{{ t.id }}" aria-label="{{ t.label }}"
+    data-on:click="dither.show('viewer'); @get('/images/{{ t.id }}/view')">
+    <img src="{{ t.thumb }}" alt="" loading="lazy" decoding="async" draggable="false">
+    <span class="marks">{% if t.id == cover %}<span class="mark">cover</span>{% endif %}{% if t.animated %}<span class="mark">gif</span>{% endif %}{% if t.captioned %}<span class="mark">¶</span>{% endif %}</span>
+    <span class="tick">{{ icon("check", 13.0)|safe }}</span>
+  </button>
+{% endfor %}
+{% if tiles.is_empty() %}
+  <p class="col-span-full py-16 text-center text-muted">Nothing here yet.</p>
+{% endif %}
+</div>

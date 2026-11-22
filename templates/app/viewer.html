@@ -1,0 +1,29 @@
+<div id="viewer-body" class="viewer-body" data-image="{{ id }}">
+  <div class="viewer-bar">
+    <span class="text-meta text-muted">{{ position }}</span>
+    <span class="flex-1"></span>
+    <a class="icon-button" href="{{ file }}" download="{{ download }}" aria-label="download">{{ icon("download", 18.0)|safe }}</a>
+    <button class="icon-button" data-close aria-label="close">{{ icon("close", 18.0)|safe }}</button>
+  </div>
+  <div class="stage">
+    <img src="{{ src }}" width="{{ width }}" height="{{ height }}" alt="{{ caption }}" decoding="async" draggable="false">
+    {% if let Some(p) = prev.as_ref() %}<button class="nav prev" aria-label="previous" data-key="ArrowLeft" data-on:click="@get('/images/{{ p }}/view')">{{ icon("chevron-left", 22.0)|safe }}</button>{% endif %}
+    {% if let Some(n) = next.as_ref() %}<button class="nav next" aria-label="next" data-key="ArrowRight" data-on:click="@get('/images/{{ n }}/view')">{{ icon("chevron-right", 22.0)|safe }}</button>{% endif %}
+  </div>
+  <div class="viewer-panel">
+    <textarea class="text-field" rows="2" placeholder="Add a caption" aria-label="caption" maxlength="20000"
+      data-on:input__debounce.600ms="@post('/images/{{ id }}/caption', {payload: {caption: el.value}})">{{ caption }}</textarea>
+    <dl class="links">
+    {% for (name, value) in links %}
+      <dt>{{ name }}</dt>
+      <dd><input readonly value="{{ value }}" aria-label="{{ name }}" data-select><button class="icon-button" data-copy="{{ value }}" aria-label="copy {{ name }}">{{ icon("copy", 15.0)|safe }}</button></dd>
+    {% endfor %}
+    </dl>
+    <div class="flex flex-wrap gap-2">
+      <button{% if is_cover %} disabled{% endif %} data-on:click="@post('/albums/{{ album }}/cover', {payload: {image: '{{ id }}'}})">{% if is_cover %}album cover{% else %}make cover{% endif %}</button>
+      <button data-move-one="{{ id }}">{{ icon("album", 13.0)|safe }} move</button>
+      <button class="bad" data-delete-one="{{ id }}">{{ icon("trash", 13.0)|safe }} delete</button>
+    </div>
+    <p class="m-0 text-fine break-all text-muted">{{ meta }}</p>
+  </div>
+</div>

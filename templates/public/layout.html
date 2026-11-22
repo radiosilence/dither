@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}{{ og.title }}{% endblock %}
+{% block head %}
+<meta name="robots" content="noindex">
+<link rel="canonical" href="{{ og.url }}">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ og.title }}">
+<meta property="og:url" content="{{ og.url }}">
+{% if !og.description.is_empty() %}
+<meta name="description" content="{{ og.description }}">
+<meta property="og:description" content="{{ og.description }}">
+{% endif %}
+{% if let Some(img) = og.image.as_ref() %}
+<meta property="og:image" content="{{ img.url }}">
+<meta property="og:image:type" content="{{ img.mime }}">
+<meta property="og:image:width" content="{{ img.width }}">
+<meta property="og:image:height" content="{{ img.height }}">
+{% if !img.alt.is_empty() %}<meta property="og:image:alt" content="{{ img.alt }}">{% endif %}
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="{{ img.url }}">
+{% endif %}
+<meta name="twitter:title" content="{{ og.title }}">
+{% endblock %}
+{% block body %}
+<body class="public">
+{% block main %}{% endblock %}
+</body>
+{% endblock %}

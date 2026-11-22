@@ -1,0 +1,40 @@
+{% extends "app/layout.html" %}
+{% block title %}{% if title.is_empty() %}untitled{% else %}{{ title }}{% endif %} · dither{% endblock %}
+{% block main %}
+<a href="/" class="back">{{ icon("chevron-left", 13.0)|safe }} albums</a>
+<div class="album-head" data-album="{{ id }}">
+  <input class="title-field" value="{{ title }}" placeholder="untitled" aria-label="title" maxlength="300" autocomplete="off" spellcheck="false"
+    data-on:input__debounce.500ms="@post('/albums/{{ id }}/meta', {payload: {title: el.value}})">
+  <textarea class="text-field" rows="1" placeholder="Add a description" aria-label="description" maxlength="20000"
+    data-on:input__debounce.700ms="@post('/albums/{{ id }}/meta', {payload: {description: el.value}})">{{ description }}</textarea>
+</div>
+<div class="share">
+  <input class="link" readonly value="{{ share }}" aria-label="link to this album" data-select>
+  <button data-copy="{{ share }}">{{ icon("copy", 13.0)|safe }} <span>copy link</span></button>
+  <a class="button" href="{{ share }}" target="_blank" rel="noopener">{{ icon("open-external", 13.0)|safe }} open</a>
+  <label class="toggle"><input type="checkbox"{% if private %} checked{% endif %}
+    data-on:change="@post('/albums/{{ id }}/meta', {payload: {private: el.checked}})"> private</label>
+</div>
+<div class="dropzone compact" data-dropzone>
+  <button class="primary" data-pick>add images</button>
+  <p class="m-0 text-meta text-muted">or drop them anywhere, or paste</p>
+</div>
+<div class="toolbar">
+  <span class="text-meta text-muted">{{ summary|safe }}</span>
+  <span class="flex-1"></span>
+  <button class="quiet" data-select-mode>{{ icon("select", 13.0)|safe }} select</button>
+</div>
+<div class="selectbar" data-selectbar hidden>
+  <span class="text-meta" data-selected-count>none selected</span>
+  <span class="flex-1"></span>
+  <button class="standard" data-move>{{ icon("album", 13.0)|safe }} move</button>
+  <button class="standard" data-make-cover>cover</button>
+  <button class="standard bad" data-delete>{{ icon("trash", 13.0)|safe }} delete</button>
+  <button class="standard" data-select-done>done</button>
+</div>
+<div data-init="@get('/stream?album={{ id }}')"></div>
+{{ grid|safe }}
+<div class="mt-16 flex justify-end">
+  <button class="quiet bad" data-delete-album="{{ id }}">{{ icon("trash", 13.0)|safe }} delete album</button>
+</div>
+{% endblock %}

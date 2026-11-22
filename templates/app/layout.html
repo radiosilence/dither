@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block head %}
+<script type="module" src="{{ datastar_url() }}"></script>
+<script type="module" src="{{ app_js_url() }}"></script>
+{% endblock %}
+{% block body %}
+<body class="app" data-max-upload="{{ shell.max_upload }}" data-chunk="{{ shell.chunk }}">
+<header class="topbar">
+  <a href="/" class="wordmark" aria-label="dither: albums">dither</a>
+  <span class="flex-1"></span>
+  <span class="truncate text-meta text-muted">{{ shell.login }}</span>
+  <a class="text-meta text-muted hover:text-ink hover:no-underline" href="/auth/logout">sign out</a>
+</header>
+<main class="page">
+  <div id="notice" role="status" hidden></div>
+  {% block main %}{% endblock %}
+</main>
+<div id="drop" class="drop" hidden><p>drop to upload</p></div>
+<section id="tray" class="tray" hidden aria-label="uploads"></section>
+<dialog id="viewer" class="viewer" aria-label="image"><div id="viewer-body" class="viewer-body"></div></dialog>
+<dialog id="mover" class="sheet" aria-label="move images"><div id="mover-body"></div></dialog>
+<dialog id="confirm" class="sheet" aria-label="confirm">
+  <form method="dialog">
+    <p id="confirm-text" class="mt-0"></p>
+    <div class="mt-6 flex justify-end gap-3">
+      <button value="cancel" class="standard">cancel</button>
+      <button value="ok" id="confirm-ok" class="bad">delete</button>
+    </div>
+  </form>
+</dialog>
+<input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp" hidden>
+</body>
+{% endblock %}
