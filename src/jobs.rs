@@ -73,6 +73,8 @@ pub enum ToWorker {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum FromWorker {
+    /// What this worker can make, said when it connects.
+    Hello { videos: bool },
     /// Job `id` of `owner`'s is `done` thousandths made.
     Progress {
         owner: String,
@@ -110,6 +112,23 @@ pub struct Hub {
     progress: parking_lot::Mutex<HashMap<String, (u16, std::time::Instant)>>,
     ticks: broadcast::Sender<Tick>,
     orders: broadcast::Sender<ToWorker>,
+    /// Each job as it ends: its id, and whether it was made.
+    ended: broadcast::Sender<(String, bool)>,
+    /// Whether the worker last heard from can make videos; until one is,
+    /// the configuration is taken at its word.
+    videos: std::sync::atomic::AtomicU8,
+}
+
+/// The words the API gives for a failure key, which the pages word through
+/// gettext instead.
+pub fn reason(key: &str) -> &'static str {
+    match key {
+        FAILED_UNREADABLE => "it can't be read: it may be damaged",
+        FAILED_TOO_LONG => "it's longer than this server takes",
+        FAILED_TOO_LARGE => "it's larger than this server takes",
+        FAILED_UNSUPPORTED => "this server can't process videos",
+        _ => "it couldn't be processed",
+    }
 }
 
 impl Hub {
@@ -121,7 +140,40 @@ impl Hub {
             progress: Default::default(),
             ticks: broadcast::channel(1024).0,
             orders: broadcast::channel(256).0,
+            ended: broadcast::channel(1024).0,
+            videos: std::sync::atomic::AtomicU8::new(0),
         })
+    }
+
+    /// Whether videos can be made: unknown until a worker says, and then
+    /// what the last to connect said.
+    pub fn takes_videos(&self) -> bool {
+        self.videos.load(std::sync::atomic::Ordering::Relaxed) != 2
+    }
+
+    /// Wait up to `limit` for job `id` to end: whether it was made, or `None`
+    /// when it has not ended by then. Ask before the job can end, as
+    /// [`ends`](Self::ends) does.
+    pub async fn ended(
+        mut ends: broadcast::Receiver<(String, bool)>,
+        id: &str,
+        limit: std::time::Duration,
+    ) -> Option<bool> {
+        let wait = async {
+            loop {
+                match ends.recv().await {
+                    Ok((ended, made)) if ended == id => return Some(made),
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        };
+        tokio::time::timeout(limit, wait).await.ok().flatten()
+    }
+
+    /// Jobs' ends, from now.
+    pub fn ends(&self) -> broadcast::Receiver<(String, bool)> {
+        self.ended.subscribe()
     }
 
     /// Listen for workers. A socket a stopped process left is replaced.
@@ -220,6 +272,12 @@ impl Hub {
                 self.progress.lock().remove(&id);
                 crate::metrics::processed(made, video, std::time::Duration::from_millis(ms), bytes);
                 self.db.announce(&owner);
+                let _ = self.ended.send((id, made));
+            }
+            FromWorker::Hello { videos } => {
+                let state = if videos { 1 } else { 2 };
+                self.videos
+                    .store(state, std::sync::atomic::Ordering::Relaxed);
             }
         }
     }

@@ -294,9 +294,7 @@ jobs:
     # Blocking. The advisories already in the lockfile are acknowledged in
     # .cargo/audit.toml, when there are any, so this fails on anything new.
     #
-    # cargo-audit itself, rather than rustsec/audit-check, which runs the same
-    # and then reports through a check run whose update failed now and then
-    # with a Not Found, failing a clean audit.
+    # cargo-audit's exit status is the result: no check run to report through.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable

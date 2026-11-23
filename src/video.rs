@@ -264,7 +264,57 @@ impl Tools {
                 None,
             )
             .await?;
-        Probe::parse(&out)
+        let mut probe = Probe::parse(&out)?;
+        // Matroska from a browser's MediaRecorder states no length: the last
+        // packet's time is it.
+        if probe.duration <= 0.0 {
+            probe.duration = self.last_packet(container, path).await?;
+        }
+        if probe.duration <= 0.0 {
+            return Err("its length can't be read".into());
+        }
+        Ok(probe)
+    }
+
+    /// When the video's last packet ends, in seconds, read from every
+    /// packet's time: slower than the container's word, but a file's whole
+    /// is read without decoding it.
+    async fn last_packet(&self, container: Container, path: &Path) -> Result<f64, String> {
+        let mut args: Vec<OsString> = ["-hide_banner", "-v", "error"]
+            .iter()
+            .map(Into::into)
+            .collect();
+        args.extend(Self::input(container).iter().map(Into::into));
+        args.extend(
+            [
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "packet=pts_time,duration_time",
+                "-of",
+                "csv=p=0",
+            ]
+            .iter()
+            .map(Into::into),
+        );
+        args.push(file(path));
+        let out = self
+            .run(
+                &self.ffprobe,
+                args,
+                Duration::from_secs(300),
+                watch::channel(false).1,
+                None,
+            )
+            .await?;
+        Ok(String::from_utf8_lossy(&out)
+            .lines()
+            .filter_map(|l| {
+                let mut parts = l.split(',').map(|v| v.trim().parse::<f64>().ok());
+                let pts = parts.next().flatten()?;
+                Some(pts + parts.next().flatten().unwrap_or(0.0))
+            })
+            .fold(0.0, f64::max))
     }
 
     /// What every ffmpeg run starts with: no questions, errors only, and its
@@ -328,7 +378,8 @@ impl Tools {
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(e) if e == "stopped" => return Err(e),
+                // Out of time, another try would only run out again.
+                Err(e) if e == "stopped" || e.starts_with("timed out") => return Err(e),
                 Err(e) => {
                     tracing::info!(error = %e, audio_copy, "remuxing into MP4 failed");
                     failure = e;
@@ -638,7 +689,7 @@ impl Probe {
         let duration = number(&raw.format.duration)
             .or_else(|| number(&video.duration))
             .filter(|d| d.is_finite() && *d > 0.0)
-            .ok_or("its length can't be read")?;
+            .unwrap_or(0.0);
         Ok(Self {
             duration,
             bitrate: number(&raw.format.bit_rate).unwrap_or_default() as u64,
@@ -986,6 +1037,33 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn a_recording_that_states_no_length_is_measured_from_its_packets() {
+        let Some(tools) = tools().await else { return };
+        let dir = tempfile::tempdir().unwrap();
+        // As a browser's MediaRecorder writes it: no duration in the header.
+        let live = clip(
+            dir.path(),
+            "recorded.webm",
+            3,
+            "320x240",
+            &[
+                "-c:v",
+                "libvpx",
+                "-deadline",
+                "realtime",
+                "-c:a",
+                "libopus",
+                "-live",
+                "1",
+                "-f",
+                "webm",
+            ],
+        );
+        let probe = tools.probe(Container::Matroska, &live).await.unwrap();
+        assert!((probe.duration - 3.0).abs() < 0.5, "{}", probe.duration);
+    }
+
+    #[tokio::test]
     async fn a_stop_ends_ffmpeg() {
         let Some(tools) = tools().await else { return };
         let dir = tempfile::tempdir().unwrap();
@@ -1053,6 +1131,9 @@ pub mod tests {
             Probe::parse(br#"{"streams": [{"index": 0, "codec_type": "audio", "codec_name": "aac"}], "format": {"duration": "3"}}"#),
             Err("it has no video in it".into())
         );
+        // No length stated: left for the packets to tell.
+        let unstated = Probe::parse(br#"{"streams": [{"index": 0, "codec_type": "video", "codec_name": "vp9", "width": 8, "height": 8}], "format": {}}"#).unwrap();
+        assert_eq!(unstated.duration, 0.0);
     }
 
     #[tokio::test]

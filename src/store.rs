@@ -179,16 +179,32 @@ impl Store {
         Ok(())
     }
 
-    /// Store the file at `path` under `key`, streamed rather than read whole:
-    /// a video can be larger than the memory processing may take.
-    pub async fn put_file(&self, key: &Path, path: &FsPath) -> Result<()> {
-        use tokio::io::AsyncWriteExt as _;
+    /// Store the file at `path` under `key`, streamed rather than read whole
+    /// (a video can be larger than the memory processing may take), and say
+    /// its length and SHA-256, taken in the same pass.
+    pub async fn put_file(&self, key: &Path, path: &FsPath) -> Result<(u64, [u8; 32])> {
+        use sha2::Digest as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         self.cache.remove(key);
         let mut file = tokio::fs::File::open(path)
             .await
             .with_context(|| format!("opening {}", path.display()))?;
         let mut writer = object_store::buffered::BufWriter::new(self.inner.clone(), key.clone());
-        let copied = tokio::io::copy(&mut file, &mut writer).await;
+        let mut hash = sha2::Sha256::new();
+        let mut buf = vec![0u8; 1 << 20];
+        let mut len = 0u64;
+        let copied = async {
+            loop {
+                let n = file.read(&mut buf).await?;
+                if n == 0 {
+                    return Ok::<_, std::io::Error>(());
+                }
+                hash.update(&buf[..n]);
+                len += n as u64;
+                writer.write_all(&buf[..n]).await?;
+            }
+        }
+        .await;
         if let Err(e) = copied {
             let _ = writer.abort().await;
             return Err(e).with_context(|| format!("storing {key}"));
@@ -196,7 +212,8 @@ impl Store {
         writer
             .shutdown()
             .await
-            .with_context(|| format!("storing {key}"))
+            .with_context(|| format!("storing {key}"))?;
+        Ok((len, hash.finalize().into()))
     }
 
     /// Part of the object, as `range` asks: what of it there is, or that
@@ -488,7 +505,12 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
         let store = Store::memory();
         let k = key(Variant::Original, "abcdefghij");
-        store.put_file(&k, &path).await.unwrap();
+        let (len, sha) = store.put_file(&k, &path).await.unwrap();
+        assert_eq!(len, bytes.len() as u64);
+        assert_eq!(
+            sha,
+            <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        );
         assert_eq!(store.read(&k).await.unwrap().as_deref(), Some(&bytes[..]));
         let read = |body: Body| async {
             match body {

@@ -270,6 +270,16 @@ fn page(html: String, private: bool, video: bool) -> Response {
         .into_response()
 }
 
+/// What is not there yet, an upload still being made: a 404 that nothing
+/// keeps, since its link is handed out before it is ready.
+async fn not_yet() -> Response {
+    let mut response = not_found().await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 pub async fn not_found() -> Response {
     let html = Missing.render().unwrap_or_default();
     let mut response = page(html, false, false);
@@ -387,8 +397,11 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     let Ok(Some((image, album))) = state.db.image(id).await else {
         return not_found().await;
     };
-    if !image.ready() || !visible(state, headers, &album).await {
+    if !visible(state, headers, &album).await {
         return not_found().await;
+    }
+    if !image.ready() {
+        return not_yet().await;
     }
     let siblings = state.db.count(&album.id).await.unwrap_or(1);
     let public = &state.config.public_url;
@@ -531,8 +544,11 @@ async fn file(
     let Ok(Some((image, album))) = state.db.image(id).await else {
         return not_found().await;
     };
-    if !image.ready() || !visible(state, headers, &album).await {
+    if !visible(state, headers, &album).await {
         return not_found().await;
+    }
+    if !image.ready() {
+        return not_yet().await;
     }
     // A video's display copy is what plays, an image's a smaller picture.
     let display = if image.is_video() { "mp4" } else { "webp" };

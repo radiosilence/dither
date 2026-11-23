@@ -988,6 +988,29 @@ async fn an_image_declared_a_video_is_still_held_to_the_image_limit() {
 }
 
 #[tokio::test]
+async fn a_picture_that_cannot_be_made_is_refused_to_its_sender_and_leaves_nothing() {
+    let app = app().await;
+    // Its header reads, so finishing queues it; its data does not.
+    let mut broken = jpeg(300, 200);
+    broken.truncate(broken.len() / 3);
+    let (album, done) = app.upload(&[&broken]).await;
+    assert_eq!(
+        done[0].status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        done[0].text()
+    );
+    assert!(
+        done[0].json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("can't be read")
+    );
+    let images = app.state.db.images(&album).await.unwrap();
+    assert!(images.is_empty(), "{images:?}");
+}
+
+#[tokio::test]
 async fn a_video_dither_does_not_take_is_refused_before_it_is_sent() {
     let app = app().await;
     let album = app.post("/api/albums", json!({})).await.json()["id"]
@@ -1023,11 +1046,11 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
     let file = std::fs::read(path).unwrap();
     let (album, done) = app.upload_queued(&[&file]).await;
     let id = image_id(&done[0]);
-    // Grids and pages show its progress to its owner, and nothing to anyone else.
-    assert_eq!(
-        app.get(&format!("/{id}")).await.status,
-        StatusCode::NOT_FOUND
-    );
+    // Grids and pages show its progress to its owner, and nothing to anyone
+    // else, in a way nothing keeps: its link works once it is made.
+    let early = app.get(&format!("/{id}")).await;
+    assert_eq!(early.status, StatusCode::NOT_FOUND);
+    assert_eq!(early.header("cache-control"), "no-store");
     assert!(!app.get(&format!("/a/{album}")).await.text().contains(&id));
     let videos = &app.state.uploads.jobs;
     for _ in 0..3000 {

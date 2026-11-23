@@ -63,7 +63,7 @@ async fn shell(state: &AppState, session: &Session) -> Shell {
             .flatten()
             .unwrap_or_else(|| session.sub.clone()),
         max_upload: state.config.max_upload_bytes,
-        max_video: state.config.max_video_bytes(),
+        max_video: state.uploads.max_video_bytes(),
         chunk: CHUNK,
     }
 }
@@ -212,6 +212,7 @@ struct Viewer {
     animated: bool,
     /// A video, ready to play.
     clip: Option<crate::web::clip::Clip>,
+    video: bool,
     /// A video's length.
     length: Option<String>,
     /// A video being made: thousandths done.
@@ -574,6 +575,7 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
         size: human(image.bytes),
         animated: image.animated,
         clip: (image.is_video() && image.ready()).then(|| crate::web::public::clip(&image)),
+        video: image.is_video(),
         length: (image.is_video() && image.ready()).then(|| crate::video::clock(image.seconds())),
         progress: (image.status == Status::Processing)
             .then(|| state.uploads.jobs.progress(&image.id).unwrap_or(0)),

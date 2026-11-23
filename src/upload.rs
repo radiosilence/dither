@@ -146,6 +146,12 @@ impl Uploads {
         })
     }
 
+    /// The largest video taken now: `None` when the configuration takes
+    /// none, or the worker cannot make them.
+    pub fn max_video_bytes(&self) -> Option<u64> {
+        self.max_video_bytes.filter(|_| self.jobs.takes_videos())
+    }
+
     /// Where an upload's bytes collect. Callers pass ids checked by
     /// [`crate::id::valid`], so this cannot name anything outside the
     /// directory.
@@ -388,7 +394,7 @@ impl Uploads {
         }
         let video = crate::sanitize::sniff_video(&head).is_some();
         let kind = if video {
-            let Some(max) = self.max_video_bytes else {
+            let Some(max) = self.max_video_bytes() else {
                 return self
                     .reject(&upload, "this server doesn't take videos".into())
                     .await;
@@ -460,10 +466,17 @@ impl Uploads {
                 tracing::warn!(upload = %upload.id, error = %e, "returning an upload's file failed");
             }
         };
+        // Heard from before the job can end.
+        let ends = self.jobs.ends();
         match self.db.begin_job(&upload.owner, &upload.id, job).await {
             Ok(true) => {
                 tracing::info!(job = %id, bytes = upload.size, video, "queued");
                 self.jobs.wake();
+                // A picture takes seconds: its sender hears how it went, as
+                // they would were it made here. A video is processing.
+                if !video {
+                    return self.picture_ended(&upload, id, ends).await;
+                }
                 Outcome::Done(id)
             }
             // Ended another way first: cancelled, or its album deleted.
@@ -481,6 +494,33 @@ impl Uploads {
                 Outcome::Failed("the upload could not be saved; try again".into())
             }
         }
+    }
+
+    /// How a queued picture ended, waiting a while for the worker: made, or
+    /// refused with why, in which case it leaves the album as a refused
+    /// upload always has. Still being made when the wait is up, it is done
+    /// as far as its sender is concerned, and its album shows the rest.
+    async fn picture_ended(
+        &self,
+        upload: &Upload,
+        id: String,
+        ends: tokio::sync::broadcast::Receiver<(String, bool)>,
+    ) -> Outcome {
+        if Hub::ended(ends, &id, Duration::from_secs(30)).await != Some(false) {
+            return Outcome::Done(id);
+        }
+        let why = match self.db.image(&id).await {
+            Ok(Some((image, _))) => jobs::reason(&image.failure).to_string(),
+            _ => return Outcome::Done(id),
+        };
+        if let Ok(gone) = self.db.delete_images(&upload.owner, vec![id.clone()]).await {
+            store::discard(&self.store, &self.db, gone).await;
+        }
+        if let Err(e) = self.db.refuse_upload(&upload.owner, &upload.id, &why).await {
+            tracing::warn!(upload = %upload.id, error = %e, "recording a refused upload failed");
+        }
+        crate::metrics::rejected();
+        Outcome::Rejected(why)
     }
 
     /// Wait, up to `limit`, for processing in progress to finish.

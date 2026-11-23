@@ -927,17 +927,14 @@ impl Db {
         .await
     }
 
-    /// Give job `id` back, for any worker to take after `after`. A `refund`
-    /// takes back the attempt its claim counted: given back unfinished by a
-    /// worker told to stop, through no fault of the job's.
-    pub async fn release(&self, worker: &str, id: &str, after: i64, refund: bool) -> Result<()> {
+    /// Give job `id` back, for any worker to take after `after`.
+    pub async fn release(&self, worker: &str, id: &str, after: i64) -> Result<()> {
         let (worker, id) = (worker.to_string(), id.to_string());
         self.run_quiet(move |c| {
             c.execute(
-                "UPDATE images SET lease_until = ?1, claimed_by = NULL, \
-                   attempts = MAX(0, attempts - ?4) \
+                "UPDATE images SET lease_until = ?1, claimed_by = NULL \
                  WHERE id = ?2 AND claimed_by = ?3 AND state = 'processing'",
-                params![after, id, worker, i64::from(refund)],
+                params![after, id, worker],
             )
             .map(drop)
         })
@@ -1027,6 +1024,20 @@ impl Db {
     pub fn announce(&self, owner: &str) {
         self.0.writes.send_modify(|n| *n += 1);
         let _ = self.0.changes.send(owner.into());
+    }
+
+    /// Record that a finished upload's image was refused once made: the
+    /// upload ends with why, naming no image.
+    pub async fn refuse_upload(&self, owner: &str, id: &str, error: &str) -> Result<()> {
+        let (owner, id, error) = (owner.to_string(), id.to_string(), error.to_string());
+        self.run(move |c| {
+            c.execute(
+                "UPDATE uploads SET image = NULL, error = ?1 WHERE id = ?2 AND owner = ?3",
+                params![error, id, owner],
+            )
+            .map(drop)
+        })
+        .await
     }
 
     /// End an upload that has not ended, recording why.
@@ -1582,11 +1593,9 @@ pub mod tests {
             "w1 lost it"
         );
         // Put back to wait a while, then taken up again.
-        db.release("w3", &picture, now() + 60_000, false)
-            .await
-            .unwrap();
+        db.release("w3", &picture, now() + 60_000).await.unwrap();
         assert!(db.claim("w4", false, later).await.unwrap().is_none());
-        db.release("w3", &picture, 0, false).await.unwrap();
+        db.release("w3", &picture, 0).await.unwrap();
         assert!(
             db.claim("w4", false, later).await.unwrap().is_none(),
             "w3 no longer held it"

@@ -111,6 +111,9 @@ pub async fn run(config: &Config, store: Store) -> anyhow::Result<()> {
         videos = worker.tools.is_some(),
         "working"
     );
+    worker.say(FromWorker::Hello {
+        videos: worker.tools.is_some(),
+    });
     let (read, mut write) = stream.into_split();
     let writer = async {
         while let Some(event) = said.recv().await {
@@ -361,11 +364,7 @@ impl Worker {
     async fn later(&self, job: &Claimed) {
         let wait = Duration::from_secs(30) * job.image.attempts.max(1);
         let after = now() + wait.as_millis() as i64;
-        if let Err(e) = self
-            .db
-            .release(&self.name, &job.image.id, after, false)
-            .await
-        {
+        if let Err(e) = self.db.release(&self.name, &job.image.id, after).await {
             tracing::warn!(job = %job.image.id, error = %e, "putting a job back failed; its lease will lapse");
         }
         self.say(FromWorker::Waiting {
@@ -612,12 +611,10 @@ impl Worker {
         };
         self.progress(owner, id, 960);
 
-        let (bytes, sha256) = digest(&original)
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?;
         let stored = async {
             self.db.add_stray(id).await?;
-            self.store
+            let fingerprint = self
+                .store
                 .put_file(&store::key(Variant::Original, id), &original)
                 .await?;
             if let Some(display) = &display {
@@ -634,9 +631,9 @@ impl Worker {
                     Bytes::from(still.preview),
                 )
                 .await?;
-            Ok::<_, anyhow::Error>(())
+            Ok::<_, anyhow::Error>(fingerprint)
         };
-        stored
+        let (bytes, sha256) = stored
             .await
             .map_err(|e| Problem::Failed(format!("storing: {e:#}")))?;
         self.progress(owner, id, 1000);
@@ -655,32 +652,9 @@ impl Worker {
             bytes,
             animated: false,
             display: display.is_some(),
-            sha256,
+            sha256: sha256.to_vec(),
             duration_ms: Some((probe.duration * 1000.0).round() as u64),
             audio: probe.audio.is_some(),
         })
     }
-}
-
-/// The size and SHA-256 of the file at `path`, read in pieces.
-async fn digest(path: &Path) -> std::io::Result<(u64, Vec<u8>)> {
-    use sha2::Digest as _;
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read as _;
-        let mut file = std::fs::File::open(path)?;
-        let mut hash = sha2::Sha256::new();
-        let mut buf = vec![0u8; 1 << 20];
-        let mut n = 0u64;
-        loop {
-            let read = file.read(&mut buf)?;
-            if read == 0 {
-                break;
-            }
-            hash.update(&buf[..read]);
-            n += read as u64;
-        }
-        Ok((n, hash.finalize().to_vec()))
-    })
-    .await?
 }

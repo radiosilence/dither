@@ -113,22 +113,25 @@ pub async fn begin(
             format!("send between 1 and {BATCH_MAX} files at a time"),
         );
     }
-    // A video in a container dither does not take is told so now, not after
-    // it has all arrived.
+    // A video this server does not take is told so now, not after it has
+    // all arrived.
+    let videos = state.uploads.max_video_bytes();
     if let Some(f) = batch
         .files
         .iter()
-        .find(|f| f.mime.starts_with("video/") && !f.video())
+        .find(|f| f.mime.starts_with("video/") || f.video())
+        .filter(|f| videos.is_none() || !f.video())
     {
-        return error(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        let why = if videos.is_none() {
+            format!("{}: this server doesn't take videos", f.name)
+        } else {
             format!(
                 "{}: MP4, MOV and WebM videos are taken, not {}",
                 f.name, f.mime
-            ),
-        );
+            )
+        };
+        return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, why);
     }
-    let videos = state.config.max_video_bytes();
     let max = |f: &File| match videos {
         Some(max) if f.video() => max,
         _ => state.config.max_upload_bytes,

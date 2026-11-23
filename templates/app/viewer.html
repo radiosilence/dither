@@ -23,12 +23,13 @@
   <div class="viewer-panel">
     <textarea class="text-field" rows="2" placeholder="{{ __("Add a caption") }}" aria-label="{{ __("caption") }}" maxlength="20000"
       data-on:input__debounce.600ms="@post('/images/{{ id }}/caption', {payload: {caption: el.value}})">{{ caption }}</textarea>
+    {% if progress.is_none() && failure.is_none() %}
     <dl class="links">
       <dt>{{ __p("Share link: the image's page", "page") }}</dt>
       <dd><input readonly value="{{ links.page }}" aria-label="{{ __("link to the image's page") }}" data-select><button class="icon-button" data-copy="{{ links.page }}" aria-label="{{ __("copy the link to the image's page") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
       <dt>{{ __p("Share link: the image file", "image") }}</dt>
       <dd><input readonly value="{{ links.file }}" aria-label="{{ __("link to the image file") }}" data-select><button class="icon-button" data-copy="{{ links.file }}" aria-label="{{ __("copy the link to the image file") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
-      {% if length.is_none() %}
+      {% if !video %}
       <dt>{{ __p("Share link: the image in Markdown", "markdown") }}</dt>
       <dd><input readonly value="{{ links.markdown }}" aria-label="{{ __("the image in Markdown") }}" data-select><button class="icon-button" data-copy="{{ links.markdown }}" aria-label="{{ __("copy the Markdown") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
       <dt>{{ __p("Share link: the image in forum BBCode", "bbcode") }}</dt>
@@ -37,6 +38,7 @@
       <dt>{{ __p("Share link: the image in HTML", "html") }}</dt>
       <dd><input readonly value="{{ links.html }}" aria-label="{{ __("the image in HTML") }}" data-select><button class="icon-button" data-copy="{{ links.html }}" aria-label="{{ __("copy the HTML") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
     </dl>
+    {% endif %}
     <div class="flex flex-wrap gap-2">
       <button{% if is_cover %} disabled{% endif %} data-on:click="@post('/albums/{{ album }}/cover', {payload: {image: '{{ id }}'}})">{% if is_cover %}{{ __("album cover") }}{% else %}{{ __("make cover") }}{% endif %}</button>
       <button data-move-one="{{ id }}">{{ icon("album", 13.0)|safe }} {{ __p("Button: move images to another album", "move") }}</button>
