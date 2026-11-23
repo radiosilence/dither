@@ -2160,6 +2160,10 @@
     padding-inline: 22px;
   }
 
+  .py-6 {
+    padding-block: calc(var(--spacing) * 6);
+  }
+
   .py-16 {
     padding-block: calc(var(--spacing) * 16);
   }

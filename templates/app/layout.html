@@ -16,6 +16,9 @@
   <div id="notice" role="status" hidden></div>
   {% block main %}{% endblock %}
 </main>
+<footer class="py-6 text-center text-fine text-muted">
+  <a class="text-muted hover:text-ink hover:no-underline" href="https://github.com/radiosilence/dither/releases/tag/v{{ shell.version }}">dither {{ shell.version }}</a>
+</footer>
 <div id="drop" class="drop" hidden><p>{{ __("drop to upload") }}</p></div>
 <section id="tray" class="tray" hidden aria-label="{{ __("uploads") }}"></section>
 <dialog id="viewer" class="viewer" aria-label="{{ __p("Dialog name", "image") }}"><div id="viewer-body" class="viewer-body"></div></dialog>
