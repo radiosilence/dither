@@ -76,9 +76,10 @@ ready, or failed with the reason. Until it is ready a video is its owner's
 alone. A restart resumes whatever was processing, and deleting a video stops
 its ffmpeg.
 
-ffmpeg parses untrusted files, so it runs as a process of its own: told the
-container it reads rather than left to probe, limited to the file protocol
-and to the decoders phones and cameras need, at a lower priority than
+ffmpeg parses untrusted files, so it runs as a process of its own, with none
+of the service's environment (which holds its secrets): told the container
+it reads rather than left to probe, limited to the file protocol and to the
+decoders phones and cameras need, at a lower priority than
 serving, and with a time limit. Its memory is outside the image processing
 budget, which a transcode lasting minutes would otherwise hold up; one video
 at a time on `VIDEO_THREADS` threads keeps it to a few hundred megabytes.

@@ -152,7 +152,7 @@ impl Tools {
         mut stop: watch::Receiver<bool>,
         mut progress: Option<&mut (dyn FnMut(f64) + Send)>,
     ) -> Result<Vec<u8>, String> {
-        let mut child = tokio::process::Command::new(program)
+        let mut child = command(program)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -446,10 +446,22 @@ impl Tools {
     }
 }
 
+/// `program` to run with none of this process's environment but where to
+/// find programs: the environment holds the sign-in secret and the bucket's
+/// keys, and ffmpeg is what parses untrusted files.
+fn command(program: &Path) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
 /// What `program` writes to standard output given `args`, for the checks at
 /// startup.
 async fn output(program: &Path, args: &[&str]) -> anyhow::Result<String> {
-    let mut cmd = tokio::process::Command::new(program);
+    let mut cmd = command(program);
     cmd.args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -1553,6 +1565,16 @@ pub mod tests {
             Probe::parse(br#"{"streams": [{"index": 0, "codec_type": "audio", "codec_name": "aac"}], "format": {"duration": "3"}}"#),
             Err("it has no video in it".into())
         );
+    }
+
+    #[tokio::test]
+    async fn ffmpeg_sees_none_of_the_environment() {
+        // Cargo gives a test this; it stands in for the secrets a pod has.
+        assert!(std::env::var_os("CARGO_PKG_NAME").is_some());
+        let out = command(Path::new("env")).output().await.unwrap();
+        let seen = String::from_utf8_lossy(&out.stdout);
+        assert!(!seen.contains("CARGO_PKG_NAME"), "{seen}");
+        assert!(seen.contains("PATH="), "{seen}");
     }
 
     #[test]
