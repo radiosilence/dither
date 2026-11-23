@@ -276,6 +276,25 @@ fn page(html: String, private: bool, video: bool) -> Response {
         .into_response()
 }
 
+/// `response`, marked as serving `bytes` of `album` (and `image`) for the
+/// counting layer.
+fn counted(
+    mut response: Response,
+    album: &Album,
+    image: Option<&str>,
+    kind: Served,
+    bytes: u64,
+) -> Response {
+    response.extensions_mut().insert(crate::views::Counted {
+        album: album.id.clone(),
+        image: image.map(str::to_string),
+        owner: album.owner.clone(),
+        kind,
+        bytes,
+    });
+    response
+}
+
 /// What is not there yet, an upload still being made: a 404 that nothing
 /// keeps, since its link is handed out before it is ready.
 async fn not_yet() -> Response {
@@ -394,7 +413,16 @@ pub async fn album(
     .render();
     metrics::served(Served::Page, 0);
     match html {
-        Ok(html) => page(html, album.private, video),
+        Ok(html) => {
+            let bytes = html.len() as u64;
+            counted(
+                page(html, album.private, video),
+                &album,
+                None,
+                Served::Page,
+                bytes,
+            )
+        }
         Err(e) => {
             tracing::error!(error = %e, "rendering an album failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -475,7 +503,17 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     .render();
     metrics::served(Served::Page, 0);
     match html {
-        Ok(html) => page(html, album.private, image.is_video()),
+        Ok(html) => {
+            let bytes = html.len() as u64;
+            let video = image.is_video();
+            counted(
+                page(html, album.private, video),
+                &album,
+                Some(id),
+                Served::Page,
+                bytes,
+            )
+        }
         Err(e) => {
             tracing::error!(error = %e, "rendering an image page failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -605,7 +643,8 @@ async fn file(
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"))
     {
         metrics::not_modified();
-        return (StatusCode::NOT_MODIFIED, h).into_response();
+        let response = (StatusCode::NOT_MODIFIED, h).into_response();
+        return counted(response, &album, Some(id), served, 0);
     }
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     let filename = format!(
@@ -624,7 +663,16 @@ async fn file(
     );
     let key = store::key(variant, id);
     if let Some(wanted) = Wanted::from(headers, &etag, &modified) {
-        return partial(state, &key, wanted, served, h).await;
+        let response = partial(state, &key, wanted, served, h).await;
+        if response.status() != StatusCode::PARTIAL_CONTENT {
+            return response;
+        }
+        let len = response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok()?.parse().ok())
+            .unwrap_or_default();
+        return counted(response, &album, Some(id), served, len);
     }
     let body = match state.store.get(&key).await {
         Ok(Some(body)) => body,
@@ -643,14 +691,16 @@ async fn file(
     };
     match body {
         store::Body::Bytes(bytes) => {
-            metrics::served(served, bytes.len() as u64);
-            (h, bytes).into_response()
+            let len = bytes.len() as u64;
+            metrics::served(served, len);
+            counted((h, bytes).into_response(), &album, Some(id), served, len)
         }
         store::Body::Stream { size, stream } => {
             metrics::served(served, size);
             h.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
             let stream = stream.map(|r| r.map_err(std::io::Error::other));
-            (h, HttpBody::from_stream(stream)).into_response()
+            let response = (h, HttpBody::from_stream(stream)).into_response();
+            counted(response, &album, Some(id), served, size)
         }
     }
 }

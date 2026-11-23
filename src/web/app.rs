@@ -144,6 +144,46 @@ struct AlbumPage {
     share: String,
     grid: String,
     summary: String,
+    views: String,
+}
+
+/// An image's or album's view counts, as its owner sees them.
+#[derive(Template)]
+#[template(path = "app/views.html")]
+struct ViewCounts {
+    recent: Line,
+    all: Line,
+    shared: Vec<(String, u64)>,
+    referrers: Vec<(String, u64)>,
+}
+
+struct Line {
+    views: u64,
+    visitors: u64,
+    size: String,
+}
+
+impl Line {
+    fn new(t: crate::views::Totals) -> Self {
+        Self {
+            views: t.views,
+            visitors: t.visitors,
+            size: human(t.bytes),
+        }
+    }
+}
+
+/// The view counts of image or album `target`, drawn. Only its owner's
+/// pages call this.
+async fn view_counts(state: &AppState, target: &str) -> AppResult<String> {
+    let since = crate::views::today() - crate::views::RECENT_DAYS + 1;
+    let stats = state.db.view_stats(target, since).await?;
+    render(&ViewCounts {
+        recent: Line::new(stats.recent),
+        all: Line::new(stats.all),
+        shared: stats.shared,
+        referrers: stats.referrers,
+    })
 }
 
 #[derive(Template)]
@@ -219,6 +259,7 @@ struct Viewer {
     progress: Option<u16>,
     /// Why a video could not be made.
     failure: Option<String>,
+    views: String,
 }
 
 crate::i18n::translated!(
@@ -230,7 +271,8 @@ crate::i18n::translated!(
     Picker,
     Usage,
     Summary,
-    Deleted
+    Deleted,
+    ViewCounts
 );
 
 #[derive(Template)]
@@ -347,7 +389,9 @@ pub async fn album(
 
 async fn editor(state: &AppState, session: &Session, album: crate::db::Album) -> AppResult<String> {
     let (grid, summary, _) = album_parts(state, &album).await?;
+    let views = view_counts(state, &album.id).await?;
     render(&AlbumPage {
+        views,
         shell: shell(state, session).await,
         share: format!("{}/a/{}", state.config.public_url, album.id),
         id: album.id,
@@ -629,6 +673,7 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
         progress: (image.status == Status::Processing)
             .then(|| state.uploads.jobs.progress(&image.id).unwrap_or(0)),
         failure: (image.status == Status::Failed).then(|| image.failure.clone()),
+        views: view_counts(state, &image.id).await?,
         id: image.id,
     })
 }

@@ -102,6 +102,45 @@ Every file is served with byte ranges, which seeking needs and Safari requires
 before it plays a video at all; video is never compressed again on the way
 out.
 
+## View counts
+
+An album's owner sees, in the viewer and on the album's page, how often its
+public pages and files were served over the last 30 days and in all, to how
+many visitors, how many bytes that took, which link previews fetched it and
+which sites linked to it. The counts exist so an owner can see where
+something they shared went; they are kept per image and per album, per UTC
+day, and nothing in them identifies a visitor.
+
+For each request to an album's page, an image's page or any file of an
+image, the web process counts a hit by kind (page, original, display copy,
+thumbnail, preview) and the bytes the response carried, which for a range
+request is the range. Views are page hits: a file fetched on its own, as an
+image embedded elsewhere is, counts toward visitors and bytes but not views.
+An album's counts include everything served of its images.
+
+A visitor is the SHA-256 of a salt, the client's address and its user
+agent. The salt is random, held only in memory and replaced at UTC midnight;
+the day's hashes stay in memory only to tell a new visitor from one already
+counted, and the database is given the number of distinct ones. A visitor on
+two days counts once on each. A restart draws a new salt, so someone seen
+before and after a restart counts twice that day. The client's address is the
+last `X-Forwarded-For` entry, which the proxy in front appends, or else the
+connection's; it is used only inside the hash, so a forged header can inflate
+the count and do nothing else.
+
+A referring site is the host of the `Referer` header, without its path or
+query, and dither's own hosts are ignored. Requests from the link-preview
+fetchers (WhatsApp, Facebook, X, Slack, Discord, Telegram, LinkedIn, Reddit,
+Iframely, Embedly) are counted by fetcher, as places a link was shared, and
+never as views or visitors. Requests carrying the owner's own session are not
+counted at all.
+
+No address, user agent, hash or cookie is written anywhere. The counts gather
+in memory and are added to the database every minute and when the server
+stops, so the newest minute may not show yet; deleting an image or album
+deletes its counts. Prometheus's `/metrics` keeps its totals by kind
+regardless.
+
 ## Storage
 
 Images, and copies of the database, go to one object store chosen by

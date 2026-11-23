@@ -40,6 +40,8 @@ pub struct Inner {
     pub sessions: Sessions,
     pub http: reqwest::Client,
     pub uploads: Arc<Uploads>,
+    /// What the public routes served, counted anonymously.
+    pub views: crate::views::Views,
     /// Becomes true when the server begins to stop: live streams end on it.
     pub stopping: tokio::sync::watch::Receiver<bool>,
 }
@@ -113,6 +115,7 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             security_headers,
         ))
+        .layer(middleware::from_fn_with_state(state.clone(), count))
         .layer(middleware::from_fn(preview_log))
         // Video is compressed already, and a compressed range would not be
         // the range asked for.
@@ -148,19 +151,82 @@ async fn app_host_only(State(state): State<AppState>, request: Request, next: Ne
     next.run(request).await
 }
 
-/// Link previews' fetchers, by what their user agents carry.
-const FETCHERS: [&str; 10] = [
-    "WhatsApp",
-    "facebookexternalhit",
-    "Twitterbot",
-    "Slackbot",
-    "Discordbot",
-    "TelegramBot",
-    "LinkedInBot",
-    "redditbot",
-    "Iframely",
-    "Embedly",
+/// Link previews' fetchers: what their user agents carry, and their names.
+const FETCHERS: [(&str, &str); 10] = [
+    ("WhatsApp", "WhatsApp"),
+    ("facebookexternalhit", "Facebook"),
+    ("Twitterbot", "X"),
+    ("Slackbot", "Slack"),
+    ("Discordbot", "Discord"),
+    ("TelegramBot", "Telegram"),
+    ("LinkedInBot", "LinkedIn"),
+    ("redditbot", "Reddit"),
+    ("Iframely", "Iframely"),
+    ("Embedly", "Embedly"),
 ];
+
+/// The name of the link preview's fetcher a user agent belongs to.
+fn fetcher(agent: &str) -> Option<&'static str> {
+    FETCHERS
+        .iter()
+        .find(|(token, _)| agent.contains(token))
+        .map(|(_, name)| *name)
+}
+
+/// Count what a public route served, as its handler marked the response
+/// ([`crate::views::Counted`]), unless the album's owner asked for it. The
+/// client's address is the last `X-Forwarded-For` entry (the one the proxy
+/// in front appends), else the peer's; it goes into the visitor's hash and
+/// nowhere else, so a forged header can do no more than inflate a count.
+async fn count(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let headers = request.headers().clone();
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip().to_string());
+    let response = next.run(request).await;
+    let Some(counted) = response.extensions().get::<crate::views::Counted>() else {
+        return response;
+    };
+    if let Some(id) = crate::auth::cookie::session_id(&headers)
+        && state
+            .sessions
+            .get(id)
+            .await
+            .is_some_and(|s| s.sub == counted.owner)
+    {
+        return response;
+    }
+    let text = |name| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+    };
+    let agent = text(header::USER_AGENT);
+    let address = text(header::HeaderName::from_static("x-forwarded-for"))
+        .rsplit(',')
+        .next()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string)
+        .or(peer)
+        .unwrap_or_default();
+    let own = [
+        crate::views::host_only(state.config.app_host()),
+        crate::views::host_only(state.config.public_host()),
+    ];
+    state.views.record(
+        counted,
+        &crate::views::Visit {
+            address: &address,
+            agent,
+            referrer: crate::views::referrer(text(header::REFERER), &own),
+            fetcher: fetcher(agent),
+        },
+    );
+    response
+}
 
 /// What a link preview's fetcher asked for and was answered, logged: a
 /// preview that does not appear is found out from what its fetcher saw.
@@ -170,10 +236,9 @@ async fn preview_log(request: Request, next: Next) -> Response {
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    let Some(fetcher) = FETCHERS.iter().find(|f| agent.contains(*f)) else {
+    let Some(fetcher) = fetcher(agent) else {
         return next.run(request).await;
     };
-    let fetcher = *fetcher;
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let range = request

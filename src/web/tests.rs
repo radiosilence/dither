@@ -81,6 +81,7 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
         db,
         store,
         uploads,
+        views: crate::views::Views::default(),
         stopping,
         config,
     });

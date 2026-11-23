@@ -1,0 +1,15 @@
+{#- What the public routes served of an image or album: its owner's alone. -#}
+<dl class="views">
+  <dt>{{ __("last 30 days") }}</dt>
+  <dd>{{ __n("%{count} view", "%{count} views", recent.views) }} · {{ __n("%{count} visitor", "%{count} visitors", recent.visitors) }} · {{ __("%{size} served").with("size", recent.size) }}</dd>
+  <dt>{{ __("all time") }}</dt>
+  <dd>{{ __n("%{count} view", "%{count} views", all.views) }} · {{ __n("%{count} visitor", "%{count} visitors", all.visitors) }} · {{ __("%{size} served").with("size", all.size) }}</dd>
+  {%- if !shared.is_empty() %}
+  <dt>{{ __("shared on") }}</dt>
+  <dd>{% for (name, n) in shared %}{% if !loop.first %} · {% endif %}{{ name }} {{ n }}{% endfor %}</dd>
+  {%- endif %}
+  {%- if !referrers.is_empty() %}
+  <dt>{{ __("linked from") }}</dt>
+  <dd class="break-all">{% for (host, n) in referrers %}{% if !loop.first %} · {% endif %}{{ host }} {{ n }}{% endfor %}</dd>
+  {%- endif %}
+</dl>

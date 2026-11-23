@@ -31,6 +31,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_processing.sql"),
     include_str!("../migrations/0003_as_recorded.sql"),
     include_str!("../migrations/0004_sessions.sql"),
+    include_str!("../migrations/0005_views.sql"),
 ];
 
 /// Idle connections kept: more than the service's usual concurrency, so the
@@ -444,6 +445,17 @@ fn strays(tx: &rusqlite::Transaction, ids: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Forget the view counts of images or albums `ids`.
+fn forget_views(tx: &rusqlite::Transaction, ids: &[String]) -> Result<()> {
+    for table in ["views", "visitors", "referrers", "fetchers"] {
+        let mut delete = tx.prepare_cached(&format!("DELETE FROM {table} WHERE target = ?1"))?;
+        for id in ids {
+            delete.execute([id])?;
+        }
+    }
+    Ok(())
+}
+
 /// Positions reserved at the end of an album, or `None` if `owner` does not
 /// own it.
 fn reserve(tx: &rusqlite::Transaction, owner: &str, album: &str, n: usize) -> Result<Option<i64>> {
@@ -631,6 +643,8 @@ impl Db {
                 return Ok(None);
             }
             strays(tx, &images)?;
+            forget_views(tx, &images)?;
+            forget_views(tx, std::slice::from_ref(&id))?;
             Ok(Some(images))
         })
         .await
@@ -763,6 +777,7 @@ impl Db {
                 }
             }
             strays(tx, &deleted)?;
+            forget_views(tx, &deleted)?;
             Ok(deleted)
         })
         .await
@@ -1201,6 +1216,110 @@ impl Db {
                 [],
                 |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64, r.get::<_, i64>(2)? as u64)),
             )
+        })
+        .await
+    }
+
+    /// Add counts gathered in memory, in one transaction. Counts for an
+    /// image or album deleted meanwhile are dropped. Quiet: counts change no
+    /// page and are copied with the next snapshot.
+    pub async fn add_views(&self, p: crate::views::Pending) -> Result<()> {
+        // A target that still exists: counts never outlive what they count.
+        const EXISTS: &str = "WHERE EXISTS (SELECT 1 FROM images WHERE id = ?1) \
+             OR EXISTS (SELECT 1 FROM albums WHERE id = ?1)";
+        self.run_quiet(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            {
+                let mut hits = tx.prepare(&format!(
+                    "INSERT INTO views (target, day, kind, hits, bytes) SELECT ?1, ?2, ?3, ?4, ?5 {EXISTS} \
+                     ON CONFLICT (target, day, kind) DO UPDATE \
+                     SET hits = hits + excluded.hits, bytes = bytes + excluded.bytes"
+                ))?;
+                for ((target, day, kind), (n, bytes)) in &p.hits {
+                    hits.execute(params![target, day, kind, *n as i64, *bytes as i64])?;
+                }
+                let mut visitors = tx.prepare(&format!(
+                    "INSERT INTO visitors (target, day, visitors) SELECT ?1, ?2, ?3 {EXISTS} \
+                     ON CONFLICT (target, day) DO UPDATE SET visitors = visitors + excluded.visitors"
+                ))?;
+                for ((target, day), n) in &p.visitors {
+                    visitors.execute(params![target, day, *n as i64])?;
+                }
+                for (table, column, rows) in [
+                    (
+                        "referrers",
+                        "host",
+                        p.referrers
+                            .iter()
+                            .map(|((t, d, h), n)| (t, *d, h.as_str(), *n))
+                            .collect::<Vec<_>>(),
+                    ),
+                    (
+                        "fetchers",
+                        "fetcher",
+                        p.fetchers
+                            .iter()
+                            .map(|((t, d, f), n)| (t, *d, *f, *n))
+                            .collect(),
+                    ),
+                ] {
+                    let mut add = tx.prepare(&format!(
+                        "INSERT INTO {table} (target, day, {column}, hits) SELECT ?1, ?2, ?3, ?4 {EXISTS} \
+                         ON CONFLICT (target, day, {column}) DO UPDATE SET hits = hits + excluded.hits"
+                    ))?;
+                    for (target, day, name, n) in rows {
+                        add.execute(params![target, day, name, n as i64])?;
+                    }
+                }
+            }
+            tx.commit()
+        })
+        .await
+    }
+
+    /// An image's or album's counts: since day `since`, and in all.
+    pub async fn view_stats(&self, target: &str, since: i64) -> Result<crate::views::Stats> {
+        use crate::views::{Stats, Totals};
+        let target = target.to_string();
+        self.run(move |c| {
+            let (views, bytes, recent_views, recent_bytes) = c.query_row(
+                "SELECT COALESCE(SUM(CASE WHEN kind = 'page' THEN hits END), 0), COALESCE(SUM(bytes), 0), \
+                 COALESCE(SUM(CASE WHEN kind = 'page' AND day >= ?2 THEN hits END), 0), \
+                 COALESCE(SUM(CASE WHEN day >= ?2 THEN bytes END), 0) FROM views WHERE target = ?1",
+                params![target, since],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
+            )?;
+            let (visitors, recent_visitors) = c.query_row(
+                "SELECT COALESCE(SUM(visitors), 0), COALESCE(SUM(CASE WHEN day >= ?2 THEN visitors END), 0) \
+                 FROM visitors WHERE target = ?1",
+                params![target, since],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+            )?;
+            let top = |sql: &str| -> Result<Vec<(String, u64)>> {
+                c.prepare(sql)?
+                    .query_map([&target], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)))?
+                    .collect()
+            };
+            Ok(Stats {
+                recent: Totals {
+                    views: recent_views as u64,
+                    visitors: recent_visitors as u64,
+                    bytes: recent_bytes as u64,
+                },
+                all: Totals {
+                    views: views as u64,
+                    visitors: visitors as u64,
+                    bytes: bytes as u64,
+                },
+                shared: top(
+                    "SELECT fetcher, SUM(hits) FROM fetchers WHERE target = ?1 \
+                     GROUP BY fetcher ORDER BY 2 DESC, 1",
+                )?,
+                referrers: top(
+                    "SELECT host, SUM(hits) FROM referrers WHERE target = ?1 \
+                     GROUP BY host ORDER BY 2 DESC, 1 LIMIT 5",
+                )?,
+            })
         })
         .await
     }
