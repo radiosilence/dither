@@ -651,19 +651,7 @@ impl Store {
         let file = tokio::fs::File::open(path)
             .await
             .with_context(|| format!("opening {}", path.display()))?;
-        let chunks = futures_util::stream::unfold(file, |mut file| async move {
-            use tokio::io::AsyncReadExt as _;
-            let mut buf = vec![0u8; 1 << 20];
-            match file.read(&mut buf).await {
-                Ok(0) => None,
-                Ok(n) => {
-                    buf.truncate(n);
-                    Some((Ok(Bytes::from(buf)), file))
-                }
-                Err(e) => Some((Err(e), file)),
-            }
-        });
-        self.put_stream(key, Box::pin(chunks)).await
+        self.put_stream(key, Box::pin(chunks(file))).await
     }
 
     /// Keys under `prefix` last written before `before`, in milliseconds
@@ -748,6 +736,24 @@ pub async fn discard(store: &Store, db: &crate::db::Db, ids: Vec<String>) {
     if let Err(e) = db.settle_strays(gone).await {
         tracing::warn!(error = %e, "forgetting deleted copies failed; the sweep will find them gone");
     }
+}
+
+/// `file` read in chunks of a mebibyte.
+pub fn chunks(
+    file: tokio::fs::File,
+) -> impl futures_util::Stream<Item = std::io::Result<Bytes>> + Send + 'static {
+    futures_util::stream::unfold(file, |mut file| async move {
+        use tokio::io::AsyncReadExt as _;
+        let mut buf = vec![0u8; 1 << 20];
+        match file.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok(Bytes::from(buf)), file))
+            }
+            Err(e) => Some((Err(e), file)),
+        }
+    })
 }
 
 /// Whether `key` is worth keeping on disk: not an upload waiting for a

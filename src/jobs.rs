@@ -122,6 +122,17 @@ pub struct Want {
     pub making: Vec<String>,
 }
 
+/// What became of a copy a worker said it put in the store.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Placed {
+    Yes,
+    /// The job is not the worker's.
+    NotYours,
+    /// The store holds this many bytes of it (none at all with `None`), not
+    /// what the worker said.
+    Short(Option<u64>),
+}
+
 /// A job's progress, for the album page showing it.
 #[derive(Debug, Clone)]
 pub struct Tick {
@@ -160,6 +171,9 @@ pub struct Hub {
     ended: broadcast::Sender<(String, bool)>,
     /// Workers waiting for a job hear one may be.
     waiting: Notify,
+    /// Whether uploads an earlier version left are in the store yet: no job
+    /// is handed out until they are.
+    adopted: tokio::sync::watch::Sender<bool>,
     /// Each worker heard from: when, and what it makes.
     workers: parking_lot::Mutex<HashMap<String, Seen>>,
 }
@@ -208,6 +222,7 @@ impl Hub {
             ticks: broadcast::channel(1024).0,
             ended: broadcast::channel(1024).0,
             waiting: Notify::new(),
+            adopted: tokio::sync::watch::Sender::new(true),
             workers: Default::default(),
         })
     }
@@ -299,6 +314,13 @@ impl Hub {
     ) -> crate::db::Result<Option<Job>> {
         self.heard(name, Some((want.makes_pictures, want.makes_videos)));
         let deadline = tokio::time::Instant::now() + limit;
+        let mut adopted = self.adopted.subscribe();
+        if tokio::time::timeout_at(deadline, adopted.wait_for(|done| *done))
+            .await
+            .is_err()
+        {
+            return Ok(None);
+        }
         loop {
             // Listening before looking, so a job queued in between is heard.
             let waiting = self.waiting.notified();
@@ -443,7 +465,8 @@ impl Hub {
         }
         let aside = aside(id, name, variant);
         let (bytes, sha256) = self.store.put_stream(&aside, body).await?;
-        self.place(name, id, variant, bytes, sha256).await
+        // Already on this machine's disk, if it caches: written as it came.
+        self.place(name, id, variant, bytes, sha256, false).await
     }
 
     /// A signed URL for worker `name` to put job `id`'s copy of `variant`
@@ -468,7 +491,7 @@ impl Hub {
     /// Worker `name` put job `id`'s copy of `variant` straight into the
     /// store, `bytes` long with `sha256`: placed, once the store holds that
     /// length. The SHA-256 is the worker's word, as the copy is; the length
-    /// is checked. False when the job is not the worker's.
+    /// is checked.
     pub async fn put_done(
         &self,
         name: &str,
@@ -476,12 +499,21 @@ impl Hub {
         variant: store::Variant,
         bytes: u64,
         sha256: [u8; 32],
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Placed> {
+        if !self.renew(name, id, None).await? {
+            return Ok(Placed::NotYours);
+        }
         let held = self.store.size(&aside(id, name, variant)).await?;
         if held != Some(bytes) {
-            anyhow::bail!("the store holds {held:?} bytes of it, not {bytes}");
+            return Ok(Placed::Short(held));
         }
-        self.place(name, id, variant, bytes, sha256).await
+        Ok(
+            if self.place(name, id, variant, bytes, sha256, true).await? {
+                Placed::Yes
+            } else {
+                Placed::NotYours
+            },
+        )
     }
 
     /// Move job `id`'s copy of `variant` from where worker `name` put it
@@ -496,6 +528,7 @@ impl Hub {
         variant: store::Variant,
         bytes: u64,
         sha256: [u8; 32],
+        warm: bool,
     ) -> anyhow::Result<bool> {
         let aside = aside(id, name, variant);
         let still = self.renew(name, id, None).await?
@@ -507,8 +540,11 @@ impl Hub {
         }
         let key = store::key(variant, id);
         self.store.rename(&aside, &key).await?;
-        // On this machine's disk too, if it caches: its owner looks next.
-        self.store.warm(&key, bytes);
+        // On this machine's disk too, if it caches and the copy did not pass
+        // through it: its owner looks next.
+        if warm {
+            self.store.warm(&key, bytes);
+        }
         Ok(true)
     }
 
@@ -674,31 +710,35 @@ impl Hub {
     }
 
     /// Move uploads an earlier version left waiting in `state_dir`'s jobs
-    /// directory into the store, where workers now fetch them, and remove
-    /// what its workers left there.
-    pub async fn adopt(&self, state_dir: &Path) {
-        let Ok(mut entries) = tokio::fs::read_dir(dir(state_dir)).await else {
-            return;
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.contains('.') || !crate::id::valid(&name) {
-                let _ = tokio::fs::remove_dir_all(&path).await;
-                let _ = tokio::fs::remove_file(&path).await;
-                continue;
-            }
-            match self.store.put_file(&upload(&name), &path).await {
-                Ok(_) => {
-                    let _ = tokio::fs::remove_file(&path).await;
-                    tracing::info!(job = %name, "moved a waiting upload into the store");
+    /// directory into the store, where workers now fetch them, in the
+    /// background, so the process serves (and answers its probes) at once;
+    /// no job is handed out until they are moved. Entries with a dot in
+    /// their names are a worker's scratch, its own to tidy.
+    pub fn adopt(self: &Arc<Self>, state_dir: &Path) {
+        self.adopted.send_replace(false);
+        let (this, dir) = (self.clone(), dir(state_dir));
+        tokio::spawn(async move {
+            if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.contains('.') || !crate::id::valid(&name) {
+                        continue;
+                    }
+                    let path = entry.path();
+                    match this.store.put_file(&upload(&name), &path).await {
+                        Ok(_) => {
+                            let _ = tokio::fs::remove_file(&path).await;
+                            tracing::info!(job = %name, "moved a waiting upload into the store");
+                        }
+                        Err(e) => {
+                            tracing::warn!(job = %name, error = %e, "moving a waiting upload into the store failed")
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(job = %name, error = %e, "moving a waiting upload into the store failed")
-                }
             }
-        }
-        let _ = tokio::fs::remove_dir(dir(state_dir)).await;
+            this.adopted.send_replace(true);
+            this.wake();
+        });
     }
 
     /// Thousandths done of job `id`, while a worker reports on it.
@@ -789,12 +829,13 @@ mod tests {
             .await
             .unwrap();
         // A length the store does not hold is refused.
-        assert!(
+        assert_eq!(
             hub.put_done("w1", &picture, store::Variant::Original, 3, sha256)
                 .await
-                .is_err()
+                .unwrap(),
+            Placed::Short(Some(bytes.len() as u64))
         );
-        assert!(
+        assert_eq!(
             hub.put_done(
                 "w1",
                 &picture,
@@ -803,7 +844,8 @@ mod tests {
                 sha256
             )
             .await
-            .unwrap()
+            .unwrap(),
+            Placed::Yes
         );
         assert_eq!(
             store
@@ -818,11 +860,29 @@ mod tests {
             (image.bytes, image.sha256),
             (bytes.len() as u64, sha256.to_vec())
         );
-        // Another worker's word places nothing.
+        // Another worker's copy, whole, is not placed: the job is not its.
+        store
+            .put(&aside(&picture, "w2", store::Variant::Thumb), bytes.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            hub.put_done(
+                "w2",
+                &picture,
+                store::Variant::Thumb,
+                bytes.len() as u64,
+                sha256
+            )
+            .await
+            .unwrap(),
+            Placed::NotYours
+        );
         assert!(
-            hub.put_done("w2", &picture, store::Variant::Thumb, 1, sha256)
+            store
+                .read(&store::key(store::Variant::Thumb, &picture))
                 .await
-                .is_err()
+                .unwrap()
+                .is_none()
         );
     }
 

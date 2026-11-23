@@ -139,10 +139,17 @@ export type DitherWorkerArgs = {
    * The bucket's pods, when it runs in the cluster (the bucket's `peer`): the
    * worker fetches uploads from it and puts what it makes into it directly,
    * at URLs dither signs, so its egress policy lets it reach them on `port`
-   * (the pods' own). Without it, the worker may reach HTTPS beyond the
-   * cluster, for a bucket there.
+   * (the pods' own). Without it the worker fetches and sends through
+   * dither, which works anywhere but carries the bytes.
    */
   store?: { podLabels: Record<string, string>; port: number; namespace?: string };
+  /**
+   * Let the worker reach HTTPS beyond the cluster, for a bucket there (R2,
+   * Hetzner), rather than send through dither. It runs ffmpeg on what
+   * people upload, so this stays off unless that bucket is where it should
+   * go directly.
+   */
+  externalBucket?: boolean;
 };
 
 /**
@@ -507,8 +514,12 @@ export function createDitherWorker(
                   ports: [{ protocol: "TCP", port: args.store.port }],
                 },
               ]
-            : // A bucket outside the cluster (R2, Hetzner): over HTTPS.
-              [{ to: [{ ipBlock: { cidr: "0.0.0.0/0", except: PRIVATE } }], ports: [{ protocol: "TCP", port: 443 }] }]),
+            : []),
+          // A bucket outside the cluster (R2, Hetzner), when asked for: over
+          // HTTPS. Without it, a worker sends through dither.
+          ...(args.externalBucket
+            ? [{ to: [{ ipBlock: { cidr: "0.0.0.0/0", except: PRIVATE } }], ports: [{ protocol: "TCP", port: 443 }] }]
+            : []),
         ],
       },
     },

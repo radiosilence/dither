@@ -6,6 +6,7 @@ mod config;
 mod db;
 mod disk;
 mod error;
+mod hex;
 mod i18n;
 mod icon;
 mod id;
@@ -102,7 +103,7 @@ async fn serve() -> anyhow::Result<()> {
         .context("restoring the database")?;
     let db = Db::open(&db_path).await.context("opening the database")?;
     let jobs = Arc::new(jobs::Hub::new(db.clone(), store.clone(), &config)?);
-    jobs.adopt(&config.state_dir).await;
+    jobs.adopt(&config.state_dir);
     {
         let listener = tokio::net::TcpListener::bind(&config.worker_addr)
             .await

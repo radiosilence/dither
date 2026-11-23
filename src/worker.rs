@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures_util::StreamExt as _;
 use tokio::sync::{Semaphore, watch};
 
 use crate::config::Config;
@@ -276,7 +277,12 @@ impl Worker {
                 }
                 let Signed { url } = asked.json().await.map_err(|e| fail(e.to_string()))?;
                 match self.put_signed(&url, &copy).await {
-                    Ok((bytes, sha256)) => return self.put_done(id, name, bytes, sha256).await,
+                    Ok((bytes, sha256)) => match self.put_done(id, name, bytes, sha256).await {
+                        Err(Problem::Failed(e)) => {
+                            tracing::warn!(job = %id, error = %e, "placing what was put into the store failed; sending through the queue")
+                        }
+                        done => return done,
+                    },
                     // A store this worker cannot reach, or that refuses the
                     // URL: the worker API takes it instead.
                     Err(e) => {
@@ -301,7 +307,7 @@ impl Worker {
         sha256: [u8; 32],
     ) -> Result<(), Problem> {
         let fail = |e: String| Problem::Failed(format!("sending its {name}: {e}"));
-        let hex: String = sha256.iter().map(|b| format!("{b:02x}")).collect();
+        let hex = crate::hex::encode(&sha256);
         let done = self
             .request(
                 reqwest::Method::POST,
@@ -358,20 +364,9 @@ impl Worker {
                     .map_err(|e| e.to_string())?;
                 let len = file.metadata().await.map_err(|e| e.to_string())?.len();
                 let hashing = hash.clone();
-                let chunks = futures_util::stream::unfold(file, move |mut file| {
-                    let hashing = hashing.clone();
-                    async move {
-                        use tokio::io::AsyncReadExt as _;
-                        let mut buf = vec![0u8; 1 << 20];
-                        match file.read(&mut buf).await {
-                            Ok(0) => None,
-                            Ok(n) => {
-                                buf.truncate(n);
-                                hashing.lock().update(&buf);
-                                Some((Ok::<_, std::io::Error>(Bytes::from(buf)), file))
-                            }
-                            Err(e) => Some((Err(e), file)),
-                        }
+                let chunks = crate::store::chunks(file).inspect(move |chunk| {
+                    if let Ok(chunk) = chunk {
+                        hashing.lock().update(chunk);
                     }
                 });
                 (len, reqwest::Body::wrap_stream(chunks))
@@ -536,7 +531,9 @@ impl Worker {
                 .await;
             let mut response = match response {
                 Ok(r) if r.status() == reqwest::StatusCode::GONE => return Err(Problem::Stopped),
-                Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
+                // Only the queue's word says the upload is lost: a store
+                // that has not got it may be one this worker reaches wrongly.
+                Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND && signed.is_none() => {
                     return Err(Problem::Rejected(
                         jobs::FAILED,
                         "its upload was lost before it was made".into(),

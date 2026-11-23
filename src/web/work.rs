@@ -253,7 +253,7 @@ async fn put_done(
     let (true, Some(variant)) = (crate::id::valid(&id), Variant::named(&variant)) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Some(sha256) = hex(&done.sha256) else {
+    let Some(sha256) = crate::hex::decode32(&done.sha256) else {
         return (StatusCode::BAD_REQUEST, "sha256 is 64 hex digits").into_response();
     };
     match work
@@ -261,26 +261,14 @@ async fn put_done(
         .put_done(&worker, &id, variant, done.bytes, sha256)
         .await
     {
-        Ok(true) => StatusCode::NO_CONTENT.into_response(),
-        Ok(false) => StatusCode::GONE.into_response(),
-        Err(e) => {
-            tracing::warn!(job = %id, error = %e, "a copy a worker put did not arrive whole");
+        Ok(crate::jobs::Placed::Yes) => StatusCode::NO_CONTENT.into_response(),
+        Ok(crate::jobs::Placed::NotYours) => StatusCode::GONE.into_response(),
+        Ok(crate::jobs::Placed::Short(held)) => {
+            tracing::warn!(job = %id, bytes = done.bytes, ?held, "a copy a worker put did not arrive whole");
             StatusCode::UNPROCESSABLE_ENTITY.into_response()
         }
+        Err(e) => failed(e),
     }
-}
-
-fn hex(text: &str) -> Option<[u8; 32]> {
-    let text = text.as_bytes();
-    if text.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (i, pair) in text.chunks(2).enumerate() {
-        let digit = |c: u8| (c as char).to_digit(16);
-        out[i] = u8::try_from(digit(pair[0])? * 16 + digit(pair[1])?).ok()?;
-    }
-    Some(out)
 }
 
 #[derive(serde::Deserialize)]
