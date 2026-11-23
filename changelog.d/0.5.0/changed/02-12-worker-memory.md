@@ -1,0 +1,1 @@
+- **The worker's default memory limit is 4 GiB.** Converting at full size takes about 1.5 GB at 4K and 2 GB from an 8K source, beside the pictures' `PROCESS_MEMORY_BYTES`. A deployment that sets `workerLimits` should allow as much.
