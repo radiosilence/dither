@@ -731,6 +731,9 @@ async fn the_app_pages_draw_and_carry_their_policy() {
     let viewer = app.get(&format!("/images/{id}/view")).await;
     let html = viewer.text();
     assert!(html.contains("id=\"viewer-body\""));
+    // Each image's caption is its own element, so the next image's does not
+    // inherit what was typed into this one's.
+    assert!(html.contains(&format!("id=\"caption-{id}\"")), "{html}");
     assert!(
         html.contains(&format!("[img]http://app.test/{id}.jpg[/img]")),
         "{html}"
