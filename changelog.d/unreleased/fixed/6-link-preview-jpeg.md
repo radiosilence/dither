@@ -1,0 +1,1 @@
+- **Link previews show their picture on WhatsApp.** A page's `og:image` is now a JPEG of at most 1200 pixels and 300 KB at `/p/<id>.jpg`, made the first time a preview asks for it, so images uploaded earlier get one too. It was the original, or the WebP display copy above 5 MB, and WhatsApp shows nothing for an image that large. Pages also name the site in `og:site_name`.

@@ -285,12 +285,44 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
     let html = page.text();
     assert!(
         html.contains(&format!(
-            "<meta property=\"og:image\" content=\"http://app.test/{id}.jpg\">"
+            "<meta property=\"og:image\" content=\"http://app.test/p/{id}.jpg\">"
         )),
         "{html}"
     );
     assert!(html.contains("<meta name=\"twitter:card\" content=\"summary_large_image\">"));
-    assert!(html.contains("<meta property=\"og:image:width\" content=\"3000\">"));
+    assert!(html.contains("<meta property=\"og:image:type\" content=\"image/jpeg\">"));
+    assert!(html.contains("<meta property=\"og:image:width\" content=\"1200\">"));
+    assert!(html.contains("<meta property=\"og:image:height\" content=\"800\">"));
+
+    // The preview is made when first asked for, then kept.
+    assert!(
+        app.state
+            .store
+            .read(&store::key(Variant::Preview, &id))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let preview = app.get(&format!("/p/{id}.jpg")).await;
+    assert_eq!(preview.status, StatusCode::OK);
+    assert_eq!(preview.header("content-type"), "image/jpeg");
+    assert!(preview.body.len() <= crate::media::PREVIEW_BYTES);
+    let shown = image::load_from_memory(&preview.body).unwrap();
+    assert_eq!((shown.width(), shown.height()), (1200, 800));
+    assert_eq!(
+        app.state
+            .store
+            .read(&store::key(Variant::Preview, &id))
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&preview.body[..])
+    );
+    assert_eq!(app.get(&format!("/p/{id}.jpg")).await.body, preview.body);
+    assert_eq!(
+        app.get(&format!("/p/{id}.webp")).await.status,
+        StatusCode::NOT_FOUND
+    );
     assert!(html.contains("<meta name=\"robots\" content=\"noindex\">"));
     assert!(!html.contains("<script"), "public pages carry no script");
     assert_eq!(page.header("x-robots-tag"), "noindex");
@@ -552,6 +584,10 @@ async fn deleting_an_album_deletes_its_files() {
     let (album, done) = app.upload(&[&jpeg(40, 30), &jpeg(30, 40)]).await;
     let ids: Vec<String> = done.iter().map(image_id).collect();
     assert_eq!(
+        app.get(&format!("/p/{}.jpg", ids[0])).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
         app.post(&format!("/albums/{album}/delete"), json!({}))
             .await
             .status,
@@ -562,7 +598,7 @@ async fn deleting_an_album_deletes_its_files() {
             app.get(&format!("/{id}.jpg")).await.status,
             StatusCode::NOT_FOUND
         );
-        for v in [Variant::Original, Variant::Thumb] {
+        for v in [Variant::Original, Variant::Thumb, Variant::Preview] {
             assert!(
                 app.state
                     .store

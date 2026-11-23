@@ -2,8 +2,8 @@
 //! files themselves.
 //!
 //! The pages are plain HTML and CSS, no script, with the Open Graph and
-//! Twitter card tags link previews are built from (Reddit, Discord, iMessage,
-//! Slack and the rest), and `noindex`, since an unlisted album should be
+//! Twitter card tags link previews are built from (Reddit, WhatsApp, Discord,
+//! iMessage, Slack and the rest), and `noindex`, since an unlisted album should be
 //! found by its link and not by a search engine. `robots.txt` allows every
 //! crawler: some preview fetchers obey it, and a disallow would leave a link
 //! without its picture.
@@ -12,6 +12,12 @@
 //! policy, so no browser treats one as a document, and with permission to be
 //! embedded anywhere, which is the point of an image host. Their bytes never
 //! change under an address, so they are cached for a year.
+//!
+//! A preview's picture is its own copy, `/p/<id>.jpg`: a JPEG held to
+//! [`PREVIEW_BYTES`], since WhatsApp shows nothing for a larger `og:image` and
+//! not every fetcher reads WebP. It is made the first time one is asked for,
+//! from the smallest stored copy large enough, so images uploaded before
+//! previews existed get theirs too.
 
 use askama::Template;
 use askama_gettext::Translate as _;
@@ -22,7 +28,7 @@ use axum::response::{Html, IntoResponse, Response};
 use futures_util::StreamExt;
 
 use crate::db::{Album, Image};
-use crate::media::{DISPLAY_MAX, fit};
+use crate::media::{DISPLAY_MAX, PREVIEW_BYTES, fit, preview_size};
 use crate::metrics::{self, Served};
 use crate::store::{self, Variant};
 use crate::web::Helpers as _;
@@ -34,9 +40,10 @@ const CSP_PUBLIC: &str = "default-src 'none'; img-src 'self'; style-src 'self'; 
 /// Image files: nothing at all, in a sandbox, should a browser ever render
 /// one as a document.
 const CSP_FILE: &str = "default-src 'none'; sandbox";
-/// Previews of an og:image larger than this fail on some sites (X's limit is
-/// 5 MB), so a larger original is named by its display copy instead.
-const OG_IMAGE_MAX: u64 = 5_000_000;
+/// Previews made at once. A link posted to a busy chat brings each member's
+/// client for it together; each preview holds a decoded copy of at most
+/// `DISPLAY_MAX` square, so two at a time is a bounded tens of megabytes.
+static MAKING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// An image as a page draws it.
 pub struct Pic {
@@ -99,23 +106,13 @@ pub struct Og {
 }
 
 fn og_image(public_url: &str, i: &Image) -> OgImage {
-    if i.bytes > OG_IMAGE_MAX && i.display {
-        let (width, height) = fit(i.width, i.height, DISPLAY_MAX);
-        OgImage {
-            url: format!("{public_url}/d/{}.webp", i.id),
-            mime: "image/webp",
-            width,
-            height,
-            alt: i.caption.clone(),
-        }
-    } else {
-        OgImage {
-            url: format!("{public_url}/{}.{}", i.id, i.kind.ext()),
-            mime: i.kind.mime(),
-            width: i.width,
-            height: i.height,
-            alt: i.caption.clone(),
-        }
+    let (width, height) = preview_size(i.width, i.height, i.animated);
+    OgImage {
+        url: format!("{public_url}/p/{}.jpg", i.id),
+        mime: "image/jpeg",
+        width,
+        height,
+        alt: i.caption.clone(),
     }
 }
 
@@ -370,6 +367,46 @@ pub async fn display(
     }
 }
 
+pub async fn preview(
+    State(state): State<AppState>,
+    Path(file): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    match file.strip_suffix(".jpg") {
+        Some(id) => self::file(&state, &headers, id, Variant::Preview, "jpg").await,
+        None => not_found().await,
+    }
+}
+
+/// Image `image`'s preview, made from its smallest stored copy at least the
+/// preview's size and kept. An image deleted meanwhile has its preview
+/// deleted again, so none outlives it.
+async fn make_preview(state: &AppState, image: &Image) -> anyhow::Result<bytes::Bytes> {
+    let _turn = MAKING.acquire().await?;
+    let source = if image.display {
+        Variant::Display
+    } else if image.animated {
+        Variant::Thumb
+    } else {
+        Variant::Original
+    };
+    let bytes = state
+        .store
+        .read(&store::key(source, &image.id))
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("its {source:?} copy is missing"))?;
+    let size = preview_size(image.width, image.height, image.animated);
+    let jpeg = tokio::task::spawn_blocking(move || crate::media::preview(&bytes, size)).await??;
+    debug_assert!(jpeg.len() <= PREVIEW_BYTES || size.0.max(size.1) > 0);
+    let key = store::key(Variant::Preview, &image.id);
+    let jpeg = bytes::Bytes::from(jpeg);
+    state.store.put(&key, jpeg.clone()).await?;
+    if state.db.image(&image.id).await?.is_none() {
+        state.store.delete(&key).await?;
+    }
+    Ok(jpeg)
+}
+
 async fn file(
     state: &AppState,
     headers: &HeaderMap,
@@ -403,6 +440,7 @@ async fn file(
         }
         Variant::Thumb => ("image/webp", Served::Thumb, 't'),
         Variant::Display => ("image/webp", Served::Display, 'd'),
+        Variant::Preview => ("image/jpeg", Served::Preview, 'p'),
     };
     let etag = image.etag(tag);
     // A shared cache (a CDN in front) keeps a file ten minutes, so making its
@@ -446,6 +484,13 @@ async fn file(
     }
     let body = match state.store.get(&store::key(variant, id)).await {
         Ok(Some(body)) => body,
+        Ok(None) if variant == Variant::Preview => match make_preview(state, &image).await {
+            Ok(bytes) => store::Body::Bytes(bytes),
+            Err(e) => {
+                tracing::error!(image = id, error = %e, "making a link preview failed");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        },
         Ok(None) => {
             tracing::error!(
                 image = id,
@@ -462,10 +507,10 @@ async fn file(
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     let filename = format!(
         "{id}.{}",
-        if variant == Variant::Original {
-            image.kind.ext()
-        } else {
-            "webp"
+        match variant {
+            Variant::Original => image.kind.ext(),
+            Variant::Preview => "jpg",
+            Variant::Thumb | Variant::Display => "webp",
         }
     );
     h.insert(

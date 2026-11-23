@@ -100,6 +100,7 @@ pub fn router(state: AppState) -> Router {
         .route("/a/{id}", get(public::album))
         .route("/t/{file}", get(public::thumb))
         .route("/d/{file}", get(public::display))
+        .route("/p/{file}", get(public::preview))
         .route("/{slug}", get(public::image))
         .route("/healthz", get(|| async { "ok" }))
         .route("/robots.txt", get(public::robots))
