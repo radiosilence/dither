@@ -40,6 +40,7 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
     let db = Db::open(&config.state_dir.join("dither.db")).await.unwrap();
     let jobs = Arc::new(crate::jobs::Hub::new(db.clone(), &config.state_dir).unwrap());
     jobs.listen().unwrap();
+    let hub = jobs.clone();
     let uploads = Arc::new(Uploads::new(db.clone(), store.clone(), &config, jobs).unwrap());
     {
         let (config, store) = (config_for(dir.path()), store.clone());
@@ -49,6 +50,15 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
             }
         });
     }
+    // Connected before anything is uploaded, as a deployment's worker is: a
+    // picture finished before then is answered as processing, not made.
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !hub.working() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the test's worker connects");
     let (stop, stopping) = tokio::sync::watch::channel(false);
     // Kept for the life of the test: a dropped sender reads as stopping.
     std::mem::forget(stop);
