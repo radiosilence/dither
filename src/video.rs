@@ -182,7 +182,7 @@ impl Tools {
                 "ffmpeg has no {needed} encoder"
             );
         }
-        // What strips metadata from inside a video's stream (`SEI_TYPES`).
+        // What strips metadata from inside a video's stream (`sei_filter`).
         let bsfs = output(&ffmpeg, &["-hide_banner", "-bsfs"]).await?;
         anyhow::ensure!(
             bsfs.lines().any(|l| l.trim() == "filter_units"),
@@ -477,14 +477,23 @@ impl Tools {
                 .run(&self.ffmpeg, args, &sandbox, limit, stop.clone(), None)
                 .await
             {
+                // Only HEVC's decoder configuration holds SEI the filter
+                // misses.
+                Ok(_) if probe.video.codec != "hevc" => return Ok(()),
                 Ok(_) => {
                     let to = to.to_path_buf();
-                    return tokio::task::spawn_blocking(move || crate::mp4::strip_sei(&to))
+                    return match tokio::task::spawn_blocking(move || crate::mp4::strip_sei(&to))
                         .await
-                        .map_err(|e| e.to_string())
-                        .and_then(|r| r.map_err(|e| e.to_string()))
-                        .map(drop)
-                        .map_err(|e| format!("{LOCAL}taking SEI out of the original: {e}"));
+                    {
+                        Ok(Ok(_)) => Ok(()),
+                        // A configuration that cannot be read came with the
+                        // upload, and another try reads it the same.
+                        Ok(Err(e)) if e.kind() == std::io::ErrorKind::InvalidData => {
+                            Err(format!("its decoder configuration: {e}"))
+                        }
+                        Ok(Err(e)) => Err(format!("{LOCAL}taking SEI out of the original: {e}")),
+                        Err(e) => Err(format!("{LOCAL}taking SEI out of the original: {e}")),
+                    };
                 }
                 // Out of time, another try would only run out again, and
                 // trouble on this side is not the audio's.

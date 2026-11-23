@@ -126,7 +126,11 @@ mod linux {
             // Wherever the program is, it may be read and run: a static
             // ffmpeg outside the usual directories needs nothing else.
             let own = program.parent().map(Path::to_path_buf);
-            for dir in SYSTEM.iter().map(PathBuf::from).chain(own) {
+            // A link's target too, which may be elsewhere.
+            let target = std::fs::canonicalize(program)
+                .ok()
+                .and_then(|p| p.parent().map(Path::to_path_buf));
+            for dir in SYSTEM.iter().map(PathBuf::from).chain(own).chain(target) {
                 if dir.exists() {
                     ruleset = add(ruleset, &dir, read)?;
                 }
@@ -365,7 +369,7 @@ pub fn locate(program: &Path) -> io::Result<PathBuf> {
         })
     };
     match found {
-        Some(p) => std::fs::canonicalize(p),
+        Some(p) => std::path::absolute(p),
         None => Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("{} is not on PATH", program.display()),
