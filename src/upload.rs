@@ -467,7 +467,7 @@ impl Uploads {
                 self.jobs.wake();
                 // A picture takes seconds: its sender hears how it went, as
                 // they would were it made here. A video is processing.
-                if !video && self.jobs.working() {
+                if !video && self.jobs.takes_pictures() {
                     return self.picture_ended(&upload, id, ends).await;
                 }
                 Outcome::Done(id)

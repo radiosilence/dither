@@ -96,12 +96,16 @@ pub enum Outcome {
 }
 
 /// What a worker can take now, when it asks for a job.
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Want {
     pub pictures: bool,
     pub videos: bool,
-    /// Whether it can make videos at all, whether or not it has room now.
+    /// What it makes at all, whether or not it has room now.
+    pub makes_pictures: bool,
     pub makes_videos: bool,
+    /// The jobs it is making now, which it is not offered again.
+    #[serde(default)]
+    pub making: Vec<String>,
 }
 
 /// A job's progress, for the album page showing it.
@@ -111,6 +115,14 @@ pub struct Tick {
     pub id: String,
     /// Thousandths.
     pub done: u16,
+}
+
+/// A worker as last heard from.
+#[derive(Clone, Copy)]
+struct Seen {
+    at: Instant,
+    pictures: bool,
+    videos: bool,
 }
 
 /// The last word of a job's progress: how far along, when it came, and
@@ -135,8 +147,8 @@ pub struct Hub {
     ended: broadcast::Sender<(String, bool)>,
     /// Workers waiting for a job hear one may be.
     waiting: Notify,
-    /// Each worker heard from, when, and whether it makes videos.
-    workers: parking_lot::Mutex<HashMap<String, (Instant, bool)>>,
+    /// Each worker heard from: when, and what it makes.
+    workers: parking_lot::Mutex<HashMap<String, Seen>>,
 }
 
 /// The words the API gives for a failure key, which the pages word through
@@ -193,35 +205,43 @@ impl Hub {
         &self.state_dir
     }
 
-    /// Worker `name` was heard from.
-    fn heard(&self, name: &str, makes_videos: Option<bool>) {
+    /// Worker `name` was heard from, saying what it makes when it asks for
+    /// a job.
+    fn heard(&self, name: &str, makes: Option<(bool, bool)>) {
         let mut workers = self.workers.lock();
-        workers.retain(|_, (at, _)| at.elapsed() < ALIVE);
-        let videos = makes_videos
-            .or_else(|| workers.get(name).map(|(_, v)| *v))
-            .unwrap_or(false);
-        workers.insert(name.to_string(), (Instant::now(), videos));
+        workers.retain(|_, seen| seen.at.elapsed() < ALIVE);
+        let (pictures, videos) = makes
+            .or_else(|| workers.get(name).map(|s| (s.pictures, s.videos)))
+            .unwrap_or_default();
+        workers.insert(
+            name.to_string(),
+            Seen {
+                at: Instant::now(),
+                pictures,
+                videos,
+            },
+        );
     }
 
-    fn alive(&self) -> Vec<bool> {
+    fn alive(&self) -> Vec<Seen> {
         self.workers
             .lock()
             .values()
-            .filter(|(at, _)| at.elapsed() < ALIVE)
-            .map(|(_, videos)| *videos)
+            .filter(|seen| seen.at.elapsed() < ALIVE)
+            .copied()
             .collect()
     }
 
-    /// Whether any worker is there to take jobs now.
-    pub fn working(&self) -> bool {
-        !self.alive().is_empty()
+    /// Whether a worker that makes pictures is there to take them now.
+    pub fn takes_pictures(&self) -> bool {
+        self.alive().iter().any(|seen| seen.pictures)
     }
 
     /// Whether videos can be made: taken on the configuration's word until a
     /// worker is heard from, then whether any that is makes them.
     pub fn takes_videos(&self) -> bool {
         let alive = self.alive();
-        alive.is_empty() || alive.contains(&true)
+        alive.is_empty() || alive.iter().any(|seen| seen.videos)
     }
 
     /// Wait up to `limit` for job `id` to end: whether it was made, or `None`
@@ -262,7 +282,7 @@ impl Hub {
         want: Want,
         limit: Duration,
     ) -> crate::db::Result<Option<Job>> {
-        self.heard(name, Some(want.makes_videos));
+        self.heard(name, Some((want.makes_pictures, want.makes_videos)));
         let deadline = tokio::time::Instant::now() + limit;
         loop {
             // Listening before looking, so a job queued in between is heard.
@@ -273,7 +293,7 @@ impl Hub {
                 if !(if video { want.videos } else { want.pictures }) {
                     continue;
                 }
-                let Some(claimed) = self.db.claim(name, video, until()).await? else {
+                let Some(claimed) = self.db.claim(name, video, until(), &want.making).await? else {
                     continue;
                 };
                 let image = claimed.image;
@@ -293,9 +313,17 @@ impl Hub {
                     .await?;
                     continue;
                 }
+                // Recorded before any copy is stored, so copies stored for a
+                // job that then goes are found and removed.
+                self.db.add_stray(&image.id).await?;
+                // The upload's length is its file's: the row's becomes the
+                // original's once a worker has stored one.
+                let bytes = tokio::fs::metadata(source(&self.state_dir, &image.id))
+                    .await
+                    .map_or(image.bytes, |m| m.len());
                 return Ok(Some(Job {
                     video: image.is_video(),
-                    bytes: image.bytes,
+                    bytes,
                     as_recorded: image.as_recorded,
                     max_pixels: self.max_pixels,
                     max_seconds: self.max_seconds,
@@ -387,9 +415,6 @@ impl Hub {
         if !self.renew(name, id, None).await? {
             return Ok(false);
         }
-        // Recorded first, so copies stored for a job that then goes are
-        // found and removed.
-        self.db.add_stray(id).await?;
         let fingerprint = self
             .store
             .put_stream(&store::key(variant, id), body)
@@ -483,7 +508,9 @@ impl Hub {
         match self.db.image(id).await? {
             None => self.gone(id, false).await,
             Some(_) => {
-                self.db.release(name, id, 0).await?;
+                if self.db.release(name, id, 0).await? {
+                    self.waits(id, &owner);
+                }
             }
         }
         self.wake();
@@ -502,16 +529,21 @@ impl Hub {
         let wait = Duration::from_secs(30) * attempts.max(1);
         let after = now() + wait.as_millis() as i64;
         // Not this worker's to put back: another holds it, or it ended.
-        if !self.db.release(name, id, after).await? {
-            return Ok(());
+        if self.db.release(name, id, after).await? {
+            self.waits(id, owner);
         }
+        Ok(())
+    }
+
+    /// Job `id` of `owner`'s was put back: its album shows it waiting, not
+    /// stuck part way.
+    fn waits(&self, id: &str, owner: &str) {
         self.progress.lock().remove(id);
         let _ = self.ticks.send(Tick {
             owner: owner.into(),
             id: id.to_string(),
             done: 0,
         });
-        Ok(())
     }
 
     /// Job `id` has ended, or its image is gone: its upload goes, and its

@@ -64,7 +64,7 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
     // Connected before anything is uploaded, as a deployment's worker is: a
     // picture finished before then is answered as processing, not made.
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        while !hub.working() {
+        while !hub.takes_pictures() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })

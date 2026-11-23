@@ -59,8 +59,12 @@ pub struct Worker {
     budget_mib: u32,
     pictures: Arc<Semaphore>,
     videos: Arc<Semaphore>,
+    /// Whether it makes pictures: it has slots for them.
+    makes_pictures: bool,
     /// Whether it makes videos: it has ffmpeg, and slots for them.
     makes_videos: bool,
+    /// The jobs being made now.
+    making: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 /// A job being made: whether to stop, and how far along it is.
@@ -108,9 +112,12 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
         budget_mib: mib,
         pictures: Arc::new(Semaphore::new(config.workers.pictures)),
         videos: Arc::new(Semaphore::new(config.workers.videos)),
+        makes_pictures: config.workers.pictures > 0,
         makes_videos: tools.is_some() && config.workers.videos > 0,
         tools,
+        making: Default::default(),
     });
+    worker.tidy().await;
     tracing::info!(
         worker = %worker.name,
         queue = %worker.queue,
@@ -162,17 +169,19 @@ impl Worker {
     /// slot for one, and make each.
     async fn claim_forever(self: Arc<Self>, video: bool) {
         let slots = if video { &self.videos } else { &self.pictures };
-        let want = Want {
-            pictures: !video,
-            videos: video,
-            makes_videos: self.makes_videos,
-        };
         let mut unreachable = false;
         loop {
             let Ok(slot) = slots.clone().acquire_owned().await else {
                 return;
             };
-            match self.ask(want).await {
+            let want = Want {
+                pictures: !video,
+                videos: video,
+                makes_pictures: self.makes_pictures,
+                makes_videos: self.makes_videos,
+                making: self.making.lock().iter().cloned().collect(),
+            };
+            match self.ask(&want).await {
                 Ok(Some(job)) => {
                     unreachable = false;
                     let this = self.clone();
@@ -193,10 +202,10 @@ impl Worker {
         }
     }
 
-    async fn ask(&self, want: Want) -> anyhow::Result<Option<Job>> {
+    async fn ask(&self, want: &Want) -> anyhow::Result<Option<Job>> {
         let response = self
             .request(reqwest::Method::POST, "/work/claim")
-            .json(&want)
+            .json(want)
             .timeout(jobs::POLL + Duration::from_secs(15))
             .send()
             .await?;
@@ -268,6 +277,7 @@ impl Worker {
     /// Make a claimed job, and say how it ended.
     async fn make(self: Arc<Self>, job: Job) {
         let id = job.id.clone();
+        self.making.lock().insert(id.clone());
         let started = Instant::now();
         let (stop, stopped) = watch::channel(false);
         let (done, mut reported) = watch::channel(0u16);
@@ -322,6 +332,36 @@ impl Worker {
         };
         self.end(&id, outcome, started.elapsed().as_millis() as u64)
             .await;
+        self.making.lock().remove(&id);
+    }
+
+    /// Remove what a run before this one left in its scratch: it stopped
+    /// mid-job, killed or out of memory, and its name died with it. Only
+    /// what nothing has written to in a while, in case another worker shares
+    /// the directory.
+    async fn tidy(&self) {
+        let Ok(mut entries) = tokio::fs::read_dir(jobs::dir(&self.state_dir)).await else {
+            return;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if !path.extension().is_some_and(|e| e == "work") {
+                continue;
+            }
+            let mut newest = entry.metadata().await.ok().and_then(|m| m.modified().ok());
+            if let Ok(mut inside) = tokio::fs::read_dir(&path).await {
+                while let Ok(Some(file)) = inside.next_entry().await {
+                    let modified = file.metadata().await.ok().and_then(|m| m.modified().ok());
+                    newest = newest.max(modified);
+                }
+            }
+            let idle = newest
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > Duration::from_secs(3600));
+            if idle {
+                let _ = tokio::fs::remove_dir_all(&path).await;
+            }
+        }
     }
 
     /// Job `id`'s upload: where it waits, when this worker shares the web

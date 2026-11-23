@@ -159,7 +159,11 @@ impl Config {
                 "WORKER_ADDR {worker_addr} is reachable from other machines, so WORKER_TOKEN is required"
             );
         }
-        let queue_url = origin("QUEUE_URL", &or("QUEUE_URL", "http://127.0.0.1:8081"))?;
+        let queue_url = or("QUEUE_URL", "http://127.0.0.1:8081");
+        if !url::Url::parse(&queue_url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")) {
+            bail!("QUEUE_URL must be an http(s) URL");
+        }
+        let queue_url = queue_url.trim_end_matches('/').to_string();
         let storage = match var("STORAGE") {
             Some(s) => s,
             None => {
