@@ -6,17 +6,21 @@ const base = {
   node: "box",
   oidc: { issuer: "https://auth.example", clientId: "dither", clientSecret: "s" },
   workerToken: "t",
+  bucket: { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "a", secretAccessKey: "b" },
 };
 
 const env = (args: Parameters<typeof environment>[0]) =>
   Object.fromEntries(environment(args).map((e) => [e.name, e.value]));
 
 describe("environment", () => {
-  it("keeps images on the node's disk with a floor of free space", () => {
-    const e = env({ ...base, minFreeBytes: 1024 });
-    expect(e.STORAGE).toBe("file:///data/objects");
-    expect(e.MIN_FREE_BYTES).toBe("1024");
-    expect(e.AWS_ENDPOINT).toBeUndefined();
+  it("keeps a floor of free space on the node's disk", () => {
+    expect(env({ ...base, minFreeBytes: 1024 }).MIN_FREE_BYTES).toBe("1024");
+  });
+
+  it("refuses a bucket outside the cluster over plain HTTP", () => {
+    expect(() =>
+      environment({ ...base, bucket: { url: "s3://p", endpoint: "http://s3.example", accessKeyId: "a", secretAccessKey: "b" } }),
+    ).toThrow("https");
   });
 
   it("leaves the disk floor to the service's default unless given one", () => {
@@ -114,11 +118,11 @@ describe("egress", () => {
 
   it("reaches the identity provider in its own namespace when it has one", () => {
     const oidc = { ...base.oidc, backchannel: { ...backchannel, namespace: "auth" } };
-    expect(peers({ oidc })).toContainEqual({
+    expect(peers({ oidc, bucket: base.bucket })).toContainEqual({
       podSelector: { matchLabels: { app: "hydra" } },
       namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "auth" } },
     });
-    expect(peers({ oidc: { ...base.oidc, backchannel } })).toContainEqual({
+    expect(peers({ oidc: { ...base.oidc, backchannel }, bucket: base.bucket })).toContainEqual({
       podSelector: { matchLabels: { app: "hydra" } },
     });
   });
@@ -126,9 +130,10 @@ describe("egress", () => {
   it("leaves the cluster only when something out there is needed", () => {
     const internet = (args: Parameters<typeof egress>[0]) => peers(args).some((p) => "ipBlock" in p);
     const bucket = { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "a", secretAccessKey: "b" };
-    expect(internet({ oidc: { ...base.oidc, backchannel } })).toBe(false);
+    const inCluster = { ...bucket, endpoint: "http://garage:3900", peer: { podLabels: { app: "garage" }, port: 3900 } };
+    expect(internet({ oidc: { ...base.oidc, backchannel }, bucket: inCluster })).toBe(false);
     expect(internet({ oidc: { ...base.oidc, backchannel }, bucket })).toBe(true);
-    expect(internet({ oidc: base.oidc })).toBe(true);
+    expect(internet({ oidc: base.oidc, bucket: inCluster })).toBe(true);
   });
 
   it("reaches a bucket in the cluster, and nothing beyond it", () => {

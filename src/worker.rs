@@ -1,11 +1,14 @@
 //! `dither worker`: the process that makes uploads' copies. It runs wherever
 //! it reaches the web process's worker API (`web::work`), as many as there
 //! are machines to spare. It holds none of the web process's secrets, and
-//! neither the database nor the store: it asks for a job, fetches the upload,
-//! makes it, sends what it made and says how it ended.
+//! neither the database nor the store's keys: it asks for a job, fetches the
+//! upload, makes it, sends what it made and says how it ended.
 //!
-//! One sharing the web process's state directory, as `just dev` runs it,
-//! reads an upload where it waits rather than fetching a copy.
+//! When the store signs URLs (a bucket), the upload is fetched from it, and
+//! what is made put into it, directly, with URLs the web process signs for
+//! that job alone: a worker beside the store moves nothing across the
+//! network to the web process. Otherwise (memory, in development) the worker
+//! API carries the bytes.
 //!
 //! A job is held with a lease, renewed while the job is made; a renewal that
 //! is refused means the job was deleted or taken by another worker, and this
@@ -18,6 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures_util::StreamExt as _;
 use tokio::sync::{Semaphore, watch};
 
 use crate::config::Config;
@@ -89,6 +93,12 @@ impl Making {
     fn stopped(&self) -> bool {
         *self.stop.borrow()
     }
+}
+
+/// What a worker sends of a job: bytes it holds, or a file it made.
+enum Copy {
+    Bytes(Bytes),
+    File(PathBuf),
 }
 
 /// Run until a signal to stop, when the claims held are given back.
@@ -245,22 +255,136 @@ impl Worker {
         }
     }
 
-    /// Send job `id`'s copy of `variant`.
-    async fn put(&self, id: &str, variant: Variant, body: reqwest::Body) -> Result<(), Problem> {
+    /// Send job `id`'s copy of `variant`: straight into the store when it
+    /// signs a URL for it, otherwise through the worker API.
+    async fn put(&self, id: &str, variant: Variant, copy: Copy) -> Result<(), Problem> {
         let name = variant.name();
+        let fail = |e: String| Problem::Failed(format!("sending its {name}: {e}"));
+        let asked = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/work/{id}/files/{name}/url"),
+            )
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| fail(e.to_string()))?;
+        match asked.status() {
+            reqwest::StatusCode::OK => {
+                #[derive(serde::Deserialize)]
+                struct Signed {
+                    url: String,
+                }
+                let Signed { url } = asked.json().await.map_err(|e| fail(e.to_string()))?;
+                match self.put_signed(&url, &copy).await {
+                    Ok((bytes, sha256)) => match self.put_done(id, name, bytes, sha256).await {
+                        Err(Problem::Failed(e)) => {
+                            tracing::warn!(job = %id, error = %e, "placing what was put into the store failed; sending through the queue")
+                        }
+                        done => return done,
+                    },
+                    // A store this worker cannot reach, or that refuses the
+                    // URL: the worker API takes it instead.
+                    Err(e) => {
+                        tracing::warn!(job = %id, error = %e, "putting into the store failed; sending through the queue")
+                    }
+                }
+            }
+            // The store does not sign: the worker API carries it.
+            reqwest::StatusCode::NOT_FOUND => {}
+            reqwest::StatusCode::GONE => return Err(Problem::Stopped),
+            status => return Err(fail(format!("the queue answered {status}"))),
+        }
+        self.put_through(id, name, copy).await
+    }
+
+    /// Tell the queue job `id`'s copy `name` is in the store, `bytes` long.
+    async fn put_done(
+        &self,
+        id: &str,
+        name: &str,
+        bytes: u64,
+        sha256: [u8; 32],
+    ) -> Result<(), Problem> {
+        let fail = |e: String| Problem::Failed(format!("sending its {name}: {e}"));
+        let hex = crate::hex::encode(&sha256);
+        let done = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/work/{id}/files/{name}/done"),
+            )
+            .json(&serde_json::json!({ "bytes": bytes, "sha256": hex }))
+            .timeout(Duration::from_secs(120))
+            .send()
+            .await
+            .map_err(|e| fail(e.to_string()))?;
+        match done.status() {
+            reqwest::StatusCode::NO_CONTENT => Ok(()),
+            reqwest::StatusCode::GONE => Err(Problem::Stopped),
+            status => Err(fail(format!("the queue answered {status}"))),
+        }
+    }
+
+    /// Send job `id`'s copy `name` through the worker API.
+    async fn put_through(&self, id: &str, name: &str, copy: Copy) -> Result<(), Problem> {
+        let fail = |e: String| Problem::Failed(format!("sending its {name}: {e}"));
+        let body = match copy {
+            Copy::Bytes(bytes) => reqwest::Body::from(bytes),
+            Copy::File(path) => tokio::fs::File::open(&path)
+                .await
+                .map_err(|e| fail(e.to_string()))?
+                .into(),
+        };
         let response = self
             .request(reqwest::Method::PUT, &format!("/work/{id}/files/{name}"))
             .body(body)
             .send()
             .await
-            .map_err(|e| Problem::Failed(format!("sending its {name}: {e}")))?;
+            .map_err(|e| fail(e.to_string()))?;
         match response.status() {
             reqwest::StatusCode::NO_CONTENT => Ok(()),
             reqwest::StatusCode::GONE => Err(Problem::Stopped),
-            status => Err(Problem::Failed(format!(
-                "sending its {name}: the queue answered {status}"
-            ))),
+            status => Err(fail(format!("the queue answered {status}"))),
         }
+    }
+
+    /// Put `copy` at a signed URL: its length and SHA-256, for the web
+    /// process to check and record. A file is hashed as it is sent.
+    async fn put_signed(&self, url: &str, copy: &Copy) -> Result<(u64, [u8; 32]), String> {
+        use sha2::Digest as _;
+        let hash = Arc::new(parking_lot::Mutex::new(sha2::Sha256::new()));
+        let (len, body) = match copy {
+            Copy::Bytes(bytes) => {
+                hash.lock().update(bytes);
+                (bytes.len() as u64, reqwest::Body::from(bytes.clone()))
+            }
+            Copy::File(path) => {
+                let file = tokio::fs::File::open(path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let len = file.metadata().await.map_err(|e| e.to_string())?.len();
+                let hashing = hash.clone();
+                let chunks = crate::store::chunks(file).inspect(move |chunk| {
+                    if let Ok(chunk) = chunk {
+                        hashing.lock().update(chunk);
+                    }
+                });
+                (len, reqwest::Body::wrap_stream(chunks))
+            }
+        };
+        let response = self
+            .http
+            .put(url)
+            .header(reqwest::header::CONTENT_LENGTH, len)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("the store answered {}", response.status()));
+        }
+        let sha256 = hash.lock().clone().finalize().into();
+        Ok((len, sha256))
     }
 
     /// Say how job `id` ended, until the web process hears it: it may be
@@ -377,18 +501,11 @@ impl Worker {
         }
     }
 
-    /// Job `id`'s upload: where it waits, when this worker shares the web
-    /// process's state directory, or else fetched, carrying on from where a
-    /// fetch cut short stopped.
+    /// Job `id`'s upload, fetched from the store at the URL signed for it,
+    /// or through the worker API when there is none or the store cannot be
+    /// reached from here, carrying on from where a fetch cut short stopped.
     async fn fetch(&self, job: &Job, making: &Making) -> Result<PathBuf, Problem> {
         use tokio::io::AsyncWriteExt as _;
-        let local = jobs::source(&self.state_dir, &job.id);
-        if tokio::fs::metadata(&local)
-            .await
-            .is_ok_and(|m| m.len() == job.bytes)
-        {
-            return Ok(local);
-        }
         let work = self.work(&job.id);
         let _ = tokio::fs::remove_dir_all(&work).await;
         tokio::fs::create_dir_all(&work)
@@ -400,15 +517,23 @@ impl Worker {
             .map_err(|e| Problem::Failed(e.to_string()))?;
         let mut have = 0u64;
         let mut last = String::new();
+        // A store this worker cannot reach, or that refuses the URL, is left
+        // for the worker API, which always serves the upload.
+        let mut signed = job.source.as_deref();
         for _ in 0..5 {
-            let response = self
-                .request(reqwest::Method::GET, &format!("/work/{}/source", job.id))
+            let request = match signed {
+                Some(url) => self.http.get(url),
+                None => self.request(reqwest::Method::GET, &format!("/work/{}/source", job.id)),
+            };
+            let response = request
                 .header(reqwest::header::RANGE, format!("bytes={have}-"))
                 .send()
                 .await;
             let mut response = match response {
                 Ok(r) if r.status() == reqwest::StatusCode::GONE => return Err(Problem::Stopped),
-                Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
+                // Only the queue's word says the upload is lost: a store
+                // that has not got it may be one this worker reaches wrongly.
+                Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND && signed.is_none() => {
                     return Err(Problem::Rejected(
                         jobs::FAILED,
                         "its upload was lost before it was made".into(),
@@ -416,12 +541,26 @@ impl Worker {
                 }
                 Ok(r) if r.status().is_success() => r,
                 Ok(r) => {
-                    last = format!("the queue answered {}", r.status());
+                    last = format!(
+                        "{} answered {}",
+                        if signed.is_some() {
+                            "the store"
+                        } else {
+                            "the queue"
+                        },
+                        r.status()
+                    );
+                    if signed.take().is_some() {
+                        tracing::warn!(job = %job.id, error = %last, "fetching from the store failed; asking the queue");
+                    }
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
                 Err(e) => {
                     last = e.to_string();
+                    if signed.take().is_some() {
+                        tracing::warn!(job = %job.id, error = %last, "fetching from the store failed; asking the queue");
+                    }
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
@@ -537,7 +676,7 @@ impl Worker {
             puts.push((Variant::Display, Bytes::from(d)));
         }
         for (variant, bytes) in puts {
-            self.put(id, variant, bytes.into()).await?;
+            self.put(id, variant, Copy::Bytes(bytes)).await?;
         }
         Ok(made)
     }
@@ -673,14 +812,16 @@ impl Worker {
         };
         making.report(960);
 
-        let video = tokio::fs::File::open(&made)
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?;
-        self.put(id, Variant::Original, video.into()).await?;
-        self.put(id, Variant::Thumb, Bytes::from(still.thumb).into())
+        self.put(id, Variant::Original, Copy::File(made.clone()))
             .await?;
-        self.put(id, Variant::Preview, Bytes::from(still.preview).into())
+        self.put(id, Variant::Thumb, Copy::Bytes(Bytes::from(still.thumb)))
             .await?;
+        self.put(
+            id,
+            Variant::Preview,
+            Copy::Bytes(Bytes::from(still.preview)),
+        )
+        .await?;
         making.report(1000);
         let (width, height) = stored.shown();
         Ok(Made {

@@ -344,12 +344,7 @@ impl Image {
     /// The entity tag every copy of it is served under, with the variant's
     /// letter so the copies differ.
     pub fn etag(&self, variant: char) -> String {
-        let hex: String = self
-            .sha256
-            .iter()
-            .take(12)
-            .map(|b| format!("{b:02x}"))
-            .collect();
+        let hex = crate::hex::encode(&self.sha256[..self.sha256.len().min(12)]);
         format!("\"{hex}{variant}\"")
     }
 }
@@ -1732,7 +1727,7 @@ pub mod tests {
     }
 
     /// An album of ann's with a job of each kind queued.
-    async fn queued(db: &Db) -> (String, String) {
+    pub(crate) async fn queued(db: &Db) -> (String, String) {
         let album = db.create_album("ann", "").await.unwrap();
         let uploads = db
             .begin_uploads(

@@ -169,20 +169,20 @@ regardless.
 
 ## Storage
 
-Images, and copies of the database, go to one object store chosen by
-`STORAGE`: a directory (`file:///data/objects`) or an S3-compatible bucket
-(`s3://bucket`, with Cloudflare R2, Hetzner Object Storage, or a service in
-the cluster such as Garage or MinIO; `AWS_ALLOW_HTTP=true` lets it be reached
-over plain HTTP inside the cluster). The
+Images, uploads waiting for a worker, and copies of the database go to one
+S3-compatible bucket, `STORAGE` (`s3://bucket`): Garage or MinIO in the
+cluster, reached over plain HTTP with `AWS_ALLOW_HTTP=true`, or Cloudflare R2
+or Hetzner Object Storage outside it. `memory:///` keeps them in memory
+instead, for development, and forgets them when the process stops. The
 database is SQLite in `STATE_DIR`. Two seconds after each burst of changes it
 is compacted (`VACUUM INTO`), gzipped and written to the store as
 `state/dither.db.gz`, with one copy an hour kept for three days. A node that
 starts with no database restores the latest copy, and so does one whose
 database is behind it: each copy carries a generation, so a disk an older run
 left behind is told apart from the live one, and is kept beside the restored
-database rather than deleted. With a bucket, the store is the only thing to
-back up and the pod's disk is a cache. One replica is assumed, as with any
-SQLite service.
+database rather than deleted. The bucket is the only thing to back up: the
+web process's disk holds uploads in progress, the database and a cache. One
+replica is assumed, as with any SQLite service.
 
 The database records an image's copies before they are written, and recording
 the image claims them. An hourly sweep deletes copies whose record is an hour
@@ -190,13 +190,14 @@ old and unclaimed: a crash between storing and recording, or a delete the
 store did not confirm. It never deletes a copy because no image names it, so
 a database restored from an older copy leaves newer images in the store.
 
-Uploads are refused while a disk they write to (the state directory, and a
-disk store) has less than `MIN_FREE_BYTES` free, or by default 15% of its
-size, so a full image store never fills a disk the rest of the machine
-depends on: the kubelet starts evicting pods at 10% free.
+Uploads in progress are refused while the state directory's disk has less
+than `MIN_FREE_BYTES` free, or by default 15% of its size, so they never fill
+a disk the rest of the machine depends on: the kubelet starts evicting pods
+at 10% free. A finished upload goes to the bucket, under `upload/<id>`, until
+its job ends.
 
-A bucket on another machine can have a cache on this one's disk
-(`DISK_CACHE_BYTES`, in `STATE_DIR/cache`): what was read or written recently,
+The bucket can have a cache on this machine's disk (`DISK_CACHE_BYTES`, in
+`STATE_DIR/cache`): what was read or written recently,
 kept whole, each object at most a quarter of the budget, the least recently
 used going first. A read from it costs no round trip, and it keeps serving
 what it holds while the bucket is unreachable, which matters when the bucket
@@ -205,19 +206,18 @@ fetched to disk behind it; an upload is written to disk as it is stored,
 since its owner looks at it next. It counts against the state disk's free
 space, so `MIN_FREE_BYTES` should leave room for it.
 
-### Moving from a disk to a bucket
+### Moving to another bucket
 
 ```sh
 # Copy everything, the database's copies included. It resumes if interrupted.
-AWS_ENDPOINT=https://<account>.r2.cloudflarestorage.com AWS_REGION=auto \
-AWS_ACCESS_KEY_ID=… AWS_SECRET_ACCESS_KEY=… \
-  dither copy-store file:///data/objects s3://<bucket>
+# Both buckets are read from the AWS_* variables, so they share an endpoint
+# and keys; copy through a machine that reaches both.
+dither copy-store s3://<from> s3://<to>
 ```
 
-Then point `STORAGE` at the bucket (in Kubernetes, give the component its
-`bucket`). Uploads made between the copy and the switch are not in the
-bucket, so run the copy again just before switching, or stop uploading for
-the few minutes it takes.
+Then point `STORAGE` at the new bucket (in Kubernetes, the component's
+`bucket`). Uploads made between the copy and the switch are not in it, so run
+the copy again just after switching; it skips what is already there.
 
 ## Uploading
 
@@ -233,7 +233,7 @@ Finishing an upload checks what its first few megabytes can tell (what it
 is, how large, and for a picture its pixels and the memory it needs), so a
 file that will be refused is refused while its sender waits. Then it is
 queued: its image's row is added as processing, at once visible in the
-album, and its file moved to `STATE_DIR/jobs`. Finishing runs in a task the
+album, and its file stored in the bucket for a worker. Finishing runs in a task the
 request only waits on, so a client that disconnects does not stop it, and
 asking again reads how it ended.
 
@@ -248,8 +248,25 @@ the upload, makes it, sends back what it made and says how the job ended,
 and the web process records it. In Kubernetes each worker is a Deployment of
 its own (`createDitherWorker` in the Pulumi component), placed on whichever
 node should do the work; without one, uploads queue and wait. `just dev` runs
-one beside the server, sharing its state directory, where it reads uploads
-in place rather than fetching them.
+one beside the server.
+
+A worker fetches an upload from the bucket, and puts what it makes into it,
+directly, at URLs the web process signs for that job alone and for an hour:
+it holds none of the bucket's keys, and a worker beside the bucket moves
+nothing across the network to the web process. What it puts goes aside first
+(`work/<id>/<worker>/<variant>`); the web process checks its length and moves
+it into place only while the job is still that worker's, and records the
+original's length and SHA-256, which the worker computes. Without a bucket
+that signs (memory), or when a worker cannot reach the bucket or it refuses
+the URL, the worker API carries the bytes both ways instead.
+
+### Moving off a directory store
+
+Versions before 0.10 could keep images in a directory. `dither copy-store
+file:///data/objects s3://<bucket>` copies them into a bucket, with the
+bucket's `AWS_*` variables set; then set `STORAGE` to the bucket. Uploads an
+earlier version left waiting for a worker are moved into the bucket when the
+web process starts.
 
 The worker API (`web::work`) is served on a port of its own
 (`WORKER_ADDR`), never through the ingress. Anywhere but loopback it
@@ -373,10 +390,10 @@ startup.
 | `PUBLIC_URL` | `APP_URL` | What share links name. |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | — | Required. `INSECURE_NO_AUTH=1` disables sign-in and is only accepted with a loopback `BIND_ADDR`. |
 | `OIDC_TOKEN_URL` | the issuer's | Where codes are exchanged, when the issuer's public address is unreachable from the pod. |
-| `STORAGE` | `file://<cwd>/data/objects` | The object store. |
+| `STORAGE` | required | The bucket (`s3://bucket[/prefix]`, with the `AWS_*` variables), or `memory:///` for development. A worker does not use it. |
 | `AWS_ENDPOINT`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | — | For an `s3://` store. R2's region is `auto`. |
 | `STATE_DIR` | `data/state` | The database and uploads in progress, on a local disk. |
-| `MIN_FREE_BYTES` | 15% of each disk | Uploads are refused below this much free space on a disk they write to, and no file ffmpeg writes may take a disk below it. |
+| `MIN_FREE_BYTES` | 15% of the disk | Uploads in progress are refused below this much free space on the state directory's disk, and no file ffmpeg writes may take a worker's disk below it. |
 | `MAX_UPLOAD_BYTES`, `MAX_PIXELS` | 64 000 000, 100 000 000 | Per image. |
 | `PROCESS_MEMORY_BYTES` | 1 GiB | Memory a worker's pictures take at once. A picture that needs more alone is refused when its upload finishes. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |

@@ -1,17 +1,20 @@
 # dither: an image host
 
-# Run it on http://127.0.0.1:8080 with no sign-in and everything under ./data.
-# A laptop's disk is usually fuller than a server's, so uploads stop at 1 GB
-# free here rather than at the default share.
-# A worker beside it makes uploads' copies, sharing its state directory and
+# Run it on http://127.0.0.1:8080 with no sign-in, the images in memory and
+# a state directory of its own, so each run starts empty. A laptop's disk is
+# usually fuller than a server's, so uploads stop at 1 GB free here rather
+# than at the default share. A worker beside it makes uploads' copies,
 # reaching it over the worker API on loopback.
 dev:
     #!/usr/bin/env bash
     set -euo pipefail
-    export INSECURE_NO_AUTH=1 MIN_FREE_BYTES=1000000000
+    # Images in memory, and a state directory made for this run, so a restart
+    # starts empty rather than with rows naming images that are gone.
+    export INSECURE_NO_AUTH=1 MIN_FREE_BYTES=1000000000 STORAGE=memory:///
+    export STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dither-dev.XXXXXX")"
     cargo build
     cargo run -q -- worker &
-    trap 'kill %1 2>/dev/null || true' EXIT
+    trap 'kill %1 2>/dev/null || true; rm -rf "$STATE_DIR"' EXIT
     cargo run -q -- serve
 
 # What CI checks, short of the audit and the release builds.

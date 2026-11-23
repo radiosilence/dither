@@ -6,6 +6,7 @@ mod config;
 mod db;
 mod disk;
 mod error;
+mod hex;
 mod i18n;
 mod icon;
 mod id;
@@ -54,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
             let (Some(from), Some(to)) = (args.next(), args.next()) else {
                 bail!("usage: dither copy-store <from-url> <to-url>");
             };
-            let (from, to) = (Store::open(&from, 0)?, Store::open(&to, 0)?);
+            let (from, to) = (Store::open_any(&from)?, Store::open_any(&to)?);
             let (copied, skipped) = store::copy(&from, &to).await?;
             println!("copied {copied}, already there {skipped}");
             Ok(())
@@ -76,7 +77,7 @@ async fn serve() -> anyhow::Result<()> {
     std::fs::create_dir_all(&config.state_dir)
         .with_context(|| format!("creating {}", config.state_dir.display()))?;
     let mut store = Store::open(&config.storage, config.cache_bytes)?;
-    if store.dir().is_none() && config.disk_cache_bytes > 0 {
+    if store.signs() && config.disk_cache_bytes > 0 {
         let dir = config.state_dir.join("cache");
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         // Above the floor uploads keep, by room for the largest upload twice
@@ -102,6 +103,7 @@ async fn serve() -> anyhow::Result<()> {
         .context("restoring the database")?;
     let db = Db::open(&db_path).await.context("opening the database")?;
     let jobs = Arc::new(jobs::Hub::new(db.clone(), store.clone(), &config)?);
+    jobs.adopt(&config.state_dir);
     {
         let listener = tokio::net::TcpListener::bind(&config.worker_addr)
             .await
@@ -170,7 +172,7 @@ async fn serve() -> anyhow::Result<()> {
                     albums,
                     images,
                     bytes,
-                    free: state.store.free_bytes(),
+                    free: store::disk(&state.config.state_dir).map(|(free, _)| free),
                 })
             }),
         );

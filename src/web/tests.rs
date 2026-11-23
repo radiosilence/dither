@@ -1267,8 +1267,9 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
         .await;
     assert_eq!(gone.json()["deleted"], 1);
     assert!(videos.progress(&id).is_none());
-    // The worker stops, and tidies what it was working in.
-    let jobs = crate::jobs::dir(&app.state.config.state_dir);
+    // The worker stops, and tidies what it was working in, and the upload
+    // goes from the store.
+    let jobs = crate::jobs::dir(&app._dir.path().join("worker"));
     let left = || std::fs::read_dir(&jobs).unwrap().count();
     for _ in 0..1000 {
         if left() == 0 {
@@ -1277,6 +1278,14 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert_eq!(left(), 0, "the worker let it go and tidied up");
+    assert!(
+        app.state
+            .store
+            .read(&crate::jobs::upload(&id))
+            .await
+            .unwrap()
+            .is_none()
+    );
     for v in [
         Variant::Original,
         Variant::Display,

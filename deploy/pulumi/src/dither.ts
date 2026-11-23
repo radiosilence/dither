@@ -41,7 +41,7 @@ export type DitherArgs = {
   publicHostname?: string;
   /** The node whose disk holds the state, by hostname. */
   node: string;
-  /** Where on that node the database, uploads in progress and (without a bucket) the images live. */
+  /** Where on that node the database, uploads in progress and the disk cache live. */
   statePath?: string;
   oidc: {
     issuer: string;
@@ -61,11 +61,12 @@ export type DitherArgs = {
     };
   };
   /**
-   * An S3-compatible bucket (Cloudflare R2, Hetzner, MinIO) for the images
-   * and the database's copies, in place of the node's disk. `url` is
-   * `s3://bucket` or `s3://bucket/prefix`.
+   * The S3-compatible bucket the images, uploads waiting for a worker and the
+   * database's copies live in: Garage or MinIO in the cluster (with `peer`),
+   * Cloudflare R2 or Hetzner outside it. `url` is `s3://bucket` or
+   * `s3://bucket/prefix`.
    */
-  bucket?: {
+  bucket: {
     url: string;
     endpoint: string;
     region?: string;
@@ -87,7 +88,7 @@ export type DitherArgs = {
   diskCacheBytes?: number;
   /**
    * Uploads are refused while a disk they write to (the state directory, and
-   * the images without a bucket) has less than this free, so a full image
+   * the disk cache) has less than this free, so a full
    * store never fills a disk the node depends on. Unset, each disk keeps 15%
    * of its size free, above the kubelet's 10% eviction threshold.
    */
@@ -134,6 +135,21 @@ export type DitherWorkerArgs = {
   minFreeBytes?: number;
   /** dither's namespace, when the worker runs in another. */
   ditherNamespace?: string;
+  /**
+   * The bucket's pods, when it runs in the cluster (the bucket's `peer`): the
+   * worker fetches uploads from it and puts what it makes into it directly,
+   * at URLs dither signs, so its egress policy lets it reach them on `port`
+   * (the pods' own). Without it the worker fetches and sends through
+   * dither, which works anywhere but carries the bytes.
+   */
+  store?: { podLabels: Record<string, string>; port: number; namespace?: string };
+  /**
+   * Let the worker reach HTTPS beyond the cluster, for a bucket there (R2,
+   * Hetzner), rather than send through dither. It runs ffmpeg on what
+   * people upload, so this stays off unless that bucket is where it should
+   * go directly.
+   */
+  externalBucket?: boolean;
 };
 
 /**
@@ -156,7 +172,7 @@ export function workerEnvironment(args: DitherWorkerArgs) {
 
 /** The container's environment, apart from the secrets. Exported for its test. */
 export function environment(args: DitherArgs) {
-  if (args.bucket && !args.bucket.peer && !args.bucket.endpoint.startsWith("https://")) {
+  if (!args.bucket.peer && !args.bucket.endpoint.startsWith("https://")) {
     throw new Error("dither: a bucket outside the cluster must be reached over https");
   }
   const publicHost = args.publicHostname ?? args.hostname;
@@ -166,17 +182,11 @@ export function environment(args: DitherArgs) {
     { name: "APP_URL", value: `https://${args.hostname}` },
     { name: "PUBLIC_URL", value: `https://${publicHost}` },
     { name: "STATE_DIR", value: "/data/state" },
-    { name: "STORAGE", value: args.bucket ? args.bucket.url : "file:///data/objects" },
-    ...(args.bucket
-      ? [
-          { name: "AWS_ENDPOINT", value: args.bucket.endpoint },
-          { name: "AWS_REGION", value: args.bucket.region ?? "auto" },
-          // Plain HTTP only to a store inside the cluster, never across the internet.
-          ...(args.bucket.peer && args.bucket.endpoint.startsWith("http://")
-            ? [{ name: "AWS_ALLOW_HTTP", value: "true" }]
-            : []),
-        ]
-      : []),
+    { name: "STORAGE", value: args.bucket.url },
+    { name: "AWS_ENDPOINT", value: args.bucket.endpoint },
+    { name: "AWS_REGION", value: args.bucket.region ?? "auto" },
+    // Plain HTTP only to a store inside the cluster, never across the internet.
+    ...(args.bucket.peer && args.bucket.endpoint.startsWith("http://") ? [{ name: "AWS_ALLOW_HTTP", value: "true" }] : []),
     ...(args.diskCacheBytes ? [{ name: "DISK_CACHE_BYTES", value: String(args.diskCacheBytes) }] : []),
     ...(args.minFreeBytes === undefined ? [] : [{ name: "MIN_FREE_BYTES", value: String(args.minFreeBytes) }]),
     ...(args.maxUploadBytes ? [{ name: "MAX_UPLOAD_BYTES", value: String(args.maxUploadBytes) }] : []),
@@ -206,7 +216,7 @@ export function egress(args: Pick<DitherArgs, "oidc" | "bucket">) {
       ? { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": backchannel.namespace } } }
       : {}),
   };
-  const bucketPeer = args.bucket?.peer;
+  const bucketPeer = args.bucket.peer;
   const peer = bucketPeer && {
     podSelector: { matchLabels: bucketPeer.podLabels },
     ...(bucketPeer.namespace
@@ -222,8 +232,8 @@ export function egress(args: Pick<DitherArgs, "oidc" | "bucket">) {
       ],
     },
     ...(backchannel && provider ? [{ to: [provider], ports: [{ protocol: "TCP", port: backchannel.port }] }] : []),
-    ...(peer ? [{ to: [peer], ports: [{ protocol: "TCP", port: args.bucket!.peer!.port }] }] : []),
-    ...(!backchannel || (args.bucket && !args.bucket.peer)
+    ...(peer && bucketPeer ? [{ to: [peer], ports: [{ protocol: "TCP", port: bucketPeer.port }] }] : []),
+    ...(!backchannel || !args.bucket.peer
       ? [{ to: [{ ipBlock: { cidr: "0.0.0.0/0", except: PRIVATE } }], ports: [{ protocol: "TCP", port: 443 }] }]
       : []),
   ];
@@ -246,10 +256,8 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
       stringData: {
         "oidc-client-secret": pulumi.output(args.oidc.clientSecret),
         "worker-token": pulumi.output(args.workerToken),
-        ...(args.bucket && {
-          "s3-access-key-id": pulumi.output(args.bucket.accessKeyId),
-          "s3-secret-access-key": pulumi.output(args.bucket.secretAccessKey),
-        }),
+        "s3-access-key-id": pulumi.output(args.bucket.accessKeyId),
+        "s3-secret-access-key": pulumi.output(args.bucket.secretAccessKey),
       },
     },
     options,
@@ -319,12 +327,8 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
                   ...environment(args),
                   { name: "WORKER_TOKEN", ...secretRef("worker-token") },
                   { name: "OIDC_CLIENT_SECRET", ...secretRef("oidc-client-secret") },
-                  ...(args.bucket
-                    ? [
-                        { name: "AWS_ACCESS_KEY_ID", ...secretRef("s3-access-key-id") },
-                        { name: "AWS_SECRET_ACCESS_KEY", ...secretRef("s3-secret-access-key") },
-                      ]
-                    : []),
+                  { name: "AWS_ACCESS_KEY_ID", ...secretRef("s3-access-key-id") },
+                  { name: "AWS_SECRET_ACCESS_KEY", ...secretRef("s3-secret-access-key") },
                 ],
                 readinessProbe: { httpGet: { path: "/healthz", port: "http" }, periodSeconds: 10 },
                 livenessProbe: {
@@ -496,6 +500,26 @@ export function createDitherWorker(
             ],
           },
           { to: [dither], ports: [{ protocol: "TCP", port: WORK_PORT }] },
+          ...(args.store
+            ? [
+                {
+                  to: [
+                    {
+                      podSelector: { matchLabels: args.store.podLabels },
+                      ...(args.store.namespace
+                        ? { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": args.store.namespace } } }
+                        : {}),
+                    },
+                  ],
+                  ports: [{ protocol: "TCP", port: args.store.port }],
+                },
+              ]
+            : []),
+          // A bucket outside the cluster (R2, Hetzner), when asked for: over
+          // HTTPS. Without it, a worker sends through dither.
+          ...(args.externalBucket
+            ? [{ to: [{ ipBlock: { cidr: "0.0.0.0/0", except: PRIVATE } }], ports: [{ protocol: "TCP", port: 443 }] }]
+            : []),
         ],
       },
     },
