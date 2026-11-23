@@ -192,6 +192,9 @@ impl Worker {
             };
             match self.ask(&want).await {
                 Ok(Some(job)) => {
+                    if unreachable {
+                        tracing::info!(queue = %self.queue, "the queue is reachable again");
+                    }
                     unreachable = false;
                     let this = self.clone();
                     tokio::spawn(async move {
@@ -199,7 +202,12 @@ impl Worker {
                         drop(slot);
                     });
                 }
-                Ok(None) => unreachable = false,
+                Ok(None) => {
+                    if unreachable {
+                        tracing::info!(queue = %self.queue, "the queue is reachable again");
+                    }
+                    unreachable = false;
+                }
                 Err(e) => {
                     if !unreachable {
                         tracing::warn!(queue = %self.queue, error = %e, "the queue cannot be reached; trying again");

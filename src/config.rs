@@ -68,6 +68,9 @@ pub struct Config {
     /// that needs more than this alone is refused.
     pub process_memory: u64,
     pub cache_bytes: u64,
+    /// A cache on this machine's disk for a store on another, in bytes; 0
+    /// for none. Unused with a store on this disk.
+    pub disk_cache_bytes: u64,
     /// Uploads are refused while a disk they write to has less than this
     /// free, so a full image store never fills the disk the rest of the
     /// machine depends on. Unset, each disk keeps 15% of its size free.
@@ -185,6 +188,7 @@ impl Config {
             max_pixels: num("MAX_PIXELS", 100_000_000)?,
             process_memory: num("PROCESS_MEMORY_BYTES", 1 << 30)?,
             cache_bytes: num("CACHE_BYTES", 256 << 20)?,
+            disk_cache_bytes: num("DISK_CACHE_BYTES", 0)?,
             min_free_bytes: var("MIN_FREE_BYTES")
                 .map(|v| {
                     v.trim()
@@ -257,6 +261,7 @@ impl Config {
             max_pixels: 50_000_000,
             process_memory: 1 << 30,
             cache_bytes: 16 << 20,
+            disk_cache_bytes: 0,
             min_free_bytes: Some(0),
             video: Video {
                 mode: VideoMode::Auto,

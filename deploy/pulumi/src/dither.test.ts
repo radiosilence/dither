@@ -68,6 +68,25 @@ describe("environment", () => {
     expect(w.MIN_FREE_BYTES).toBe("1024");
   });
 
+  it("reaches a bucket in the cluster over plain HTTP, with a cache on disk", () => {
+    const e = env({
+      ...base,
+      bucket: {
+        url: "s3://dither",
+        endpoint: "http://garage:3900",
+        region: "garage",
+        accessKeyId: "a",
+        secretAccessKey: "b",
+        peer: { podLabels: { app: "garage" }, port: 3900 },
+      },
+      diskCacheBytes: 4096,
+    });
+    expect(e.AWS_ALLOW_HTTP).toBe("true");
+    expect(e.AWS_REGION).toBe("garage");
+    expect(e.DISK_CACHE_BYTES).toBe("4096");
+    expect(env({ ...base, bucket: { url: "s3://p", endpoint: "https://r2", accessKeyId: "a", secretAccessKey: "b" } }).AWS_ALLOW_HTTP).toBeUndefined();
+  });
+
   it("links to the public domain when there is one", () => {
     expect(env(base).PUBLIC_URL).toBe("https://dither.example");
     expect(env({ ...base, publicHostname: "pics.example" }).PUBLIC_URL).toBe("https://pics.example");
@@ -110,5 +129,24 @@ describe("egress", () => {
     expect(internet({ oidc: { ...base.oidc, backchannel } })).toBe(false);
     expect(internet({ oidc: { ...base.oidc, backchannel }, bucket })).toBe(true);
     expect(internet({ oidc: base.oidc })).toBe(true);
+  });
+
+  it("reaches a bucket in the cluster, and nothing beyond it", () => {
+    const bucket = {
+      url: "s3://dither",
+      endpoint: "http://garage:3900",
+      accessKeyId: "a",
+      secretAccessKey: "b",
+      peer: { podLabels: { app: "garage" }, port: 3900 },
+    };
+    const rules = egress({ oidc: { ...base.oidc, backchannel }, bucket });
+    expect(rules.some((r) => r.to.some((p) => "ipBlock" in p))).toBe(false);
+    expect(
+      rules.some(
+        (r) =>
+          r.ports.some((p) => p.port === 3900) &&
+          r.to.some((p) => "podSelector" in p && JSON.stringify(p.podSelector) === JSON.stringify({ matchLabels: { app: "garage" } })),
+      ),
+    ).toBe(true);
   });
 });

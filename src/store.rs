@@ -14,7 +14,10 @@
 //! Reads go through an in-memory cache weighted by size. Thumbnails are what a
 //! grid asks for a hundred at a time; originals are cached up to
 //! [`CACHE_ITEM_MAX`] and streamed past it, so one popular large GIF cannot
-//! take the memory every reader shares.
+//! take the memory every reader shares. A store on another machine can also
+//! have a cache on this one's disk ([`crate::disk`]): what was read or
+//! written recently, kept whole, which spares the round trip and serves
+//! while the store is unreachable.
 
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -90,6 +93,7 @@ impl quick_cache::Weighter<Path, Bytes> for Weigh {
 pub struct Store {
     inner: Arc<dyn ObjectStore>,
     cache: Arc<quick_cache::sync::Cache<Path, Bytes, Weigh>>,
+    disk: Option<Arc<crate::disk::Disk>>,
     /// The directory, when the store is one: what free space is measured on.
     dir: Option<PathBuf>,
     /// What the store is, for logs, with no credential in it.
@@ -161,9 +165,62 @@ impl Store {
                 cache_bytes,
                 Weigh,
             )),
+            disk: None,
             dir,
             label,
         }
+    }
+
+    /// With a cache on this machine's disk, for a store on another.
+    pub fn with_disk(mut self, disk: crate::disk::Disk) -> Self {
+        self.disk = Some(Arc::new(disk));
+        self
+    }
+
+    /// The disk cache's file for `key`, when it holds one.
+    fn on_disk(&self, key: &Path) -> Option<(std::path::PathBuf, u64)> {
+        self.disk.as_ref()?.get(key.as_ref())
+    }
+
+    /// Fetch `key`, `size` bytes, into the disk cache in the background,
+    /// unless it is too large or already on its way.
+    fn fill(&self, key: &Path, size: u64) {
+        let Some(disk) = self.disk.clone() else {
+            return;
+        };
+        if !disk.admits(size) || !disk.start(key.as_ref()) {
+            return;
+        }
+        let (inner, key) = (self.inner.clone(), key.clone());
+        tokio::spawn(async move {
+            let aside = disk.aside();
+            let written = async {
+                use tokio::io::AsyncWriteExt as _;
+                let mut stream = inner.get(&key).await?.into_stream();
+                let mut file = tokio::fs::File::create(&aside).await?;
+                let mut len = 0u64;
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk?;
+                    len += chunk.len() as u64;
+                    file.write_all(&chunk).await?;
+                }
+                file.sync_all().await?;
+                Ok::<_, anyhow::Error>(len)
+            }
+            .await;
+            match written {
+                Ok(len) => {
+                    if let Err(e) = disk.keep(key.as_ref(), &aside, len) {
+                        tracing::warn!(%key, error = %e, "keeping a copy on disk failed");
+                    }
+                }
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&aside).await;
+                    tracing::warn!(%key, error = %e, "fetching a copy to keep on disk failed");
+                }
+            }
+            disk.done(key.as_ref());
+        });
     }
 
     /// An empty store in memory, for tests.
@@ -215,27 +272,58 @@ impl Store {
         use sha2::Digest as _;
         use tokio::io::AsyncWriteExt as _;
         self.cache.remove(key);
+        if let Some(disk) = &self.disk {
+            disk.forget(key.as_ref());
+        }
         let mut writer = object_store::buffered::BufWriter::new(self.inner.clone(), key.clone());
         let mut hash = sha2::Sha256::new();
         let mut len = 0u64;
+        // A copy goes to the disk cache as it is stored: what was just
+        // uploaded is what its owner looks at next.
+        let mut copy = match &self.disk {
+            Some(disk) => {
+                let aside = disk.aside();
+                tokio::fs::File::create(&aside)
+                    .await
+                    .ok()
+                    .map(|file| (aside, file))
+            }
+            None => None,
+        };
         let copied = async {
             while let Some(chunk) = body.next().await {
                 let chunk = chunk.map_err(anyhow::Error::from)?;
                 hash.update(&chunk);
                 len += chunk.len() as u64;
                 writer.write_all(&chunk).await?;
+                let fits = self.disk.as_ref().is_some_and(|d| d.admits(len));
+                if let Some((aside, file)) = &mut copy
+                    && (!fits || file.write_all(&chunk).await.is_err())
+                {
+                    let _ = tokio::fs::remove_file(&*aside).await;
+                    copy = None;
+                }
             }
             Ok::<_, anyhow::Error>(())
         }
         .await;
         if let Err(e) = copied {
             let _ = writer.abort().await;
+            if let Some((aside, _)) = copy {
+                let _ = tokio::fs::remove_file(aside).await;
+            }
             return Err(e).with_context(|| format!("storing {key}"));
         }
         writer
             .shutdown()
             .await
             .with_context(|| format!("storing {key}"))?;
+        if let (Some(disk), Some((aside, file))) = (&self.disk, copy) {
+            drop(file);
+            if let Err(e) = disk.keep(key.as_ref(), &aside, len) {
+                tracing::warn!(%key, error = %e, "keeping a copy on disk failed");
+            }
+        }
         Ok((len, hash.finalize().into()))
     }
 
@@ -259,6 +347,17 @@ impl Store {
                 None => Part::Outside { total },
             }));
         }
+        if let Some((path, total)) = self.on_disk(key) {
+            crate::metrics::cache(true);
+            return Ok(Some(match bounds(&range, total) {
+                Some(r) => Part::Within {
+                    body: file_range(&path, r.clone()).await?,
+                    range: r,
+                    total,
+                },
+                None => Part::Outside { total },
+            }));
+        }
         let options = GetOptions {
             range: Some(range.clone()),
             ..GetOptions::default()
@@ -266,6 +365,7 @@ impl Store {
         match self.inner.get_opts(key, options).await {
             Ok(result) => {
                 let (r, total) = (result.range.clone(), result.meta.size);
+                self.fill(key, total);
                 Ok(Some(Part::Within {
                     body: Body::Stream {
                         size: r.end - r.start,
@@ -293,6 +393,15 @@ impl Store {
             crate::metrics::cache(true);
             return Ok(Some(Body::Bytes(hit)));
         }
+        if let Some((path, size)) = self.on_disk(key) {
+            crate::metrics::cache(true);
+            if size <= CACHE_ITEM_MAX {
+                let bytes = Bytes::from(tokio::fs::read(&path).await.map_err(io_error)?);
+                self.cache.insert(key.clone(), bytes.clone());
+                return Ok(Some(Body::Bytes(bytes)));
+            }
+            return Ok(Some(file_range(&path, 0..size).await?));
+        }
         crate::metrics::cache(false);
         let result = match self.inner.get(key).await {
             Ok(r) => r,
@@ -300,6 +409,7 @@ impl Store {
             Err(e) => return Err(e),
         };
         let size = result.meta.size;
+        self.fill(key, size);
         if size <= CACHE_ITEM_MAX {
             let bytes = result.bytes().await?;
             self.cache.insert(key.clone(), bytes.clone());
@@ -324,19 +434,30 @@ impl Store {
     /// Gone, whether or not it was there.
     pub async fn delete(&self, key: &Path) -> object_store::Result<()> {
         self.cache.remove(key);
+        if let Some(disk) = &self.disk {
+            disk.forget(key.as_ref());
+        }
         match self.inner.delete(key).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(e),
         }
     }
 
-    /// Every variant of image `id`. True when all are gone.
     /// Move what is stored at `from` to `to`, replacing it.
     pub async fn rename(&self, from: &Path, to: &Path) -> object_store::Result<()> {
         self.cache.remove(to);
-        self.inner.rename(from, to).await
+        let moved = self.inner.rename(from, to).await;
+        if let Some(disk) = &self.disk {
+            if moved.is_ok() {
+                disk.rename(from.as_ref(), to.as_ref());
+            } else {
+                disk.forget(to.as_ref());
+            }
+        }
+        moved
     }
 
+    /// Every variant of image `id`. True when all are gone.
     pub async fn delete_image(&self, id: &str) -> bool {
         let mut gone = true;
         for variant in [
@@ -422,6 +543,41 @@ pub async fn discard(store: &Store, db: &crate::db::Db, ids: Vec<String>) {
     if let Err(e) = db.settle_strays(gone).await {
         tracing::warn!(error = %e, "forgetting deleted copies failed; the sweep will find them gone");
     }
+}
+
+fn io_error(e: std::io::Error) -> object_store::Error {
+    object_store::Error::Generic {
+        store: "disk cache",
+        source: Box::new(e),
+    }
+}
+
+/// `range` of the file at `path`, streamed.
+async fn file_range(path: &FsPath, range: std::ops::Range<u64>) -> object_store::Result<Body> {
+    use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
+    let mut file = tokio::fs::File::open(path).await.map_err(io_error)?;
+    file.seek(std::io::SeekFrom::Start(range.start))
+        .await
+        .map_err(io_error)?;
+    let size = range.end - range.start;
+    let stream = futures_util::stream::unfold((file, size), |(mut file, left)| async move {
+        if left == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; (1 << 20).min(left as usize)];
+        match file.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok(Bytes::from(buf)), (file, left - n as u64)))
+            }
+            Err(e) => Some((Err(io_error(e)), (file, 0))),
+        }
+    });
+    Ok(Body::Stream {
+        size,
+        stream: stream.boxed(),
+    })
 }
 
 /// `url` with any password removed, for logs.
@@ -538,6 +694,68 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn a_store_elsewhere_is_kept_on_disk_as_it_is_read_and_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let inner = object_store::memory::InMemory::new();
+        let k = key(Variant::Original, "abcdefghij");
+        let bytes: Vec<u8> = (0..300_000u32).map(|i| (i % 251) as u8).collect();
+        inner
+            .put(&k, PutPayload::from(bytes.clone()))
+            .await
+            .unwrap();
+        let disk = crate::disk::Disk::open(dir.path(), 4 << 20).unwrap();
+        let store = Store::with(Arc::new(inner), None, 0, "test".into()).with_disk(disk);
+        // A miss is served from the store and fetched to disk behind it.
+        let first = store
+            .get_range(&k, GetRange::Bounded(10..20))
+            .await
+            .unwrap();
+        assert!(matches!(first, Some(Part::Within { .. })));
+        let disk = store.disk.clone().unwrap();
+        for _ in 0..200 {
+            if !disk.filling() && disk.get(k.as_ref()).is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let (path, size) = disk.get(k.as_ref()).expect("kept on disk");
+        assert_eq!(size, bytes.len() as u64);
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        // Then served from there: the store's copy can go and it still reads.
+        store.inner.delete(&k).await.unwrap();
+        let Some(Part::Within {
+            body: Body::Stream { stream, .. },
+            range,
+            total,
+        }) = store
+            .get_range(&k, GetRange::Bounded(100..110))
+            .await
+            .unwrap()
+        else {
+            panic!("served from disk");
+        };
+        assert_eq!((range, total), (100..110, bytes.len() as u64));
+        let read: Vec<u8> = stream
+            .map(|c| c.unwrap().to_vec())
+            .collect::<Vec<_>>()
+            .await
+            .concat();
+        assert_eq!(read, &bytes[100..110]);
+        // A write goes to disk as it is stored, and a delete takes it away.
+        let other = key(Variant::Thumb, "abcdefghij");
+        store
+            .put_stream(
+                &other,
+                futures_util::stream::iter([Ok::<_, std::io::Error>(Bytes::from_static(b"thumb"))]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disk.get(other.as_ref()).unwrap().1, 5);
+        store.delete(&other).await.unwrap();
+        assert!(disk.get(other.as_ref()).is_none());
     }
 
     #[tokio::test]

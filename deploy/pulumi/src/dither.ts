@@ -71,7 +71,19 @@ export type DitherArgs = {
     region?: string;
     accessKeyId: pulumi.Input<string>;
     secretAccessKey: pulumi.Input<string>;
+    /**
+     * The store's pods, when it runs in the cluster (Garage, MinIO): the
+     * egress policy lets dither reach them on `port`, and an `http://`
+     * endpoint is allowed.
+     */
+    peer?: { podLabels: Record<string, string>; port: number; namespace?: string };
   };
+  /**
+   * A cache on the node's disk, in bytes, for a bucket elsewhere: what was
+   * read or written recently, so it costs no round trip and is served while
+   * the bucket is unreachable. Counts against the state disk's free space.
+   */
+  diskCacheBytes?: number;
   /**
    * Uploads are refused while a disk they write to (the state directory, and
    * the images without a bucket) has less than this free, so a full image
@@ -155,8 +167,10 @@ export function environment(args: DitherArgs) {
       ? [
           { name: "AWS_ENDPOINT", value: args.bucket.endpoint },
           { name: "AWS_REGION", value: args.bucket.region ?? "auto" },
+          ...(args.bucket.endpoint.startsWith("http://") ? [{ name: "AWS_ALLOW_HTTP", value: "true" }] : []),
         ]
       : []),
+    ...(args.diskCacheBytes ? [{ name: "DISK_CACHE_BYTES", value: String(args.diskCacheBytes) }] : []),
     ...(args.minFreeBytes === undefined ? [] : [{ name: "MIN_FREE_BYTES", value: String(args.minFreeBytes) }]),
     ...(args.maxUploadBytes ? [{ name: "MAX_UPLOAD_BYTES", value: String(args.maxUploadBytes) }] : []),
     ...(args.video === false ? [{ name: "VIDEO", value: "off" }] : []),
@@ -185,6 +199,13 @@ export function egress(args: Pick<DitherArgs, "oidc" | "bucket">) {
       ? { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": backchannel.namespace } } }
       : {}),
   };
+  const bucketPeer = args.bucket?.peer;
+  const peer = bucketPeer && {
+    podSelector: { matchLabels: bucketPeer.podLabels },
+    ...(bucketPeer.namespace
+      ? { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": bucketPeer.namespace } } }
+      : {}),
+  };
   return [
     {
       to: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } } }],
@@ -194,7 +215,8 @@ export function egress(args: Pick<DitherArgs, "oidc" | "bucket">) {
       ],
     },
     ...(backchannel && provider ? [{ to: [provider], ports: [{ protocol: "TCP", port: backchannel.port }] }] : []),
-    ...(!backchannel || args.bucket
+    ...(peer ? [{ to: [peer], ports: [{ protocol: "TCP", port: args.bucket!.peer!.port }] }] : []),
+    ...(!backchannel || (args.bucket && !args.bucket.peer)
       ? [{ to: [{ ipBlock: { cidr: "0.0.0.0/0", except: PRIVATE } }], ports: [{ protocol: "TCP", port: 443 }] }]
       : []),
   ];

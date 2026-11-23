@@ -4,6 +4,7 @@
 mod auth;
 mod config;
 mod db;
+mod disk;
 mod error;
 mod i18n;
 mod icon;
@@ -73,7 +74,13 @@ async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     std::fs::create_dir_all(&config.state_dir)
         .with_context(|| format!("creating {}", config.state_dir.display()))?;
-    let store = Store::open(&config.storage, config.cache_bytes)?;
+    let mut store = Store::open(&config.storage, config.cache_bytes)?;
+    if store.dir().is_none() && config.disk_cache_bytes > 0 {
+        let dir = config.state_dir.join("cache");
+        let disk = disk::Disk::open(&dir, config.disk_cache_bytes)
+            .with_context(|| format!("opening the disk cache in {}", dir.display()))?;
+        store = store.with_disk(disk);
+    }
     let db_path = config.state_dir.join("dither.db");
     snapshot::restore(&store, &db_path)
         .await
