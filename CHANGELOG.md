@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- **Videos, and a worker that processes uploads.** MP4, MOV and WebM uploads are kept as MP4 originals without their metadata, with an H.264 playback copy when browsers would not play the original, a poster frame for thumbnails and link previews, byte-range serving, `og:video` tags and a player. Every upload, picture or video, is now made by `dither worker`, a second container beside the web process: finishing an upload checks its header and queues it in the database, and the worker claims jobs with a lease, reports progress to the album page over a socket, and runs ffmpeg (shipped in the image) without the service's secrets.
+
+### Internal
+
+- **The security audit runs cargo-audit directly.** The action it replaces failed now and then updating its own check run after a clean audit, failing releases.
+
 ## 0.3.0
 
 ### Fixed
