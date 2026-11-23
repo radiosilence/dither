@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Served {
     Original,
     Thumb,

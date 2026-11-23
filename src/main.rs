@@ -19,6 +19,7 @@ mod snapshot;
 mod store;
 mod upload;
 mod video;
+mod views;
 mod web;
 mod worker;
 
@@ -143,9 +144,19 @@ async fn serve() -> anyhow::Result<()> {
         db: db.clone(),
         store: store.clone(),
         uploads: uploads.clone(),
+        views: views::Views::default(),
         stopping,
         config,
     });
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                state.views.flush(&state.db, false).await;
+            }
+        });
+    }
 
     if let Some(addr) = state.config.metrics_addr.clone() {
         let state = state.clone();
@@ -182,18 +193,23 @@ async fn serve() -> anyhow::Result<()> {
         "serving"
     );
     let router = web::router(state.clone());
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            signal().await;
-            tracing::info!("stopping");
-            // Live streams end, so the graceful shutdown is not held open by
-            // a browser tab.
-            let _ = stopping_tx.send(true);
-        })
-        .await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        signal().await;
+        tracing::info!("stopping");
+        // Live streams end, so the graceful shutdown is not held open by
+        // a browser tab.
+        let _ = stopping_tx.send(true);
+    })
+    .await?;
 
-    // An upload being processed finishes, then the database is copied a
-    // last time, so nothing acknowledged is lost with the pod.
+    // The last counts are written and an upload being processed finishes,
+    // then the database is copied a last time, so nothing acknowledged is
+    // lost with the pod.
+    state.views.flush(&state.db, true).await;
     uploads.drain(Duration::from_secs(30)).await;
     let _ = snapshot_stop.send(true);
     let _ = snapshots.await;

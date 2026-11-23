@@ -18,6 +18,18 @@ msgid_plural "%{count} images"
 msgstr[0] ""
 msgstr[1] ""
 
+#: templates/app/views.html
+msgid "%{count} view"
+msgid_plural "%{count} views"
+msgstr[0] ""
+msgstr[1] ""
+
+#: templates/app/views.html
+msgid "%{count} visitor"
+msgid_plural "%{count} visitors"
+msgstr[0] ""
+msgstr[1] ""
+
 #: templates/app/layout.html
 msgid "%{done} of %{total} uploaded"
 msgstr ""
@@ -46,6 +58,10 @@ msgstr ""
 
 #: templates/app/layout.html
 msgid "%{size} is over the %{max} limit"
+msgstr ""
+
+#: templates/app/views.html
+msgid "%{size} served"
 msgstr ""
 
 #: templates/app/layout.html
@@ -212,6 +228,10 @@ msgstr ""
 msgid "albums"
 msgstr ""
 
+#: templates/app/views.html
+msgid "all time"
+msgstr ""
+
 #: templates/public/layout.html
 msgid "an image"
 msgstr ""
@@ -288,6 +308,10 @@ msgstr ""
 msgid "keep videos as recorded"
 msgstr ""
 
+#: templates/app/views.html
+msgid "last 30 days"
+msgstr ""
+
 #: templates/player.html
 msgid "leave full screen"
 msgstr ""
@@ -302,6 +326,10 @@ msgstr ""
 
 #: templates/app/album.html
 msgid "link to this album"
+msgstr ""
+
+#: templates/app/views.html
+msgid "linked from"
 msgstr ""
 
 #: templates/app/viewer.html
@@ -360,6 +388,10 @@ msgstr ""
 msgid "original"
 msgstr ""
 
+#: templates/app/views.html
+msgid "other sites"
+msgstr ""
+
 #: templates/app/layout.html
 msgid "pasted image"
 msgstr ""
@@ -396,6 +428,10 @@ msgstr ""
 
 #: templates/app/layout.html
 msgid "refused (%{status})"
+msgstr ""
+
+#: templates/app/views.html
+msgid "shared on"
 msgstr ""
 
 #: templates/app/layout.html

@@ -524,6 +524,18 @@
     @apply size-8;
   }
 
+  .views {
+    @apply m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-fine text-muted;
+  }
+
+  .views dt {
+    @apply lowercase;
+  }
+
+  .views dd {
+    @apply m-0 min-w-0;
+  }
+
   /* ── Sheets: the move picker and confirmations ─────────────────────── */
 
   .sheet {

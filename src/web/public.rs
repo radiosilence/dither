@@ -58,6 +58,9 @@ const CSP_FILE: &str = "default-src 'none'; sandbox";
 /// its own for `'self'` to match, and Safari's then never loads the video; a
 /// file served as video with `nosniff` is never read as a page regardless.
 const CSP_VIDEO_FILE: &str = "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'";
+/// A range from the start ending before this byte is a probe of the file
+/// rather than a look at it.
+const PROBE_MAX: u64 = 16;
 /// An animated picture up to this size is its own `og:image`, so it plays in
 /// the previews that play one (X's limit is 5 MB).
 const OG_ANIMATED_MAX: u64 = 5_000_000;
@@ -270,10 +273,37 @@ fn page(html: String, private: bool, video: bool) -> Response {
             ),
             (header::CACHE_CONTROL, cache),
             (header::HeaderName::from_static("x-robots-tag"), "noindex"),
+            // The page's own requests for its files say they are its, so the
+            // files are not counted as views of their own; other sites learn
+            // nothing.
+            (header::REFERRER_POLICY, "same-origin"),
         ],
         Html(html),
     )
         .into_response()
+}
+
+/// `response`, marked as serving `album` (and `image`) for the counting
+/// layer, and as a view or not. A private album is only ever its owner's,
+/// whom nothing counts.
+fn counted(
+    mut response: Response,
+    album: &Album,
+    image: Option<&str>,
+    kind: Served,
+    view: bool,
+) -> Response {
+    if album.private {
+        return response;
+    }
+    response.extensions_mut().insert(crate::views::Counted {
+        album: album.id.clone(),
+        image: image.map(str::to_string),
+        owner: album.owner.clone(),
+        kind,
+        view,
+    });
+    response
 }
 
 /// What is not there yet, an upload still being made: a 404 that nothing
@@ -394,7 +424,13 @@ pub async fn album(
     .render();
     metrics::served(Served::Page, 0);
     match html {
-        Ok(html) => page(html, album.private, video),
+        Ok(html) => counted(
+            page(html, album.private, video),
+            &album,
+            None,
+            Served::Page,
+            true,
+        ),
         Err(e) => {
             tracing::error!(error = %e, "rendering an album failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -475,7 +511,16 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     .render();
     metrics::served(Served::Page, 0);
     match html {
-        Ok(html) => page(html, album.private, image.is_video()),
+        Ok(html) => {
+            let video = image.is_video();
+            counted(
+                page(html, album.private, video),
+                &album,
+                Some(id),
+                Served::Page,
+                true,
+            )
+        }
         Err(e) => {
             tracing::error!(error = %e, "rendering an image page failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -563,6 +608,10 @@ async fn file(
         Variant::Preview => ("image/jpeg", Served::Preview, 'p'),
     };
     let etag = image.etag(tag);
+    // What someone looks at on its own: the original, or a video's display
+    // copy, which the viewer's HTML embeds. Thumbnails and previews are only
+    // ever parts of pages and previews.
+    let viewable = matches!(served, Served::Original | Served::Display);
     // A shared cache (a CDN in front) keeps a file ten minutes, so making its
     // album private or deleting it stops it being served within that. A
     // browser keeps it for good: whoever has it has seen it.
@@ -605,6 +654,7 @@ async fn file(
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"))
     {
         metrics::not_modified();
+        // A revalidation: neither a view nor anything sent.
         return (StatusCode::NOT_MODIFIED, h).into_response();
     }
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
@@ -624,7 +674,19 @@ async fn file(
     );
     let key = store::key(variant, id);
     if let Some(wanted) = Wanted::from(headers, &etag, &modified) {
-        return partial(state, &key, wanted, served, h).await;
+        let response = partial(state, &key, wanted, served, h).await;
+        if response.status() != StatusCode::PARTIAL_CONTENT {
+            return response;
+        }
+        // A player's later ranges are the same view, and so is the probe
+        // Safari sends before it plays (`bytes=0-1`).
+        let view = viewable
+            && match wanted {
+                Wanted::Between(0, end) => end >= PROBE_MAX,
+                Wanted::From(0) => true,
+                _ => false,
+            };
+        return counted(response, &album, Some(id), served, view);
     }
     let body = match state.store.get(&key).await {
         Ok(Some(body)) => body,
@@ -644,13 +706,20 @@ async fn file(
     match body {
         store::Body::Bytes(bytes) => {
             metrics::served(served, bytes.len() as u64);
-            (h, bytes).into_response()
+            counted(
+                (h, bytes).into_response(),
+                &album,
+                Some(id),
+                served,
+                viewable,
+            )
         }
         store::Body::Stream { size, stream } => {
             metrics::served(served, size);
             h.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
             let stream = stream.map(|r| r.map_err(std::io::Error::other));
-            (h, HttpBody::from_stream(stream)).into_response()
+            let response = (h, HttpBody::from_stream(stream)).into_response();
+            counted(response, &album, Some(id), served, viewable)
         }
     }
 }

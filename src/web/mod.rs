@@ -40,6 +40,8 @@ pub struct Inner {
     pub sessions: Sessions,
     pub http: reqwest::Client,
     pub uploads: Arc<Uploads>,
+    /// What the public routes served, counted anonymously.
+    pub views: crate::views::Views,
     /// Becomes true when the server begins to stop: live streams end on it.
     pub stopping: tokio::sync::watch::Receiver<bool>,
 }
@@ -124,6 +126,7 @@ pub fn router(state: AppState) -> Router {
                 ),
             ),
         )
+        .layer(middleware::from_fn_with_state(state.clone(), count))
         .with_state(state)
 }
 
@@ -148,19 +151,111 @@ async fn app_host_only(State(state): State<AppState>, request: Request, next: Ne
     next.run(request).await
 }
 
-/// Link previews' fetchers, by what their user agents carry.
-const FETCHERS: [&str; 10] = [
-    "WhatsApp",
-    "facebookexternalhit",
-    "Twitterbot",
-    "Slackbot",
-    "Discordbot",
-    "TelegramBot",
-    "LinkedInBot",
-    "redditbot",
-    "Iframely",
-    "Embedly",
+/// Link previews' fetchers: what their user agents carry, and their names.
+const FETCHERS: [(&str, &str); 10] = [
+    ("WhatsApp", "WhatsApp"),
+    ("facebookexternalhit", "Facebook"),
+    ("Twitterbot", "X"),
+    ("Slackbot", "Slack"),
+    ("Discordbot", "Discord"),
+    ("TelegramBot", "Telegram"),
+    ("LinkedInBot", "LinkedIn"),
+    ("redditbot", "Reddit"),
+    ("Iframely", "Iframely"),
+    ("Embedly", "Embedly"),
 ];
+
+/// The name of the link preview's fetcher a user agent belongs to.
+fn fetcher(agent: &str) -> Option<&'static str> {
+    FETCHERS
+        .iter()
+        .find(|(token, _)| agent.contains(token))
+        .map(|(_, name)| *name)
+}
+
+/// Count what a public route served, as its handler marked the response
+/// ([`crate::views::Counted`]), unless the album's owner asked for it. GET
+/// only: a HEAD is answered by the same handlers and carries nothing. The
+/// outermost layer, so the bytes counted are the ones sent, compressed or
+/// not.
+///
+/// The client's address is the last `X-Forwarded-For` entry, the one the
+/// single proxy in front (Traefik) appends, else the peer's. It goes into
+/// the visitor's hash and nowhere else, so a forged header can do no more
+/// than inflate a count.
+async fn count(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    if request.method() != Method::GET {
+        return next.run(request).await;
+    }
+    let h = request.headers();
+    let text = |name| {
+        h.get(name)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+    };
+    let session = crate::auth::cookie::session_id(h).map(str::to_string);
+    let agent = text(header::USER_AGENT).to_string();
+    let forwarded = h
+        .get_all("x-forwarded-for")
+        .iter()
+        .next_back()
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.rsplit(',').next())
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(str::to_string);
+    let own = [
+        crate::views::host_only(state.config.app_host()),
+        crate::views::host_only(state.config.public_host()),
+    ];
+    let from = crate::views::source(text(header::REFERER), &own);
+    let dest = h
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip().to_string());
+    let response = next.run(request).await;
+    let Some(counted) = response
+        .extensions()
+        .get::<crate::views::Counted>()
+        .cloned()
+    else {
+        return response;
+    };
+    if let Some(id) = session
+        && state
+            .sessions
+            .get(&id)
+            .await
+            .is_some_and(|s| s.sub == counted.owner)
+    {
+        return response;
+    }
+    let visit = crate::views::Visit {
+        address: forwarded.or(peer).unwrap_or_default(),
+        fetcher: fetcher(&agent),
+        agent,
+        from,
+        dest,
+    };
+    let (mut parts, body) = response.into_parts();
+    // Counting streams the body, which would otherwise lose its length. A
+    // 304 or 204 has none to keep, and says nothing of the stored copy's.
+    if !matches!(
+        parts.status,
+        StatusCode::NOT_MODIFIED | StatusCode::NO_CONTENT
+    ) && !parts.headers.contains_key(header::CONTENT_LENGTH)
+        && let Some(n) = axum::body::HttpBody::size_hint(&body).exact()
+    {
+        parts
+            .headers
+            .insert(header::CONTENT_LENGTH, HeaderValue::from(n));
+    }
+    Response::from_parts(parts, state.views.counting(body, counted, visit))
+}
 
 /// What a link preview's fetcher asked for and was answered, logged: a
 /// preview that does not appear is found out from what its fetcher saw.
@@ -170,10 +265,9 @@ async fn preview_log(request: Request, next: Next) -> Response {
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    let Some(fetcher) = FETCHERS.iter().find(|f| agent.contains(*f)) else {
+    let Some(fetcher) = fetcher(agent) else {
         return next.run(request).await;
     };
-    let fetcher = *fetcher;
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let range = request

@@ -81,6 +81,7 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
         db,
         store,
         uploads,
+        views: crate::views::Views::default(),
         stopping,
         config,
     });
@@ -1292,4 +1293,154 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
             "{v:?} was left behind"
         );
     }
+}
+
+#[tokio::test]
+async fn views_are_counted_anonymously_and_go_with_their_image() {
+    let app = app().await;
+    let (album, done) = app.upload(&[&jpeg(300, 200)]).await;
+    let id = image_id(&done[0]);
+    let page = format!("/{id}");
+    let forwarded = header::HeaderName::from_static("x-forwarded-for");
+    let from = |address| {
+        [
+            (header::USER_AGENT, "a browser"),
+            (forwarded.clone(), address),
+            (header::REFERER, "https://forum.example/t/1?page=2"),
+        ]
+    };
+    // One visitor twice, behind a proxy that appends their address; another
+    // once; a link preview; and the owner, who is not counted.
+    app.get_with(&page, &from("10.0.0.9, 192.0.2.1")).await;
+    // The last of several header lines is the proxy's.
+    app.get_with(
+        &page,
+        &[
+            (header::USER_AGENT, "a browser"),
+            (forwarded.clone(), "192.0.2.9"),
+            (forwarded.clone(), "192.0.2.1"),
+            (header::REFERER, "https://forum.example/t/1?page=2"),
+        ],
+    )
+    .await;
+    // A HEAD carries nothing and counts for nothing.
+    app.send(
+        Request::head(&page)
+            .header(header::HOST, "app.test")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    app.get_with(&page, &from("192.0.2.2")).await;
+    // A link preview: the page once, as a share, and its picture.
+    let whatsapp = [(header::USER_AGENT, "WhatsApp/2.24")];
+    app.get_with(&page, &whatsapp).await;
+    app.get_with(&format!("/p/{id}.jpg"), &whatsapp).await;
+    let owner = app.session("dev").await;
+    app.get_as(&page, &owner).await;
+    let part = app
+        .get_with(
+            &format!("/{id}.jpg"),
+            &[
+                (header::RANGE, "bytes=0-99"),
+                (forwarded.clone(), "192.0.2.1"),
+            ],
+        )
+        .await;
+    assert_eq!(part.status, StatusCode::PARTIAL_CONTENT);
+    // The rest of that file, and the file as one of dither's pages asks for
+    // it: neither is a view of its own.
+    app.get_with(
+        &format!("/{id}.jpg"),
+        &[
+            (header::RANGE, "bytes=100-"),
+            (forwarded.clone(), "192.0.2.1"),
+        ],
+    )
+    .await;
+    app.get_with(
+        &format!("/{id}.jpg"),
+        &[
+            (header::REFERER, "http://app.test/a/x"),
+            (forwarded.clone(), "192.0.2.1"),
+        ],
+    )
+    .await;
+    // Safari's probe before it plays, and a revalidation: neither a view,
+    // and a revalidation not even a hit.
+    app.get_with(
+        &format!("/{id}.jpg"),
+        &[
+            (header::RANGE, "bytes=0-1"),
+            (forwarded.clone(), "192.0.2.1"),
+        ],
+    )
+    .await;
+    let unchanged = app
+        .get_with(
+            &format!("/{id}.jpg"),
+            &[(header::IF_NONE_MATCH, part.header("etag"))],
+        )
+        .await;
+    assert_eq!(unchanged.status, StatusCode::NOT_MODIFIED);
+    app.state.views.flush(&app.state.db, true).await;
+
+    let stats = app.state.db.view_stats(&id, 0).await.unwrap();
+    // Three page views and the file asked for on its own.
+    assert_eq!(stats.all.views, 4);
+    // The range request carried no user agent: a visitor of its own.
+    assert_eq!(stats.all.visitors, 3);
+    assert_eq!(stats.recent, stats.all);
+    assert_eq!(stats.shared, vec![("WhatsApp".to_string(), 1)]);
+    assert_eq!(stats.referrers, vec![("forum.example".to_string(), 3)]);
+    let album_stats = app.state.db.view_stats(&album, 0).await.unwrap();
+    assert_eq!(album_stats.all, stats.all);
+    let (image, _) = app.state.db.image(&id).await.unwrap().unwrap();
+    let original: (i64, i64) = app
+        .state
+        .db
+        .run({
+            let id = id.clone();
+            move |c| {
+                c.query_row(
+                    "SELECT hits, bytes FROM views WHERE target = ?1 AND kind = 'original'",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            }
+        })
+        .await
+        .unwrap();
+    // Two ranges that make the file once, the file whole, and the probe.
+    assert_eq!(
+        original,
+        (4, 2 * image.bytes as i64 + 2),
+        "ranges count their own lengths"
+    );
+
+    let viewer = app.get(&format!("/images/{id}/view")).await.text();
+    assert!(viewer.contains("4 views"), "{viewer}");
+    assert!(viewer.contains("forum.example 3"), "{viewer}");
+
+    // An album's totals are its images' as they are now.
+    let moved = app
+        .post(
+            "/images/move",
+            json!({ "ids": [id], "to": null, "title": "elsewhere" }),
+        )
+        .await;
+    let to = moved.json()["to"].as_str().unwrap().to_string();
+    assert_eq!(
+        app.state.db.view_stats(&album, 0).await.unwrap().all.views,
+        0
+    );
+    assert_eq!(app.state.db.view_stats(&to, 0).await.unwrap().all.views, 4);
+
+    // Counts gathered before a delete and written after it are dropped.
+    app.get_with(&page, &from("192.0.2.3")).await;
+    let gone = app.post("/images/delete", json!({ "ids": [id] })).await;
+    assert!(gone.status.is_success(), "{}", gone.text());
+    app.state.views.flush(&app.state.db, true).await;
+    let stats = app.state.db.view_stats(&id, 0).await.unwrap();
+    assert_eq!(stats, crate::views::Stats::default());
 }
