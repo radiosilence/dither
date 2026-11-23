@@ -498,8 +498,8 @@ impl Worker {
         Ok(made)
     }
 
-    /// A video: probed, remuxed without metadata, given a playback copy when
-    /// browsers would not play it, and a frame for its pictures.
+    /// A video: probed, kept as recorded or converted to H.264 (either way
+    /// without metadata), and a frame of it taken for its pictures.
     async fn video(&self, job: &Claimed, stop: watch::Receiver<bool>) -> Result<Made, Problem> {
         // ffmpeg failing on a file it probed, or running past a limit
         // generous to the slowest machine, is the file's doing: retrying
@@ -509,7 +509,7 @@ impl Worker {
             move |e: String| {
                 if e == "stopped" {
                     Problem::Stopped
-                } else if e.starts_with(video::LOCAL) {
+                } else if e.starts_with(video::LOCAL) || e.contains("No space left on device") {
                     Problem::Failed(format!("{what}: {e}"))
                 } else {
                     Problem::Rejected(jobs::FAILED_UNREADABLE, format!("{what}: {e}"))
@@ -565,45 +565,58 @@ impl Worker {
             .await
             .map_err(|e| Problem::Failed(e.to_string()))?;
 
-        // Kept as recorded unless MP4 cannot hold its video at all.
+        // One copy is kept: as recorded, when asked for and MP4 holds it, or
+        // H.264 at its own size, which plays everywhere. A video already
+        // H.264, 8-bit and SDR is that as it stands, and is not re-encoded.
         let fits = video::fits_mp4(&probe.video.codec);
-        let playable = probe.playable();
-        let original = work.join("original.mp4");
-        if fits {
+        let kept = fits && (job.image.as_recorded || probe.compatible());
+        let made = work.join("video.mp4");
+        if kept {
             tools
-                .remux(container, &probe, &source, &original, size, &stop)
+                .remux(container, &probe, &source, &made, size, &stop)
                 .await
                 .map_err(failed("remuxing"))?;
-        }
-        let transcoded = !playable || !fits;
-        self.progress(owner, id, if transcoded { 100 } else { 900 });
-
-        let play = work.join("play.mp4");
-        if transcoded {
+            self.progress(owner, id, 900);
+        } else {
             let duration = probe.duration;
             let mut report = |secs: f64| {
                 let share = (secs / duration).clamp(0.0, 1.0);
-                self.progress(owner, id, (100.0 + share * 850.0) as u16);
+                self.progress(owner, id, (share * 950.0) as u16);
             };
             tools
-                .transcode(container, &probe, &source, &play, &stop, &mut report)
+                .transcode(container, &probe, &source, &made, &stop, &mut report)
                 .await
                 .map_err(failed("transcoding"))?;
         }
-        // MP4 cannot hold the original's video: the playback copy is the
-        // only copy.
-        let (original, display) = match (fits, transcoded) {
-            (true, true) => (original, Some(play)),
-            (true, false) => (original, None),
-            (false, _) => (play, None),
+        // What was made is what is stored, plays and downloads: its own size
+        // and length, read back, or failing that the upload's, scaled as a
+        // conversion scales it.
+        let stored = match tools.probe(Container::Mp4, &made).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                tracing::warn!(id, error = %e, "reading back what was made");
+                let mut guess = probe.clone();
+                if !kept {
+                    let (w, h) = (guess.video.width, guess.video.height);
+                    let f = video::shrink(w, h, guess.video.fps.clamp(1.0, 60.0));
+                    let even = |n: u32| ((f64::from(n) * f / 2.0).trunc() * 2.0) as u32;
+                    (guess.video.width, guess.video.height) = (even(w), even(h));
+                }
+                guess
+            }
         };
-        let playback = display.as_deref().unwrap_or(&original);
-
-        let at = (probe.duration / 3.0).min(1.0);
-        let png = tools
-            .frame(playback, at, &stop)
-            .await
-            .map_err(failed("taking a frame"))?;
+        // Kept in HDR, its frame is tone-mapped where the build can; should
+        // that fail, a frame as it is beats no picture at all.
+        let hdr = kept && stored.hdr();
+        let at = (stored.duration / 3.0).min(1.0);
+        let png = match tools.frame(&made, at, hdr, &stop).await {
+            Err(e) if hdr && !*stop.borrow() => {
+                tracing::warn!(id, error = %e, "tone-mapping a frame");
+                tools.frame(&made, at, false, &stop).await
+            }
+            done => done,
+        }
+        .map_err(failed("taking a frame"))?;
         let cost = crate::media::cost(&png, png.len() as u64, self.max_pixels)
             .map_err(|e| Problem::Failed(format!("the frame: {e}")))?;
         let still = {
@@ -616,17 +629,12 @@ impl Worker {
         };
         self.progress(owner, id, 960);
 
-        let stored = async {
+        let put = async {
             self.db.add_stray(id).await?;
             let fingerprint = self
                 .store
-                .put_file(&store::key(Variant::Original, id), &original)
+                .put_file(&store::key(Variant::Original, id), &made)
                 .await?;
-            if let Some(display) = &display {
-                self.store
-                    .put_file(&store::key(Variant::Display, id), display)
-                    .await?;
-            }
             self.store
                 .put(&store::key(Variant::Thumb, id), Bytes::from(still.thumb))
                 .await?;
@@ -638,28 +646,20 @@ impl Worker {
                 .await?;
             Ok::<_, anyhow::Error>(fingerprint)
         };
-        let (bytes, sha256) = stored
+        let (bytes, sha256) = put
             .await
             .map_err(|e| Problem::Failed(format!("storing: {e:#}")))?;
         self.progress(owner, id, 1000);
-        // The playback copy standing in for the original has its own size.
-        let (width, height) = if fits {
-            (width, height)
-        } else {
-            tools
-                .probe(Container::Mp4, &original)
-                .await
-                .map_or((width, height), |p| p.shown())
-        };
+        let (width, height) = stored.shown();
         Ok(Made {
             width,
             height,
             bytes,
             animated: false,
-            display: display.is_some(),
+            display: false,
             sha256: sha256.to_vec(),
-            duration_ms: Some((probe.duration * 1000.0).round() as u64),
-            audio: probe.audio.is_some(),
+            duration_ms: Some((stored.duration * 1000.0).round() as u64),
+            audio: stored.audio.is_some(),
         })
     }
 }

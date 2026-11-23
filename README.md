@@ -55,19 +55,25 @@ from Photos through the browser.
 
 MP4, MOV (as phones record), M4V and WebM or Matroska are accepted when the
 server has ffmpeg (the image ships a static build), up to 1 GB and 30 minutes
-by default. The original is remuxed into MP4 without re-encoding, keeping its
-first video and audio streams and nothing else: phones write where a video
-was taken into the container's metadata and into timed metadata tracks, as
-they do into a photo's EXIF, and none of it is kept. The rotation a phone
-records is part of the video track and survives.
+by default.
 
-Browsers do not all play what phones record, so a video that is not already
-H.264, 8-bit, SDR, at most 1920 pixels long, at most 60 frames a second and
-under 12 Mbit/s gets a playback copy that is (x264 at CRF 23, stereo AAC),
-tone-mapped from HDR (PQ or HLG) to SDR. The original stays downloadable as
-recorded. A frame of the playback copy becomes the thumbnail and the link
-preview, and a page's `og:video` names the playback copy, for the sites that
-play one inline.
+One copy of each video is kept, and it is what plays and what downloads. By
+default it is converted to what every browser plays, at the video's own size:
+H.264 within 4K and level 5.2's frame (4096×2304; beyond it hardware
+decoders refuse a video), x264 at CRF 18, which is visually lossless, 8-bit
+SDR tone-mapped from HDR (PQ or HLG), at most 60 frames a second, with stereo
+AAC. That also makes dither a way to turn a phone's HEVC into something
+anything plays. A video that is already all of that is not re-encoded,
+whatever its bitrate. With *keep videos as recorded* ticked when it is uploaded, it is
+kept exactly as recorded instead, and plays where the browser can.
+
+Either way it goes into MP4 with its first video and sound streams and
+nothing else: phones write where a video was taken into the container's
+metadata and into timed metadata tracks, as they do into a photo's EXIF, and
+none of it is kept. The rotation a phone records is part of the video track
+and survives. A frame of it becomes the thumbnail and the link preview,
+tone-mapped when the video is HDR, and a page's `og:video` names it, for the
+sites that play one inline.
 
 The worker (see *Processing*) makes a video's copies, showing its progress
 on the album page, and marks it ready, or failed with the reason: unreadable,
@@ -77,8 +83,8 @@ ffmpeg parses untrusted files, so it runs as a process of its own, with none
 of the environment: told the container it reads rather than left to probe,
 limited to the file protocol and to the decoders phones and cameras need, on
 `VIDEO_THREADS` threads (filters included) at a lower priority, and with a
-time limit. A video whose codec MP4 cannot hold (VP8, Theora, ProRes) keeps
-only its playback copy.
+time limit. A video whose codec MP4 cannot hold (VP8, Theora, ProRes) is
+converted even when it is to be kept as recorded.
 
 Every file is served with byte ranges, which seeking needs and Safari requires
 before it plays a video at all; video is never compressed again on the way
@@ -178,7 +184,7 @@ The same JSON API serves anything else that wants to upload:
 
 ```text
 POST   /api/albums                 {title?}                 → {id}
-POST   /api/albums/{id}/uploads    {files: [{name, size, type?}]} → {uploads: [{id}], chunk}
+POST   /api/albums/{id}/uploads    {files: [{name, size, type?}], as_recorded?} → {uploads: [{id}], chunk}
 PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 GET    /api/uploads/{id}                                    → {received, size, image?, error?}
 POST   /api/uploads/{id}/finish                             → {image: {id, page, file, thumb, processing, …}} | {error}
@@ -187,7 +193,7 @@ DELETE /api/uploads/{id}
 
 A file's `type`, the browser's MIME type, holds a video to the video limit
 rather than the image one; the bytes decide what a file is when it finishes.
-A video finishes `processing`, and its copies follow.
+A video finishes `processing`, and what is kept of it follows.
 
 Every request needs a session and, if it writes, an `X-Dither` or
 `Datastar-Request` header. A chunk answered 408, 429 or a 5xx other than 507
@@ -275,7 +281,7 @@ startup.
 | `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
-| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. |
+| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. A conversion also takes about 1.5 GB of memory at 4K, 2 GB from an 8K source, beside `PROCESS_MEMORY_BYTES`. |
 | `PICTURE_WORKERS`, `VIDEO_WORKERS` | 4, 1 | Jobs a worker makes at once. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 

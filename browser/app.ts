@@ -746,6 +746,7 @@ async function add(list: FileList | File[]) {
     const album = await target(running);
     const res = await api("POST", `/api/albums/${album}/uploads`, {
       files: go.map((i) => ({ name: i.name, size: i.size, type: i.file.type })),
+      as_recorded: $<HTMLInputElement>("[data-as-recorded]")?.checked ?? false,
     });
     const answer = await json<{ uploads: { id: string }[]; error: string }>(res);
     if (!res.ok || !answer.uploads) throw new Failure(answer.error || say("refused", { status: res.status }), false);
@@ -1137,6 +1138,19 @@ addEventListener("paste", (ev) => {
   ev.preventDefault();
   void add(files);
 });
+
+// Whether videos are kept as recorded is remembered between visits: a
+// preference, not something the server keeps.
+for (const box of $$<HTMLInputElement>("[data-as-recorded]")) {
+  try {
+    box.checked = localStorage.getItem("dither.as-recorded") === "true";
+  } catch {}
+  box.addEventListener("change", () => {
+    try {
+      localStorage.setItem("dither.as-recorded", String(box.checked));
+    } catch {}
+  });
+}
 
 // Datastar expressions reach these.
 window.dither = { show, selecting, add };

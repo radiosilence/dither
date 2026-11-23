@@ -21,8 +21,12 @@
     {% if let Some(n) = next.as_ref() %}<button class="nav next" aria-label="{{ __("next image") }}" data-key="ArrowRight" data-on:click="@get('/images/{{ n }}/view')">{{ icon("chevron-right", 22.0)|safe }}</button>{% endif %}
   </div>
   <div class="viewer-panel">
-    <textarea class="text-field" rows="2" placeholder="{{ __("Add a caption") }}" aria-label="{{ __("caption") }}" maxlength="20000"
-      data-on:input__debounce.600ms="@post('/images/{{ id }}/caption', {payload: {caption: el.value}})">{{ caption }}</textarea>
+    {#- Its own id per image: morphed into the next image's, a textarea that
+        has been typed in keeps what was typed, whatever the new one holds.
+        Leaving it, as moving on does, saves at once. -#}
+    <textarea id="caption-{{ id }}" class="text-field" rows="2" placeholder="{{ __("Add a caption") }}" aria-label="{{ __("caption") }}" maxlength="20000"
+      data-on:input__debounce.600ms="@post('/images/{{ id }}/caption', {payload: {caption: el.value}})"
+      data-on:change="@post('/images/{{ id }}/caption', {payload: {caption: el.value}})">{{ caption }}</textarea>
     {% if progress.is_none() && failure.is_none() %}
     <dl class="links">
       <dt>{{ __p("Share link: the image's page", "page") }}</dt>
