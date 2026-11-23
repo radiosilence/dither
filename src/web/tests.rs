@@ -1332,11 +1332,10 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
     )
     .await;
     app.get_with(&page, &from("192.0.2.2")).await;
-    app.get_with(
-        &format!("/p/{id}.jpg"),
-        &[(header::USER_AGENT, "WhatsApp/2.24")],
-    )
-    .await;
+    // A link preview: the page once, as a share, and its picture.
+    let whatsapp = [(header::USER_AGENT, "WhatsApp/2.24")];
+    app.get_with(&page, &whatsapp).await;
+    app.get_with(&format!("/p/{id}.jpg"), &whatsapp).await;
     let owner = app.session("dev").await;
     app.get_as(&page, &owner).await;
     let part = app
@@ -1367,6 +1366,24 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
         ],
     )
     .await;
+    // Safari's probe before it plays, and a revalidation: neither a view,
+    // and a revalidation not even a hit.
+    app.get_with(
+        &format!("/{id}.jpg"),
+        &[
+            (header::RANGE, "bytes=0-1"),
+            (forwarded.clone(), "192.0.2.1"),
+        ],
+    )
+    .await;
+    let unchanged = app
+        .get_with(
+            &format!("/{id}.jpg"),
+            &[(header::IF_NONE_MATCH, part.header("etag"))],
+        )
+        .await;
+    assert_eq!(unchanged.status, StatusCode::NOT_MODIFIED);
+    assert!(unchanged.headers.get(header::CONTENT_LENGTH).is_none());
     app.state.views.flush(&app.state.db, true).await;
 
     let stats = app.state.db.view_stats(&id, 0).await.unwrap();
@@ -1395,16 +1412,30 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
         })
         .await
         .unwrap();
-    // Two ranges that make the file once, and the file whole.
+    // Two ranges that make the file once, the file whole, and the probe.
     assert_eq!(
         original,
-        (3, 2 * image.bytes as i64),
+        (4, 2 * image.bytes as i64 + 2),
         "ranges count their own lengths"
     );
 
     let viewer = app.get(&format!("/images/{id}/view")).await.text();
     assert!(viewer.contains("4 views"), "{viewer}");
     assert!(viewer.contains("forum.example 3"), "{viewer}");
+
+    // An album's totals are its images' as they are now.
+    let moved = app
+        .post(
+            "/images/move",
+            json!({ "ids": [id], "to": null, "title": "elsewhere" }),
+        )
+        .await;
+    let to = moved.json()["to"].as_str().unwrap().to_string();
+    assert_eq!(
+        app.state.db.view_stats(&album, 0).await.unwrap().all.views,
+        0
+    );
+    assert_eq!(app.state.db.view_stats(&to, 0).await.unwrap().all.views, 4);
 
     // Counts gathered before a delete and written after it are dropped.
     app.get_with(&page, &from("192.0.2.3")).await;
