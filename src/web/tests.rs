@@ -1331,10 +1331,29 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
         )
         .await;
     assert_eq!(part.status, StatusCode::PARTIAL_CONTENT);
+    // The rest of that file, and the file as one of dither's pages asks for
+    // it: neither is a view of its own.
+    app.get_with(
+        &format!("/{id}.jpg"),
+        &[
+            (header::RANGE, "bytes=100-"),
+            (forwarded.clone(), "192.0.2.1"),
+        ],
+    )
+    .await;
+    app.get_with(
+        &format!("/{id}.jpg"),
+        &[
+            (header::REFERER, "http://app.test/a/x"),
+            (forwarded.clone(), "192.0.2.1"),
+        ],
+    )
+    .await;
     app.state.views.flush(&app.state.db).await;
 
     let stats = app.state.db.view_stats(&id, 0).await.unwrap();
-    assert_eq!(stats.all.views, 3);
+    // Three page views and the file asked for on its own.
+    assert_eq!(stats.all.views, 4);
     // The range request carried no user agent: a visitor of its own.
     assert_eq!(stats.all.visitors, 3);
     assert_eq!(stats.recent, stats.all);
@@ -1342,25 +1361,31 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
     assert_eq!(stats.referrers, vec![("forum.example".to_string(), 3)]);
     let album_stats = app.state.db.view_stats(&album, 0).await.unwrap();
     assert_eq!(album_stats.all, stats.all);
-    let original: i64 = app
+    let (image, _) = app.state.db.image(&id).await.unwrap().unwrap();
+    let original: (i64, i64) = app
         .state
         .db
         .run({
             let id = id.clone();
             move |c| {
                 c.query_row(
-                    "SELECT bytes FROM views WHERE target = ?1 AND kind = 'original'",
+                    "SELECT hits, bytes FROM views WHERE target = ?1 AND kind = 'original'",
                     [id],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
             }
         })
         .await
         .unwrap();
-    assert_eq!(original, 100, "a range counts its own length");
+    // Two ranges that make the file once, and the file whole.
+    assert_eq!(
+        original,
+        (3, 2 * image.bytes as i64),
+        "ranges count their own lengths"
+    );
 
     let viewer = app.get(&format!("/images/{id}/view")).await.text();
-    assert!(viewer.contains("3 views"), "{viewer}");
+    assert!(viewer.contains("4 views"), "{viewer}");
     assert!(viewer.contains("forum.example 3"), "{viewer}");
 
     // Counts gathered before a delete and written after it are dropped.

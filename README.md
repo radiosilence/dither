@@ -114,9 +114,15 @@ day, and nothing in them identifies a visitor.
 For each request to an album's page, an image's page or any file of an
 image, the web process counts a hit by kind (page, original, display copy,
 thumbnail, preview) and the bytes the response carried, which for a range
-request is the range. Views are page hits: a file fetched on its own, as an
-image embedded elsewhere is, counts toward visitors and bytes but not views.
-An album's counts include everything served of its images.
+request is the range. A view is a page, or an original or display copy asked
+for on its own, as an image embedded in a forum post is. A file one of
+dither's own pages asks for is part of that page's view: public pages send
+`Referrer-Policy: same-origin`, so their requests name dither's host and no
+other site learns anything. A range that does not start at the beginning is
+part of the view its first range counted, so a video played in pieces counts
+once. A browser that withholds even same-origin referrers counts a page and
+its file as two views. An album's counts include everything served of its
+images.
 
 A visitor is the SHA-256 of a salt, the client's address and its user
 agent. The salt is random, held only in memory and replaced at UTC midnight;

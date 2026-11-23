@@ -270,6 +270,10 @@ fn page(html: String, private: bool, video: bool) -> Response {
             ),
             (header::CACHE_CONTROL, cache),
             (header::HeaderName::from_static("x-robots-tag"), "noindex"),
+            // The page's own requests for its files say they are its, so the
+            // files are not counted as views of their own; other sites learn
+            // nothing.
+            (header::REFERRER_POLICY, "same-origin"),
         ],
         Html(html),
     )
@@ -277,12 +281,13 @@ fn page(html: String, private: bool, video: bool) -> Response {
 }
 
 /// `response`, marked as serving `bytes` of `album` (and `image`) for the
-/// counting layer.
+/// counting layer, and as a view or not.
 fn counted(
     mut response: Response,
     album: &Album,
     image: Option<&str>,
     kind: Served,
+    view: bool,
     bytes: u64,
 ) -> Response {
     response.extensions_mut().insert(crate::views::Counted {
@@ -290,6 +295,7 @@ fn counted(
         image: image.map(str::to_string),
         owner: album.owner.clone(),
         kind,
+        view,
         bytes,
     });
     response
@@ -420,6 +426,7 @@ pub async fn album(
                 &album,
                 None,
                 Served::Page,
+                true,
                 bytes,
             )
         }
@@ -511,6 +518,7 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
                 &album,
                 Some(id),
                 Served::Page,
+                true,
                 bytes,
             )
         }
@@ -601,6 +609,10 @@ async fn file(
         Variant::Preview => ("image/jpeg", Served::Preview, 'p'),
     };
     let etag = image.etag(tag);
+    // What someone looks at on its own: the original, or a video's display
+    // copy, which the viewer's HTML embeds. Thumbnails and previews are only
+    // ever parts of pages and previews.
+    let viewable = matches!(served, Served::Original | Served::Display);
     // A shared cache (a CDN in front) keeps a file ten minutes, so making its
     // album private or deleting it stops it being served within that. A
     // browser keeps it for good: whoever has it has seen it.
@@ -644,7 +656,7 @@ async fn file(
     {
         metrics::not_modified();
         let response = (StatusCode::NOT_MODIFIED, h).into_response();
-        return counted(response, &album, Some(id), served, 0);
+        return counted(response, &album, Some(id), served, viewable, 0);
     }
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     let filename = format!(
@@ -672,7 +684,9 @@ async fn file(
             .get(header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok()?.parse().ok())
             .unwrap_or_default();
-        return counted(response, &album, Some(id), served, len);
+        // A player's later ranges are the same view.
+        let view = viewable && matches!(wanted, Wanted::Between(0, _) | Wanted::From(0));
+        return counted(response, &album, Some(id), served, view, len);
     }
     let body = match state.store.get(&key).await {
         Ok(Some(body)) => body,
@@ -693,14 +707,21 @@ async fn file(
         store::Body::Bytes(bytes) => {
             let len = bytes.len() as u64;
             metrics::served(served, len);
-            counted((h, bytes).into_response(), &album, Some(id), served, len)
+            counted(
+                (h, bytes).into_response(),
+                &album,
+                Some(id),
+                served,
+                viewable,
+                len,
+            )
         }
         store::Body::Stream { size, stream } => {
             metrics::served(served, size);
             h.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
             let stream = stream.map(|r| r.map_err(std::io::Error::other));
             let response = (h, HttpBody::from_stream(stream)).into_response();
-            counted(response, &album, Some(id), served, size)
+            counted(response, &album, Some(id), served, viewable, size)
         }
     }
 }

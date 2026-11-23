@@ -221,7 +221,7 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
         &crate::views::Visit {
             address: &address,
             agent,
-            referrer: crate::views::referrer(text(header::REFERER), &own),
+            from: crate::views::source(text(header::REFERER), &own),
             fetcher: fetcher(agent),
         },
     );

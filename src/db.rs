@@ -1231,12 +1231,20 @@ impl Db {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             {
                 let mut hits = tx.prepare(&format!(
-                    "INSERT INTO views (target, day, kind, hits, bytes) SELECT ?1, ?2, ?3, ?4, ?5 {EXISTS} \
-                     ON CONFLICT (target, day, kind) DO UPDATE \
-                     SET hits = hits + excluded.hits, bytes = bytes + excluded.bytes"
+                    "INSERT INTO views (target, day, kind, hits, views, bytes) \
+                     SELECT ?1, ?2, ?3, ?4, ?5, ?6 {EXISTS} \
+                     ON CONFLICT (target, day, kind) DO UPDATE SET hits = hits + excluded.hits, \
+                     views = views + excluded.views, bytes = bytes + excluded.bytes"
                 ))?;
-                for ((target, day, kind), (n, bytes)) in &p.hits {
-                    hits.execute(params![target, day, kind, *n as i64, *bytes as i64])?;
+                for ((target, day, kind), t) in &p.hits {
+                    hits.execute(params![
+                        target,
+                        day,
+                        kind,
+                        t.hits as i64,
+                        t.views as i64,
+                        t.bytes as i64
+                    ])?;
                 }
                 let mut visitors = tx.prepare(&format!(
                     "INSERT INTO visitors (target, day, visitors) SELECT ?1, ?2, ?3 {EXISTS} \
@@ -1283,8 +1291,8 @@ impl Db {
         let target = target.to_string();
         self.run(move |c| {
             let (views, bytes, recent_views, recent_bytes) = c.query_row(
-                "SELECT COALESCE(SUM(CASE WHEN kind = 'page' THEN hits END), 0), COALESCE(SUM(bytes), 0), \
-                 COALESCE(SUM(CASE WHEN kind = 'page' AND day >= ?2 THEN hits END), 0), \
+                "SELECT COALESCE(SUM(views), 0), COALESCE(SUM(bytes), 0), \
+                 COALESCE(SUM(CASE WHEN day >= ?2 THEN views END), 0), \
                  COALESCE(SUM(CASE WHEN day >= ?2 THEN bytes END), 0) FROM views WHERE target = ?1",
                 params![target, since],
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
