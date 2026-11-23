@@ -373,6 +373,8 @@ pub struct Upload {
     pub image: Option<String>,
     pub error: Option<String>,
     pub created_at: i64,
+    /// Its videos are kept as recorded rather than converted.
+    pub as_recorded: bool,
 }
 
 impl Upload {
@@ -388,6 +390,7 @@ impl Upload {
             image: r.get("image")?,
             error: r.get("error")?,
             created_at: r.get("created_at")?,
+            as_recorded: r.get("as_recorded")?,
         })
     }
 }
@@ -797,6 +800,7 @@ impl Db {
                     image: None,
                     error: None,
                     created_at,
+                    as_recorded,
                 };
                 insert.execute(params![
                     upload.id,

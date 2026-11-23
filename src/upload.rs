@@ -430,12 +430,13 @@ impl Uploads {
                 Err(why) => return self.reject(&upload, why.into()).await,
             }
         };
-        // A video is made beside its upload before the upload goes, and
-        // H.264 at CRF 18 from a phone's HEVC can be three times its size.
-        let needed = if video {
-            upload.size.saturating_mul(4)
-        } else {
-            upload.size
+        // A video is made beside its upload before the upload goes: kept as
+        // recorded, about its size again; converted, H.264 at CRF 18 from a
+        // phone's HEVC can be three times it.
+        let needed = match (video, upload.as_recorded) {
+            (true, true) => upload.size.saturating_mul(2),
+            (true, false) => upload.size.saturating_mul(4),
+            (false, _) => upload.size,
         };
         if !self.room_for(needed) {
             return Outcome::Failed(

@@ -1109,6 +1109,19 @@ async fn an_albums_app_address_sends_anyone_but_its_owner_to_its_link() {
         to.starts_with("/auth/login?next=") && to.contains("x%3D1"),
         "{to}"
     );
+    let fetched = app
+        .write(
+            "GET",
+            &format!("/albums/{album}"),
+            json!({}),
+            Some("expired"),
+        )
+        .await;
+    assert_eq!(
+        fetched.status,
+        StatusCode::UNAUTHORIZED,
+        "the app's own request"
+    );
 }
 
 #[tokio::test]

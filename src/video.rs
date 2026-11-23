@@ -38,6 +38,27 @@ use crate::sanitize::Container;
 pub const PLAY_MAX: u32 = 1920;
 /// The longest side H.264 is kept at: beyond 4K, browsers' decoders give up.
 pub const FULL_MAX: u32 = 4096;
+/// The most 16×16 macroblocks in a frame of H.264 level 5.2 (4096×2304),
+/// beyond which hardware decoders refuse a video: a 4:3 or square frame
+/// reaches it before its longer side reaches [`FULL_MAX`].
+const MAX_MACROBLOCKS: u64 = 36_864;
+
+fn macroblocks(w: f64, h: f64) -> u64 {
+    ((w / 16.0).ceil() * (h / 16.0).ceil()) as u64
+}
+
+/// What a video `w`×`h` is scaled by when converted: 1 when it fits within
+/// [`FULL_MAX`] and level 5.2's frame, otherwise as large as fits both.
+pub fn shrink(w: u32, h: u32) -> f64 {
+    let (w, h) = (f64::from(w.max(1)), f64::from(h.max(1)));
+    let mut f = (f64::from(FULL_MAX) / w.max(h))
+        .min((MAX_MACROBLOCKS as f64 * 256.0 / (w * h)).sqrt())
+        .min(1.0);
+    while f < 1.0 && macroblocks(w * f, h * f) > MAX_MACROBLOCKS {
+        f *= 0.995;
+    }
+    f
+}
 /// The x264 quality of a converted video: visually lossless for almost
 /// anything.
 const CRF: &str = "18";
@@ -421,8 +442,10 @@ impl Tools {
         } else {
             ""
         };
+        let (w, h) = probe.shown();
+        let f = shrink(w, h);
         let mut chain = vec![format!(
-            "scale=w='min({FULL_MAX},iw)':h='min({FULL_MAX},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2{matrix}"
+            "scale=w='trunc(iw*{f:.6}/2)*2':h='trunc(ih*{f:.6}/2)*2'{matrix}"
         )];
         if tonemap {
             chain.push(TONEMAP.into());
@@ -477,14 +500,13 @@ impl Tools {
         args.extend(probe.length());
         args.extend(clean_output().iter().map(Into::into));
         args.push(file(to));
-        // Generous: a slow machine converting 1080p30 runs well below real
-        // time, and 4K60 is eight times the pixels a second.
-        let (w, h) = probe.shown();
-        // The frame rate is the file's word, held to what is made.
+        // Generous: two CPUs convert 1080p30 at around real time, and 4K60
+        // is up to nine times the pixels a second. Both the size and the
+        // frame rate are what is made, not what the file claims.
         let fps = probe.video.fps.clamp(1.0, 60.0);
-        let load = (f64::from(w) * f64::from(h) * fps / (1920.0 * 1080.0 * 30.0)).max(1.0);
-        let limit =
-            Duration::from_secs(600) + Duration::from_secs_f64(probe.duration * 20.0 * load);
+        let made = f64::from(w) * f64::from(h) * f * f;
+        let load = (made * fps / (1920.0 * 1080.0 * 30.0)).max(1.0);
+        let limit = Duration::from_secs(600) + Duration::from_secs_f64(probe.duration * 8.0 * load);
         let mut each = |line: &str| {
             if let Some(us) = line
                 .strip_prefix("out_time_us=")
@@ -744,15 +766,15 @@ impl Probe {
     }
 
     /// Whether it is what a conversion would make: H.264, 8-bit 4:2:0, SDR,
-    /// at most [`FULL_MAX`] long and 60 frames a second, with stereo AAC or
-    /// MP3 sound or none. Its bitrate is kept, however high.
+    /// within [`FULL_MAX`] and level 5.2's frame and 60 frames a second, with
+    /// stereo AAC or MP3 sound or none. Its bitrate is kept, however high.
     pub fn compatible(&self) -> bool {
         let v = &self.video;
         let (w, h) = self.shown();
         v.codec == "h264"
             && matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p")
             && !self.hdr()
-            && w.max(h) <= FULL_MAX
+            && shrink(w, h) >= 1.0
             && v.fps <= 61.0
             && self
                 .audio
@@ -1159,6 +1181,44 @@ pub mod tests {
             ..p.clone()
         };
         assert!(!huge.compatible(), "8K H.264 plays almost nowhere");
+        let square = Probe {
+            video: Stream {
+                width: 4000,
+                height: 3000,
+                ..p.video.clone()
+            },
+            ..p.clone()
+        };
+        assert!(!square.compatible(), "4000×3000 is beyond level 5.2");
+    }
+
+    #[test]
+    fn a_conversion_fits_level_5_2() {
+        assert_eq!(shrink(1920, 1080), 1.0);
+        assert_eq!(shrink(3840, 2160), 1.0);
+        assert_eq!(shrink(4096, 2160), 1.0);
+        for (w, h) in [
+            (7680, 4320),
+            (4000, 3000),
+            (4096, 4096),
+            (2160, 3840),
+            (8192, 1080),
+        ] {
+            let f = shrink(w, h);
+            let (tw, th) = (
+                (f64::from(w) * f / 2.0).trunc() * 2.0,
+                (f64::from(h) * f / 2.0).trunc() * 2.0,
+            );
+            assert!(tw.max(th) <= f64::from(FULL_MAX), "{w}×{h} → {tw}×{th}");
+            assert!(
+                macroblocks(tw, th) <= MAX_MACROBLOCKS,
+                "{w}×{h} → {tw}×{th}"
+            );
+            assert!(
+                macroblocks(tw, th) > MAX_MACROBLOCKS * 9 / 10 || tw.max(th) > 3900.0,
+                "{w}×{h} → {tw}×{th} is needlessly small"
+            );
+        }
         assert_eq!(
             Probe::parse(br#"{"streams": [{"index": 0, "codec_type": "audio", "codec_name": "aac"}], "format": {"duration": "3"}}"#),
             Err("it has no video in it".into())

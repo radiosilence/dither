@@ -310,6 +310,10 @@ pub async fn album(
         None
     };
     let page_load = crate::auth::extract::is_page_load(&headers);
+    // The app's own requests, which a redirect would swap a page into. A
+    // link preview's fetcher may not ask for HTML, so this is not
+    // `!page_load`.
+    let app_request = headers.contains_key("datastar-request") || headers.contains_key("x-dither");
     let lapsed = crate::auth::cookie::session_id(&headers).is_some();
     let sign_in = || {
         let path = uri.path_and_query().map_or("/", |p| p.as_str());
@@ -319,6 +323,7 @@ pub async fn album(
         (Some(session), Some(album)) if album.owner == session.sub => {
             Html(editor(&state, &session, album).await?).into_response()
         }
+        (None, _) if app_request => StatusCode::UNAUTHORIZED.into_response(),
         (None, _) if lapsed && page_load => sign_in(),
         (_, Some(album)) if !album.private => {
             Redirect::to(&format!("{}/a/{}", state.config.public_url, album.id)).into_response()

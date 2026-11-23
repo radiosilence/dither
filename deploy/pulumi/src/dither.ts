@@ -301,9 +301,9 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
                     : []),
                 ],
                 resources: {
-                  // A 4K conversion takes about 1.5 GB beside the pictures'
-                  // PROCESS_MEMORY_BYTES.
-                  limits: args.workerLimits ?? { cpu: "2", memory: "3Gi" },
+                  // A conversion takes about 1.5 GB at 4K, 2 GB from an 8K
+                  // source, beside the pictures' PROCESS_MEMORY_BYTES.
+                  limits: args.workerLimits ?? { cpu: "2", memory: "4Gi" },
                   requests: args.workerRequests ?? { cpu: "10m", memory: "64Mi" },
                 },
                 securityContext: {

@@ -59,11 +59,12 @@ by default.
 
 One copy of each video is kept, and it is what plays and what downloads. By
 default it is converted to what every browser plays, at the video's own size:
-H.264 up to 4K (beyond which browsers' decoders give up), x264 at CRF 18,
-which is visually lossless, 8-bit SDR tone-mapped from HDR (PQ or HLG), with
-AAC sound. That also makes dither a way to turn a phone's HEVC into something
-anything plays. A video that is already H.264, 8-bit and SDR is not
-re-encoded. With *keep videos as recorded* ticked when it is uploaded, it is
+H.264 within 4K and level 5.2's frame (4096×2304; beyond it hardware
+decoders refuse a video), x264 at CRF 18, which is visually lossless, 8-bit
+SDR tone-mapped from HDR (PQ or HLG), at most 60 frames a second, with stereo
+AAC. That also makes dither a way to turn a phone's HEVC into something
+anything plays. A video that is already all of that is not re-encoded,
+whatever its bitrate. With *keep videos as recorded* ticked when it is uploaded, it is
 kept exactly as recorded instead, and plays where the browser can.
 
 Either way it goes into MP4 with its first video and sound streams and
@@ -183,7 +184,7 @@ The same JSON API serves anything else that wants to upload:
 
 ```text
 POST   /api/albums                 {title?}                 → {id}
-POST   /api/albums/{id}/uploads    {files: [{name, size, type?}]} → {uploads: [{id}], chunk}
+POST   /api/albums/{id}/uploads    {files: [{name, size, type?}], as_recorded?} → {uploads: [{id}], chunk}
 PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 GET    /api/uploads/{id}                                    → {received, size, image?, error?}
 POST   /api/uploads/{id}/finish                             → {image: {id, page, file, thumb, processing, …}} | {error}
@@ -280,7 +281,7 @@ startup.
 | `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
-| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. A 4K conversion also takes about 1.5 GB of memory, beside `PROCESS_MEMORY_BYTES`. |
+| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. A conversion also takes about 1.5 GB of memory at 4K, 2 GB from an 8K source, beside `PROCESS_MEMORY_BYTES`. |
 | `PICTURE_WORKERS`, `VIDEO_WORKERS` | 4, 1 | Jobs a worker makes at once. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 
