@@ -10,6 +10,6 @@
   {%- endif %}
   {%- if !referrers.is_empty() %}
   <dt>{{ __("linked from") }}</dt>
-  <dd class="break-all">{% for (host, n) in referrers %}{% if !loop.first %} · {% endif %}{{ host }} {{ n }}{% endfor %}</dd>
+  <dd class="break-all">{% for (host, n) in referrers %}{% if !loop.first %} · {% endif %}{% if host.is_empty() %}{{ __("other sites") }}{% else %}{{ host }}{% endif %} {{ n }}{% endfor %}</dd>
   {%- endif %}
 </dl>

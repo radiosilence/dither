@@ -1312,7 +1312,25 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
     // One visitor twice, behind a proxy that appends their address; another
     // once; a link preview; and the owner, who is not counted.
     app.get_with(&page, &from("10.0.0.9, 192.0.2.1")).await;
-    app.get_with(&page, &from("192.0.2.1")).await;
+    // The last of several header lines is the proxy's.
+    app.get_with(
+        &page,
+        &[
+            (header::USER_AGENT, "a browser"),
+            (forwarded.clone(), "192.0.2.9"),
+            (forwarded.clone(), "192.0.2.1"),
+            (header::REFERER, "https://forum.example/t/1?page=2"),
+        ],
+    )
+    .await;
+    // A HEAD carries nothing and counts for nothing.
+    app.send(
+        Request::head(&page)
+            .header(header::HOST, "app.test")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
     app.get_with(&page, &from("192.0.2.2")).await;
     app.get_with(
         &format!("/p/{id}.jpg"),

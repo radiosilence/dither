@@ -22,7 +22,8 @@ CREATE TABLE visitors (
     PRIMARY KEY (target, day)
 ) STRICT, WITHOUT ROWID;
 
--- The host of the Referer header alone, never its path or query.
+-- The host of the Referer header alone, never its path or query. Past the
+-- first fifty hosts a day for a target, the rest are counted under ''.
 CREATE TABLE referrers (
     target TEXT NOT NULL,
     day INTEGER NOT NULL,

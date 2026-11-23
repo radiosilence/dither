@@ -111,10 +111,11 @@ which sites linked to it. The counts exist so an owner can see where
 something they shared went; they are kept per image and per album, per UTC
 day, and nothing in them identifies a visitor.
 
-For each request to an album's page, an image's page or any file of an
-image, the web process counts a hit by kind (page, original, display copy,
-thumbnail, preview) and the bytes the response carried, which for a range
-request is the range. A view is a page, or an original or display copy asked
+For each GET of an album's page, an image's page or any file of an image,
+the web process counts a hit by kind (page, original, display copy,
+thumbnail, preview) and the bytes sent: for a range request the range, for
+a download abandoned part way what went out before it stopped, and for a
+page its compressed size when it was sent compressed. A view is a page, or an original or display copy asked
 for on its own, as an image embedded in a forum post is. A file one of
 dither's own pages asks for is part of that page's view: public pages send
 `Referrer-Policy: same-origin`, so their requests name dither's host and no
@@ -130,20 +131,28 @@ the day's hashes stay in memory only to tell a new visitor from one already
 counted, and the database is given the number of distinct ones. A visitor on
 two days counts once on each. A restart draws a new salt, so someone seen
 before and after a restart counts twice that day. The client's address is the
-last `X-Forwarded-For` entry, which the proxy in front appends, or else the
-connection's; it is used only inside the hash, so a forged header can inflate
-the count and do nothing else.
+last `X-Forwarded-For` entry, or else the connection's. That assumes exactly
+one proxy in front (Traefik, as deployed), which appends the address it saw;
+behind a second proxy every visitor would share that proxy's address. The
+address is used only inside the hash, so a forged header can inflate the
+count and do nothing else. A day remembers at most 500,000 visitors; past
+that, new ones are not counted until midnight.
 
 A referring site is the host of the `Referer` header, without its path or
-query, and dither's own hosts are ignored. Requests from the link-preview
+query, and dither's own hosts are ignored; past the first 50 hosts in a day
+for an image or album, the rest are counted together as other sites. Requests from the link-preview
 fetchers (WhatsApp, Facebook, X, Slack, Discord, Telegram, LinkedIn, Reddit,
 Iframely, Embedly) are counted by fetcher, as places a link was shared, and
 never as views or visitors. Requests carrying the owner's own session are not
-counted at all.
+counted at all; with the public pages on [a domain of their
+own](#a-domain-of-its-own), which never receives the session cookie, the
+owner's visits there are counted like anyone's. A private album is only ever
+its owner's and is never counted.
 
 No address, user agent, hash or cookie is written anywhere. The counts gather
 in memory and are added to the database every minute and when the server
-stops, so the newest minute may not show yet; deleting an image or album
+stops, before the database's last copy to the store, so the newest minute may
+not show yet; deleting an image or album
 deletes its counts. Prometheus's `/metrics` keeps its totals by kind
 regardless.
 

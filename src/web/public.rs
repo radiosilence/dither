@@ -280,23 +280,25 @@ fn page(html: String, private: bool, video: bool) -> Response {
         .into_response()
 }
 
-/// `response`, marked as serving `bytes` of `album` (and `image`) for the
-/// counting layer, and as a view or not.
+/// `response`, marked as serving `album` (and `image`) for the counting
+/// layer, and as a view or not. A private album is only ever its owner's,
+/// whom nothing counts.
 fn counted(
     mut response: Response,
     album: &Album,
     image: Option<&str>,
     kind: Served,
     view: bool,
-    bytes: u64,
 ) -> Response {
+    if album.private {
+        return response;
+    }
     response.extensions_mut().insert(crate::views::Counted {
         album: album.id.clone(),
         image: image.map(str::to_string),
         owner: album.owner.clone(),
         kind,
         view,
-        bytes,
     });
     response
 }
@@ -419,17 +421,13 @@ pub async fn album(
     .render();
     metrics::served(Served::Page, 0);
     match html {
-        Ok(html) => {
-            let bytes = html.len() as u64;
-            counted(
-                page(html, album.private, video),
-                &album,
-                None,
-                Served::Page,
-                true,
-                bytes,
-            )
-        }
+        Ok(html) => counted(
+            page(html, album.private, video),
+            &album,
+            None,
+            Served::Page,
+            true,
+        ),
         Err(e) => {
             tracing::error!(error = %e, "rendering an album failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -511,7 +509,6 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     metrics::served(Served::Page, 0);
     match html {
         Ok(html) => {
-            let bytes = html.len() as u64;
             let video = image.is_video();
             counted(
                 page(html, album.private, video),
@@ -519,7 +516,6 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
                 Some(id),
                 Served::Page,
                 true,
-                bytes,
             )
         }
         Err(e) => {
@@ -656,7 +652,7 @@ async fn file(
     {
         metrics::not_modified();
         let response = (StatusCode::NOT_MODIFIED, h).into_response();
-        return counted(response, &album, Some(id), served, viewable, 0);
+        return counted(response, &album, Some(id), served, viewable);
     }
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     let filename = format!(
@@ -679,14 +675,9 @@ async fn file(
         if response.status() != StatusCode::PARTIAL_CONTENT {
             return response;
         }
-        let len = response
-            .headers()
-            .get(header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok()?.parse().ok())
-            .unwrap_or_default();
         // A player's later ranges are the same view.
         let view = viewable && matches!(wanted, Wanted::Between(0, _) | Wanted::From(0));
-        return counted(response, &album, Some(id), served, view, len);
+        return counted(response, &album, Some(id), served, view);
     }
     let body = match state.store.get(&key).await {
         Ok(Some(body)) => body,
@@ -705,15 +696,13 @@ async fn file(
     };
     match body {
         store::Body::Bytes(bytes) => {
-            let len = bytes.len() as u64;
-            metrics::served(served, len);
+            metrics::served(served, bytes.len() as u64);
             counted(
                 (h, bytes).into_response(),
                 &album,
                 Some(id),
                 served,
                 viewable,
-                len,
             )
         }
         store::Body::Stream { size, stream } => {
@@ -721,7 +710,7 @@ async fn file(
             h.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
             let stream = stream.map(|r| r.map_err(std::io::Error::other));
             let response = (h, HttpBody::from_stream(stream)).into_response();
-            counted(response, &album, Some(id), served, viewable, size)
+            counted(response, &album, Some(id), served, viewable)
         }
     }
 }

@@ -1221,13 +1221,17 @@ impl Db {
     }
 
     /// Add counts gathered in memory, in one transaction. Counts for an
-    /// image or album deleted meanwhile are dropped. Quiet: counts change no
-    /// page and are copied with the next snapshot.
-    pub async fn add_views(&self, p: crate::views::Pending) -> Result<()> {
+    /// image or album deleted meanwhile are dropped. The snapshotter hears of
+    /// it, so the counts outlive the pod; no page is redrawn. A failure hands
+    /// the counts back.
+    pub async fn add_views(
+        &self,
+        p: crate::views::Pending,
+    ) -> std::result::Result<(), (rusqlite::Error, Option<crate::views::Pending>)> {
         // A target that still exists: counts never outlive what they count.
         const EXISTS: &str = "WHERE EXISTS (SELECT 1 FROM images WHERE id = ?1) \
              OR EXISTS (SELECT 1 FROM albums WHERE id = ?1)";
-        self.run_quiet(move |c| {
+        let add = |c: &mut Connection, p: &crate::views::Pending| -> Result<()> {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             {
                 let mut hits = tx.prepare(&format!(
@@ -1281,8 +1285,15 @@ impl Db {
                 }
             }
             tx.commit()
-        })
-        .await
+        };
+        match self
+            .run(move |c| Ok(add(c, &p).err().map(|e| (e, p))))
+            .await
+        {
+            Ok(None) => Ok(()),
+            Ok(Some((e, p))) => Err((e, Some(p))),
+            Err(e) => Err((e, None)),
+        }
     }
 
     /// An image's or album's counts: since day `since`, and in all.
