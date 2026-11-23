@@ -160,7 +160,9 @@ regardless.
 
 Images, and copies of the database, go to one object store chosen by
 `STORAGE`: a directory (`file:///data/objects`) or an S3-compatible bucket
-(`s3://bucket`, with Cloudflare R2, Hetzner Object Storage or MinIO). The
+(`s3://bucket`, with Cloudflare R2, Hetzner Object Storage, or a service in
+the cluster such as Garage or MinIO; `AWS_ALLOW_HTTP=true` lets it be reached
+over plain HTTP inside the cluster). The
 database is SQLite in `STATE_DIR`. Two seconds after each burst of changes it
 is compacted (`VACUUM INTO`), gzipped and written to the store as
 `state/dither.db.gz`, with one copy an hour kept for three days. A node that
@@ -181,6 +183,16 @@ Uploads are refused while a disk they write to (the state directory, and a
 disk store) has less than `MIN_FREE_BYTES` free, or by default 15% of its
 size, so a full image store never fills a disk the rest of the machine
 depends on: the kubelet starts evicting pods at 10% free.
+
+A bucket on another machine can have a cache on this one's disk
+(`DISK_CACHE_BYTES`, in `STATE_DIR/cache`): what was read or written recently,
+kept whole, each object at most a quarter of the budget, the least recently
+used going first. A read from it costs no round trip, and it keeps serving
+what it holds while the bucket is unreachable, which matters when the bucket
+is at home and the server is not. A miss is served from the bucket and
+fetched to disk behind it; an upload is written to disk as it is stored,
+since its owner looks at it next. It counts against the state disk's free
+space, so `MIN_FREE_BYTES` should leave room for it.
 
 ### Moving from a disk to a bucket
 
@@ -357,6 +369,7 @@ startup.
 | `MAX_UPLOAD_BYTES`, `MAX_PIXELS` | 64 000 000, 100 000 000 | Per image. |
 | `PROCESS_MEMORY_BYTES` | 1 GiB | Memory a worker's pictures take at once. A picture that needs more alone is refused when its upload finishes. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |
+| `DISK_CACHE_BYTES` | 0 | With a bucket, images kept on this machine's disk as well; 0 for none. |
 | `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |

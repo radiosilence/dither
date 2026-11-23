@@ -190,16 +190,20 @@ impl Worker {
                 makes_videos: self.makes_videos,
                 making: self.making.lock().iter().cloned().collect(),
             };
-            match self.ask(&want).await {
+            let asked = self.ask(&want).await;
+            if asked.is_ok() && unreachable {
+                tracing::info!(queue = %self.queue, "the queue is reachable again");
+                unreachable = false;
+            }
+            match asked {
                 Ok(Some(job)) => {
-                    unreachable = false;
                     let this = self.clone();
                     tokio::spawn(async move {
                         this.make(job).await;
                         drop(slot);
                     });
                 }
-                Ok(None) => unreachable = false,
+                Ok(None) => {}
                 Err(e) => {
                     if !unreachable {
                         tracing::warn!(queue = %self.queue, error = %e, "the queue cannot be reached; trying again");
