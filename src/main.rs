@@ -4,6 +4,7 @@
 mod auth;
 mod config;
 mod db;
+mod disk;
 mod error;
 mod i18n;
 mod icon;
@@ -73,7 +74,27 @@ async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     std::fs::create_dir_all(&config.state_dir)
         .with_context(|| format!("creating {}", config.state_dir.display()))?;
-    let store = Store::open(&config.storage, config.cache_bytes)?;
+    let mut store = Store::open(&config.storage, config.cache_bytes)?;
+    if store.dir().is_none() && config.disk_cache_bytes > 0 {
+        let dir = config.state_dir.join("cache");
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        // Above the floor uploads keep, by room for the largest upload twice
+        // over, so the cache never refuses one.
+        let uploads = config.min_free_bytes.unwrap_or_else(|| {
+            store::disk(&dir).map_or(0, |(_, total)| {
+                (total as f64 * store::DEFAULT_FREE_SHARE) as u64
+            })
+        });
+        let largest = config
+            .max_upload_bytes
+            .max(config.max_video_bytes().unwrap_or(0));
+        let floor = uploads + 2 * largest;
+        let budget = config.disk_cache_bytes;
+        let disk = tokio::task::spawn_blocking(move || disk::Disk::open(&dir, budget, floor))
+            .await?
+            .context("opening the disk cache")?;
+        store = store.with_disk(disk);
+    }
     let db_path = config.state_dir.join("dither.db");
     snapshot::restore(&store, &db_path)
         .await
