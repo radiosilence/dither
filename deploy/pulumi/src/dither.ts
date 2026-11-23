@@ -136,10 +136,11 @@ export type DitherWorkerArgs = {
   /** dither's namespace, when the worker runs in another. */
   ditherNamespace?: string;
   /**
-   * The bucket's pods, when it runs in the cluster: the worker fetches
-   * uploads from it and puts what it makes into it directly, at URLs dither
-   * signs, so its egress policy must let it reach them on `port` (the pods'
-   * own). The bucket's `peer`.
+   * The bucket's pods, when it runs in the cluster (the bucket's `peer`): the
+   * worker fetches uploads from it and puts what it makes into it directly,
+   * at URLs dither signs, so its egress policy lets it reach them on `port`
+   * (the pods' own). Without it, the worker may reach HTTPS beyond the
+   * cluster, for a bucket there.
    */
   store?: { podLabels: Record<string, string>; port: number; namespace?: string };
 };
@@ -506,7 +507,8 @@ export function createDitherWorker(
                   ports: [{ protocol: "TCP", port: args.store.port }],
                 },
               ]
-            : []),
+            : // A bucket outside the cluster (R2, Hetzner): over HTTPS.
+              [{ to: [{ ipBlock: { cidr: "0.0.0.0/0", except: PRIVATE } }], ports: [{ protocol: "TCP", port: 443 }] }]),
         ],
       },
     },

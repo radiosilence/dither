@@ -1,6 +1,6 @@
 # dither
 
-An image host: axum, askama, Datastar and Tailwind, with images in an object store (a directory or an S3 bucket) and state in SQLite. It ships as the image `ghcr.io/radiosilence/dither` and the Pulumi component `@radiosilence/dither-pulumi` in `deploy/pulumi`, which share one version; jaritanet deploys it by pinning that package. The README is authoritative on behaviour.
+An image host: axum, askama, Datastar and Tailwind, with images in an S3 bucket and state in SQLite. It ships as the image `ghcr.io/radiosilence/dither` and the Pulumi component `@radiosilence/dither-pulumi` in `deploy/pulumi`, which share one version; jaritanet deploys it by pinning that package. The README is authoritative on behaviour.
 
 ## Rules that hold the design together
 

@@ -165,11 +165,10 @@ impl Uploads {
         }
     }
 
-    /// Whether `needed` more bytes fit with room to spare, on the disk the
-    /// chunks land on and, for a file store, the one it writes to. Each disk
-    /// keeps `min_free`, or by default a share of its size: the kubelet
-    /// starts evicting at 10% free, and the machine's other services share
-    /// the disk.
+    /// Whether `needed` more bytes fit with room to spare on the disk the
+    /// chunks land on. It keeps `min_free`, or by default a share of its
+    /// size: the kubelet starts evicting at 10% free, and the machine's
+    /// other services share the disk.
     pub fn room_for(&self, needed: u64) -> bool {
         let fits = || store::room(&self.dir, self.min_free).is_none_or(|room| room >= needed);
         // A disk cache beside the uploads gives back what it must first:

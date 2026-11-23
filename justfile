@@ -11,10 +11,10 @@ dev:
     # Images in memory, and a state directory made for this run, so a restart
     # starts empty rather than with rows naming images that are gone.
     export INSECURE_NO_AUTH=1 MIN_FREE_BYTES=1000000000 STORAGE=memory:///
-    export STATE_DIR="$(mktemp -d -t dither-dev)"
+    export STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dither-dev.XXXXXX")"
     cargo build
     cargo run -q -- worker &
-    trap 'kill %1 2>/dev/null || true' EXIT
+    trap 'kill %1 2>/dev/null || true; rm -rf "$STATE_DIR"' EXIT
     cargo run -q -- serve
 
 # What CI checks, short of the audit and the release builds.

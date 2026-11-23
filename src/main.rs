@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
             let (Some(from), Some(to)) = (args.next(), args.next()) else {
                 bail!("usage: dither copy-store <from-url> <to-url>");
             };
-            let (from, to) = (Store::open(&from, 0)?, Store::open(&to, 0)?);
+            let (from, to) = (Store::open_any(&from)?, Store::open_any(&to)?);
             let (copied, skipped) = store::copy(&from, &to).await?;
             println!("copied {copied}, already there {skipped}");
             Ok(())
@@ -102,6 +102,7 @@ async fn serve() -> anyhow::Result<()> {
         .context("restoring the database")?;
     let db = Db::open(&db_path).await.context("opening the database")?;
     let jobs = Arc::new(jobs::Hub::new(db.clone(), store.clone(), &config)?);
+    jobs.adopt(&config.state_dir).await;
     {
         let listener = tokio::net::TcpListener::bind(&config.worker_addr)
             .await

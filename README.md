@@ -233,7 +233,7 @@ Finishing an upload checks what its first few megabytes can tell (what it
 is, how large, and for a picture its pixels and the memory it needs), so a
 file that will be refused is refused while its sender waits. Then it is
 queued: its image's row is added as processing, at once visible in the
-album, and its file moved to `STATE_DIR/jobs`. Finishing runs in a task the
+album, and its file stored in the bucket for a worker. Finishing runs in a task the
 request only waits on, so a client that disconnects does not stop it, and
 asking again reads how it ended.
 
@@ -248,8 +248,7 @@ the upload, makes it, sends back what it made and says how the job ended,
 and the web process records it. In Kubernetes each worker is a Deployment of
 its own (`createDitherWorker` in the Pulumi component), placed on whichever
 node should do the work; without one, uploads queue and wait. `just dev` runs
-one beside the server, sharing its state directory, where it reads uploads
-in place rather than fetching them.
+one beside the server.
 
 A worker fetches an upload from the bucket, and puts what it makes into it,
 directly, at URLs the web process signs for that job alone and for an hour:
@@ -258,7 +257,16 @@ nothing across the network to the web process. What it puts goes aside first
 (`work/<id>/<worker>/<variant>`); the web process checks its length and moves
 it into place only while the job is still that worker's, and records the
 original's length and SHA-256, which the worker computes. Without a bucket
-that signs (memory), the worker API carries the bytes both ways.
+that signs (memory), or when a worker cannot reach the bucket or it refuses
+the URL, the worker API carries the bytes both ways instead.
+
+### Moving off a directory store
+
+Versions before 0.10 could keep images in a directory. `dither copy-store
+file:///data/objects s3://<bucket>` copies them into a bucket, with the
+bucket's `AWS_*` variables set; then set `STORAGE` to the bucket. Uploads an
+earlier version left waiting for a worker are moved into the bucket when the
+web process starts.
 
 The worker API (`web::work`) is served on a port of its own
 (`WORKER_ADDR`), never through the ingress. Anywhere but loopback it

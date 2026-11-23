@@ -653,10 +653,52 @@ impl Hub {
     /// Images `ids` were deleted: the files of any still waiting go. A worker
     /// making one finds out when it next renews its claim.
     pub async fn forget(&self, ids: &[String]) {
+        use futures_util::StreamExt as _;
         for id in ids {
             self.progress.lock().remove(id);
-            let _ = self.store.delete(&upload(id)).await;
         }
+        // Only those still waiting have an upload in the store; trying the
+        // rest costs a request each, so it is done behind the response, a
+        // few at a time. The sweep removes whatever this misses.
+        let (store, ids) = (self.store.clone(), ids.to_vec());
+        tokio::spawn(async move {
+            futures_util::stream::iter(ids)
+                .for_each_concurrent(8, |id| {
+                    let store = store.clone();
+                    async move {
+                        let _ = store.delete(&upload(&id)).await;
+                    }
+                })
+                .await;
+        });
+    }
+
+    /// Move uploads an earlier version left waiting in `state_dir`'s jobs
+    /// directory into the store, where workers now fetch them, and remove
+    /// what its workers left there.
+    pub async fn adopt(&self, state_dir: &Path) {
+        let Ok(mut entries) = tokio::fs::read_dir(dir(state_dir)).await else {
+            return;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.contains('.') || !crate::id::valid(&name) {
+                let _ = tokio::fs::remove_dir_all(&path).await;
+                let _ = tokio::fs::remove_file(&path).await;
+                continue;
+            }
+            match self.store.put_file(&upload(&name), &path).await {
+                Ok(_) => {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    tracing::info!(job = %name, "moved a waiting upload into the store");
+                }
+                Err(e) => {
+                    tracing::warn!(job = %name, error = %e, "moving a waiting upload into the store failed")
+                }
+            }
+        }
+        let _ = tokio::fs::remove_dir(dir(state_dir)).await;
     }
 
     /// Thousandths done of job `id`, while a worker reports on it.

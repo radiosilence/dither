@@ -25,7 +25,6 @@ COPY ${TARGETARCH}/dither /dither
 EXPOSE 8080 9464
 ENV BIND_ADDR=0.0.0.0:8080
 ENV STATE_DIR=/data/state
-ENV STORAGE=file:///data/objects
 ENV FFMPEG=/usr/local/bin/ffmpeg
 ENV FFPROBE=/usr/local/bin/ffprobe
 ENV VIDEO=on

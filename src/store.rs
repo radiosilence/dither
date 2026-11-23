@@ -117,7 +117,7 @@ pub enum Body {
 }
 
 impl Store {
-    /// `file:///abs/path` or `s3://bucket[/prefix]`. An S3 store reads its
+    /// `s3://bucket[/prefix]`, or `memory:///`. An S3 store reads its
     /// endpoint, region and keys from the `AWS_*` variables (`AWS_ENDPOINT`,
     /// `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`).
     pub fn open(url: &str, cache_bytes: u64) -> Result<Self> {
@@ -615,6 +615,21 @@ impl Store {
                 None
             }
         }
+    }
+
+    /// What `copy-store` copies from or to: a store, or a directory
+    /// (`file:///abs/path`) an earlier version kept its images in, to move
+    /// them into a bucket.
+    pub fn open_any(url: &str) -> Result<Self> {
+        let parsed = url::Url::parse(url).with_context(|| format!("not a URL: {url}"))?;
+        if parsed.scheme() != "file" {
+            return Self::open(url, 0);
+        }
+        let dir = parsed
+            .to_file_path()
+            .map_err(|()| anyhow::anyhow!("{url} must be an absolute file:// path"))?;
+        let fs = object_store::local::LocalFileSystem::new_with_prefix(&dir)?;
+        Ok(Self::with(Arc::new(fs), 0, redact(&parsed)))
     }
 
     /// Whether it is a bucket, which signs URLs, rather than memory.
