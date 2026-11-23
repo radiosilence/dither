@@ -294,17 +294,16 @@ jobs:
     # Blocking. The advisories already in the lockfile are acknowledged in
     # .cargo/audit.toml, when there are any, so this fails on anything new.
     #
-    # The action reports through a GitHub check run, an API write, which the
-    # workflow's read-only token does not allow. Naming any permission drops
-    # the rest to none, so `contents: read` is spelled out.
-    permissions:
-      contents: read
-      checks: write
+    # cargo-audit itself, rather than rustsec/audit-check, which runs the same
+    # and then reports through a check run whose update failed now and then
+    # with a Not Found, failing a clean audit.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # main, post-v2.0.0: node24 runtime
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          toolchain: stable
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
 
   chart:
     name: Chart
