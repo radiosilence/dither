@@ -1,8 +1,9 @@
 //! What anyone with a link sees: an album, an image's page, and the image
 //! files themselves.
 //!
-//! The pages are plain HTML and CSS, and script only for the video player,
-//! which enhances a `<video>` that plays without it; with the Open Graph and
+//! The pages are plain HTML and CSS, with script only where there is a video,
+//! for the player, which enhances a `<video>` that plays without it; with the
+//! Open Graph and
 //! Twitter card tags link previews are built from (Reddit, WhatsApp, Discord,
 //! iMessage, Slack and the rest), and `noindex`, since an unlisted album should be
 //! found by its link and not by a search engine. `robots.txt` allows every
@@ -87,7 +88,6 @@ pub fn clip(i: &Image) -> Clip {
     };
     let seconds = i.seconds();
     Clip {
-        id: i.id.clone(),
         src: if i.display {
             format!("/d/{}.mp4", i.id)
         } else {
@@ -207,6 +207,8 @@ fn summary(text: &str, max: usize) -> String {
 #[template(path = "public/album.html")]
 struct AlbumPage {
     og: Og,
+    /// Whether it holds a video, and so needs the player's script.
+    video: bool,
     title: String,
     description: String,
     count: u64,
@@ -223,6 +225,7 @@ pub struct AlbumLink {
 #[template(path = "public/image.html")]
 struct ImagePage {
     og: Og,
+    video: bool,
     pic: Pic,
     meta: String,
     /// The album, when it holds more than this image.
@@ -335,6 +338,7 @@ pub async fn album(
     };
     let html = AlbumPage {
         og,
+        video: images.iter().any(Image::is_video),
         title: album.title.clone(),
         description: album.description.clone(),
         count: images.len() as u64,
@@ -411,6 +415,7 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     });
     let html = ImagePage {
         og,
+        video: image.is_video(),
         pic: Pic::new(&image),
         meta,
         album: album_link,

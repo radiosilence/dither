@@ -4,6 +4,7 @@
 {% block title %}{% call og_title() %}{% endcall %}{% endblock %}
 {% block head %}
 <meta name="robots" content="noindex">
+{% if video %}<script type="module" src="{{ player_js_url() }}"></script>{% endif %}
 <link rel="canonical" href="{{ og.url }}">
 <meta property="og:type" content="{% if og.video.is_some() %}video.other{% else %}website{% endif %}">
 <meta property="og:title" content="{% call og_title() %}{% endcall %}">

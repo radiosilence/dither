@@ -2,6 +2,7 @@
 {% block head %}
 <script type="module" src="{{ datastar_url() }}"></script>
 <script type="module" src="{{ app_js_url() }}"></script>
+<script type="module" src="{{ player_js_url() }}"></script>
 {% endblock %}
 {% block body %}
 <body class="app" data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">

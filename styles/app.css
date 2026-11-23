@@ -11,6 +11,7 @@
 @source "../templates";
 @source "../src";
 @source "../browser/app.ts";
+@source "../browser/player.ts";
 @import "@radiosilence/theme";
 
 @theme {
@@ -18,6 +19,16 @@
   --breakpoint-wide: 721px;
   --animate-busy: busy 0.7s linear infinite;
   --animate-sweep: sweep 1.4s ease-in-out infinite alternate;
+  --animate-fade: fade 0.6s ease-out forwards;
+
+  @keyframes fade {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
 
   @keyframes busy {
     to {
@@ -573,5 +584,149 @@
 
   .single figcaption {
     @apply mx-auto mt-4 max-w-[1000px] px-[22px] text-body;
+  }
+
+  /* ── The video player ──────────────────────────────────────────────── */
+
+  /* The picture letterboxed in black, its box from the video's width and height attributes, held to most of a screen
+   * so a portrait clip is not several screens tall. The bar sits solid on the picture's foot, and goes once a playing
+   * video is left alone; player.ts toggles the state classes. */
+  .player {
+    @apply relative mx-auto block w-full overflow-hidden bg-[#000] select-none;
+    -webkit-touch-callout: none;
+    touch-action: manipulation;
+  }
+
+  .player:focus {
+    @apply outline-none;
+  }
+
+  .player video {
+    @apply mx-auto block h-auto max-h-[85dvh] w-full object-contain;
+  }
+
+  .player.full video {
+    @apply h-full max-h-none;
+  }
+
+  .player.idle {
+    @apply cursor-none;
+  }
+
+  .player-start {
+    @apply absolute inset-0 m-auto grid size-16 place-items-center border border-ink/60 bg-bg/70 p-0 text-ink hover:bg-bg/90;
+  }
+
+  .player.started .player-start {
+    @apply hidden;
+  }
+
+  .player-busy {
+    @apply pointer-events-none absolute inset-0 m-auto hidden size-7 animate-busy border-2 border-ink/30 border-t-ink;
+  }
+
+  .player.busy .player-busy {
+    @apply block;
+  }
+
+  .player-jump {
+    @apply pointer-events-none absolute top-1/2 right-[12%] -translate-y-1/2 bg-bg/80 px-3 py-2 text-control text-ink opacity-0 tabular-nums;
+  }
+
+  .player-jump.back {
+    @apply right-auto left-[12%];
+  }
+
+  .player-jump.shown {
+    @apply animate-fade;
+  }
+
+  .player-failed {
+    @apply absolute inset-x-0 bottom-0 m-0 bg-bg/90 px-4 py-3 text-fine text-ink;
+  }
+
+  .player-controls {
+    @apply absolute inset-x-0 bottom-0 flex items-center gap-1 bg-bg/85 px-1 text-fine text-ink transition-opacity duration-200;
+  }
+
+  .player.full .player-controls {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .player.idle .player-controls {
+    @apply pointer-events-none opacity-0;
+  }
+
+  .player-button {
+    @apply inline-grid size-10 shrink-0 place-items-center border-0 bg-transparent p-0 text-ink normal-case hover:bg-hover/30;
+  }
+
+  /* A toggle shows the glyph for what it does now. */
+  .player-button svg + svg,
+  .player.playing [data-act="toggle"] svg:first-child,
+  .player.muted [data-act="mute"] svg:first-child,
+  .player.full [data-act="full"] svg:first-child {
+    @apply hidden;
+  }
+
+  .player.playing [data-act="toggle"] svg + svg,
+  .player.muted [data-act="mute"] svg + svg,
+  .player.full [data-act="full"] svg + svg {
+    @apply block;
+  }
+
+  .player-time {
+    @apply shrink-0 px-1 whitespace-nowrap tabular-nums;
+  }
+
+  .player-speed {
+    @apply w-12 tabular-nums;
+  }
+
+  /* The scrubber and the volume: a hairline, the buffered part thicker in the rule's colour and what has played in the
+   * accent, as the theme's progress bar draws; a square thumb. The input is tall, so a finger finds it, while the line
+   * stays thin. */
+  .player-seek,
+  .player-volume {
+    @apply h-10 min-w-0 cursor-pointer appearance-none border-0 bg-transparent p-0;
+    background:
+      linear-gradient(var(--brand), var(--brand)) 0 50% / var(--played, 0%) 3px no-repeat,
+      linear-gradient(var(--muted), var(--muted)) 0 50% / var(--buffered, 0%) 3px no-repeat,
+      linear-gradient(var(--rule), var(--rule)) 0 50% / 100% 1px no-repeat;
+  }
+
+  .player-seek {
+    @apply flex-1;
+  }
+
+  .player-volume {
+    @apply w-20 shrink-0;
+  }
+
+  .player-seek::-webkit-slider-thumb,
+  .player-volume::-webkit-slider-thumb {
+    @apply size-3 appearance-none border-0 bg-ink;
+  }
+
+  .player-seek::-moz-range-thumb,
+  .player-volume::-moz-range-thumb {
+    @apply size-3 rounded-none border-0 bg-ink;
+  }
+
+  /* In the viewer the stage sets the player's box, and the picture is fitted inside it. */
+  .stage .player {
+    @apply absolute inset-2 h-auto w-auto;
+  }
+
+  .stage .player video {
+    @apply size-full max-h-none;
+  }
+
+  .pic .player video {
+    @apply max-h-[80dvh];
+  }
+
+  .single .player video {
+    @apply max-h-[88dvh];
   }
 }

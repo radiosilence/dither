@@ -13,8 +13,8 @@ binary on each release, and a Pulumi component in `deploy/pulumi`
 An album is a page of its images stacked in order, each with its caption, at
 `/a/<id>`; each image has a page of its own at `/<id>` and is the file itself
 at `/<id>.jpg` (or `.png`, `.gif`, `.webp`, `.mp4`). The pages are plain HTML
-and CSS; their only script is the video player's, which enhances a `<video>`
-that plays without it. They carry Open Graph and Twitter card tags, so a link posted
+and CSS; a page with a video also loads the player's script, which enhances a
+`<video>` that plays without it. They carry Open Graph and Twitter card tags, so a link posted
 to Reddit, WhatsApp, Discord, iMessage, Slack or X previews as the picture, and
 the direct file address works anywhere an image link does. The preview's
 picture is a JPEG at most 1200 pixels wide and 300 KB, made at upload:
@@ -218,7 +218,10 @@ name out of public repositories, closes both.
 - Image files are served with their sniffed type, `nosniff` and
   `Content-Security-Policy: default-src 'none'; sandbox`, so no browser treats
   one as a document. Pages forbid inline script and style; public pages allow
-  no script at all.
+  only the player's own script, and load it only where there is a video.
+- ffmpeg, which parses uploaded videos, runs as a separate process told the
+  container it reads, limited to the file protocol and a list of decoders,
+  at a lower priority, with a time limit (see *Videos*).
 - A file's type is decided by its signature, never by its name or the type
   the browser claims. Decoding is limited in pixels and allocation.
 - Files in an album that is not private are cached by browsers for a year and

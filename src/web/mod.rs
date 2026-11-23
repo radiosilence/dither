@@ -203,6 +203,10 @@ pub trait Helpers {
         assets::app_js_url()
     }
 
+    fn player_js_url(&self) -> &'static str {
+        assets::player_js_url()
+    }
+
     fn icon(&self, name: &str, px: f32) -> String {
         crate::icon::named(name, px)
     }

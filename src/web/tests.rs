@@ -898,6 +898,10 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
 
     let page = app.get(&format!("/{id}")).await.text();
     assert!(page.contains("<video"), "{page}");
+    assert!(
+        page.contains("/assets/player.js?v="),
+        "a video page loads the player"
+    );
     assert!(page.contains("data-player"));
     assert!(page.contains("<meta property=\"og:type\" content=\"video.other\">"));
     assert!(page.contains(&format!(

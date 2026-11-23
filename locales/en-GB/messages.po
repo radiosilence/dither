@@ -115,6 +115,10 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
+#: templates/player.html
+msgid "Download it"
+msgstr ""
+
 #: templates/app/layout.html
 msgid "HEIC isn't supported yet: export it as JPEG"
 msgstr ""
@@ -156,6 +160,10 @@ msgstr ""
 
 #: templates/public/missing.html
 msgid "This link doesn't lead to anything, or no longer does."
+msgstr ""
+
+#: templates/player.html
+msgid "This video can't play here."
 msgstr ""
 
 #: templates/app/viewer.html
@@ -246,8 +254,16 @@ msgstr ""
 msgid "drop to upload"
 msgstr ""
 
+#: templates/player.html
+msgid "full screen"
+msgstr ""
+
 #: templates/app/grid.html
 msgid "has a caption"
+msgstr ""
+
+#: templates/player.html
+msgid "leave full screen"
 msgstr ""
 
 #: templates/app/viewer.html
@@ -320,6 +336,18 @@ msgstr ""
 
 #: templates/app/layout.html
 msgid "pasted image"
+msgstr ""
+
+#: templates/player.html
+msgid "picture in picture"
+msgstr ""
+
+#: templates/player.html
+msgid "playback speed"
+msgstr ""
+
+#: templates/player.html
+msgid "position in the video"
 msgstr ""
 
 #: templates/app/viewer.html
@@ -400,6 +428,10 @@ msgstr ""
 msgid "video"
 msgstr ""
 
+#: templates/player.html
+msgid "volume"
+msgstr ""
+
 #: templates/app/layout.html
 msgctxt "A copy button, after copying"
 msgid "copied"
@@ -440,6 +472,11 @@ msgctxt "Button: hide the upload tray"
 msgid "close"
 msgstr ""
 
+#: templates/player.html
+msgctxt "Button: let a video be heard"
+msgid "unmute"
+msgstr ""
+
 #: templates/app/album.html
 msgctxt "Button: make the chosen image the album's cover"
 msgid "cover"
@@ -455,9 +492,29 @@ msgctxt "Button: open the album's public page"
 msgid "open"
 msgstr ""
 
+#: templates/player.html
+msgctxt "Button: pause a video"
+msgid "pause"
+msgstr ""
+
+#: templates/player.html
+msgctxt "Button: play a video"
+msgid "play"
+msgstr ""
+
 #: templates/app/layout.html
 msgctxt "Button: send a failed upload again"
 msgid "retry"
+msgstr ""
+
+#: templates/player.html
+msgctxt "Button: silence a video"
+msgid "mute"
+msgstr ""
+
+#: templates/player.html
+msgctxt "Button: start a video"
+msgid "play"
 msgstr ""
 
 #: templates/app/album.html

@@ -37,6 +37,19 @@ pub const OPEN_EXTERNAL: Glyph =
     g("M11 4.5L4.5 4.5L4.5 19.5L19.5 19.5L19.5 13M14 4.5L19.5 4.5L19.5 10M19.5 4.5L11 13");
 pub const ALBUM: Glyph = g("M4 7.5L16.5 7.5L16.5 20L4 20ZM7.5 4L20 4L20 16.5");
 pub const WARNING: Glyph = g("M12 3.5L21 19.5L3 19.5ZM12 9L12 14M11.75 16.75L12.25 16.75");
+pub const PLAY: Glyph = g("M7 5L19 12L7 19Z");
+pub const PAUSE: Glyph = g("M8.5 5L8.5 19M15.5 5L15.5 19");
+pub const VOLUME: Glyph = g(
+    "M3.5 9L7 9L12 4.5L12 19.5L7 15L3.5 15ZM13.89 8.11A5.5 5.5 0 0 1 13.89 15.89M16.36 5.64A9 9 0 0 1 16.36 18.36",
+);
+/// The speaker of `VOLUME`, crossed out where its waves were.
+pub const MUTED: Glyph = g("M3.5 9L7 9L12 4.5L12 19.5L7 15L3.5 15ZM15 9.5L20 14.5M20 9.5L15 14.5");
+pub const FULL_SCREEN: Glyph = g("M4 9L4 4L9 4M15 4L20 4L20 9M20 15L20 20L15 20M9 20L4 20L4 15");
+pub const LEAVE_FULL_SCREEN: Glyph =
+    g("M9 4L9 9L4 9M15 4L15 9L20 9M20 15L15 15L15 20M9 20L9 15L4 15");
+/// A screen with a smaller one in its corner.
+pub const PICTURE_IN_PICTURE: Glyph =
+    g("M3.5 5.5L20.5 5.5L20.5 18.5L3.5 18.5ZM12.5 12L17.5 12L17.5 15.5L12.5 15.5Z");
 
 /// A glyph by name, drawn `px` square: what the templates ask for.
 pub fn named(name: &str, px: f32) -> String {
@@ -55,6 +68,13 @@ pub fn named(name: &str, px: f32) -> String {
         "export" => &EXPORT,
         "open-external" => &OPEN_EXTERNAL,
         "album" => &ALBUM,
+        "play" => &PLAY,
+        "pause" => &PAUSE,
+        "volume" => &VOLUME,
+        "muted" => &MUTED,
+        "full-screen" => &FULL_SCREEN,
+        "leave-full-screen" => &LEAVE_FULL_SCREEN,
+        "picture-in-picture" => &PICTURE_IN_PICTURE,
         _ => &WARNING,
     };
     glyph.svg(px, "glyph")

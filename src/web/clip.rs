@@ -2,7 +2,6 @@
 
 /// What the player macro (`templates/player.html`) needs of a video.
 pub struct Clip {
-    pub id: String,
     /// What plays: the playback copy, or the original where it plays as is.
     pub src: String,
     pub poster: String,
