@@ -115,15 +115,24 @@ For each GET of an album's page, an image's page or any file of an image,
 the web process counts a hit by kind (page, original, display copy,
 thumbnail, preview) and the bytes sent: for a range request the range, for
 a download abandoned part way what went out before it stopped, and for a
-page its compressed size when it was sent compressed. A view is a page, or an original or display copy asked
-for on its own, as an image embedded in a forum post is. A file one of
-dither's own pages asks for is part of that page's view: public pages send
-`Referrer-Policy: same-origin`, so their requests name dither's host and no
-other site learns anything. A range that does not start at the beginning is
-part of the view its first range counted, so a video played in pieces counts
-once. A browser that withholds even same-origin referrers counts a page and
-its file as two views. An album's counts include everything served of its
-images.
+page its compressed size when it was sent compressed. A revalidation
+answered `304 Not Modified` sends nothing and is not counted.
+
+A view is a page, or an original or display copy opened on its own: navigated
+to (`Sec-Fetch-Dest: document`), embedded in another site, or fetched by a
+client that sends no `Sec-Fetch-Dest` and is not a media framework. A file
+fetched for one of dither's pages is part of that page's view: public pages
+send `Referrer-Policy: same-origin`, so their requests name dither's host and
+no other site learns anything, and a media framework playing a page's video
+(iOS's AppleCoreMedia, which sends no referrer) is not counted as a view
+either. Only a range from the start of a file can be a view, so a video
+played in pieces counts once, and not the first few bytes, which Safari asks
+for before it plays.
+
+An album's totals are its own page's counts and those of the images in it
+now, so a moved image takes its counts with it. Its visitors are counted
+across the album as they arrive: someone who opens the album and three of
+its images is one visitor of the album.
 
 A visitor is the SHA-256 of a salt, the client's address and its user
 agent. The salt is random, held only in memory and replaced at UTC midnight;
@@ -140,20 +149,22 @@ that, new ones are not counted until midnight.
 
 A referring site is the host of the `Referer` header, without its path or
 query, and dither's own hosts are ignored; past the first 50 hosts in a day
-for an image or album, the rest are counted together as other sites. Requests from the link-preview
-fetchers (WhatsApp, Facebook, X, Slack, Discord, Telegram, LinkedIn, Reddit,
-Iframely, Embedly) are counted by fetcher, as places a link was shared, and
-never as views or visitors. Requests carrying the owner's own session are not
+for an image or album, the rest are counted together as other sites. A
+link-preview fetcher (WhatsApp, Facebook, X, Slack, Discord, Telegram,
+LinkedIn, Reddit, Iframely, Embedly) asking for a page counts once for that
+fetcher, as a place the link was shared; the files it fetches next count
+only their bytes, and a fetcher is never a view or a visitor. Requests carrying the owner's own session are not
 counted at all; with the public pages on [a domain of their
 own](#a-domain-of-its-own), which never receives the session cookie, the
 owner's visits there are counted like anyone's. A private album is only ever
 its owner's and is never counted.
 
 No address, user agent, hash or cookie is written anywhere. The counts gather
-in memory and are added to the database every minute and when the server
-stops, before the database's last copy to the store, so the newest minute may
-not show yet; deleting an image or album
-deletes its counts. Prometheus's `/metrics` keeps its totals by kind
+in memory and are added to the database every minute, so the newest minute
+may not show yet. The database's copy in the store is brought up to date for
+them at most every 15 minutes, since a copy is of the whole database; any
+other change copies it at once, counts included, and so does stopping, after
+the last counts are written. Deleting an image or album deletes its counts. Prometheus's `/metrics` keeps its totals by kind
 regardless.
 
 ## Storage
