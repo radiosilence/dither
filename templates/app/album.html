@@ -18,6 +18,7 @@
 <div class="dropzone compact" data-dropzone>
   <button class="primary" data-pick>{{ __("add images") }}</button>
   <p class="m-0 text-meta text-muted">{{ __("or drop them anywhere, or paste") }}</p>
+  {% if shell.max_video.is_some() %}<label class="toggle text-fine" title="{{ __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.") }}"><input type="checkbox" data-as-recorded> {{ __("keep videos as recorded") }}</label>{% endif %}
 </div>
 <div class="toolbar">
   <span class="text-meta text-muted">{{ summary|safe }}</span>

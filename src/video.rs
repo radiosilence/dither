@@ -1,19 +1,19 @@
 //! Videos: ffmpeg and ffprobe, and what a video is made into. The worker
 //! (`worker.rs`) runs them.
 //!
-//! A video's original is kept as recorded but remuxed into MP4 with only its
-//! first video and audio streams and none of the container's or streams'
-//! metadata: a phone writes where a video was taken there, as it does in a
-//! photo's EXIF, and in timed metadata tracks beside the picture. Nothing is
-//! re-encoded, so the original loses nothing, and the rotation a phone
-//! records, which is not metadata but part of the video track, survives.
+//! One copy of a video is kept, and it is what plays and what downloads. By
+//! default it is H.264 at the video's own size (up to [`FULL_MAX`]), 8-bit
+//! SDR, tone-mapped from HDR, with AAC sound: what every browser plays, and
+//! what a person converting a phone's video wants back. A video that is that
+//! already is not re-encoded. Asked for, it is kept as recorded instead,
+//! which may not play everywhere.
 //!
-//! Browsers do not all play what phones record (HEVC, 10-bit, HDR), and a
-//! camera's bitrate is too much for a phone on a poor signal, so a video that
-//! is not already H.264, 8-bit, SDR, at most 1920 pixels long and of a modest
-//! bitrate gets a playback copy that is, tone-mapped from HDR where the
-//! ffmpeg build can. A frame from the playback copy becomes the thumbnail and
-//! the link preview through the same code as an image's.
+//! Either way it goes into MP4 with only its first video and sound streams
+//! and none of the container's or streams' metadata: a phone writes where a
+//! video was taken there, as it does in a photo's EXIF, and in timed metadata
+//! tracks beside the picture. The rotation a phone records is part of the
+//! video track and survives. A frame of what is kept becomes the thumbnail
+//! and the link preview through the same code as an image's.
 //!
 //! ffmpeg parses untrusted files with a great deal of code, so it runs as a
 //! process of its own with none of the environment, told which container it
@@ -33,14 +33,14 @@ use tokio::sync::watch;
 
 use crate::sanitize::Container;
 
-/// A playback copy's longer side, and the longest a video plays as uploaded.
+/// The longer side of the playback copies videos made by dither 0.4 were
+/// given beside their originals, which their pages still name.
 pub const PLAY_MAX: u32 = 1920;
-/// The highest bitrate a video plays at as uploaded, in bits a second: well
-/// within a phone's connection, and above what phones record H.264 at.
-const PLAY_BITRATE: u64 = 12_000_000;
-/// The x264 quality of a playback copy: visually close to the source at
-/// 1080p, at a few megabits a second.
-const CRF: &str = "23";
+/// The longest side H.264 is kept at: beyond 4K, browsers' decoders give up.
+pub const FULL_MAX: u32 = 4096;
+/// The x264 quality of a converted video: visually lossless for almost
+/// anything.
+const CRF: &str = "18";
 /// Decoders ffmpeg may open: what phones, cameras and screen recorders write.
 const DECODERS: &str = "h264,hevc,vp8,vp9,av1,libdav1d,prores,mpeg4,aac,mp3,mp3float,opus,libopus,\
      vorbis,flac,alac,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_f32le,ac3,eac3";
@@ -395,7 +395,8 @@ impl Tools {
         Err(failure)
     }
 
-    /// A copy every browser plays: H.264 at most [`PLAY_MAX`] long, 8-bit
+    /// A copy every browser plays: H.264 at its own size, at most
+    /// [`FULL_MAX`] long, 8-bit
     /// 4:2:0 SDR, at most 60 frames a second, with stereo AAC.
     pub async fn transcode(
         &self,
@@ -421,7 +422,7 @@ impl Tools {
             ""
         };
         let mut chain = vec![format!(
-            "scale=w='min({PLAY_MAX},iw)':h='min({PLAY_MAX},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2{matrix}"
+            "scale=w='min({FULL_MAX},iw)':h='min({FULL_MAX},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2{matrix}"
         )];
         if tonemap {
             chain.push(TONEMAP.into());
@@ -494,6 +495,7 @@ impl Tools {
         &self,
         path: &Path,
         at: f64,
+        hdr: bool,
         stop: &watch::Receiver<bool>,
     ) -> Result<Vec<u8>, String> {
         let mut args = self.ffmpeg_args();
@@ -501,6 +503,11 @@ impl Tools {
         args.extend(["-ss".into(), format!("{at:.3}").into()]);
         args.extend(Self::input(Container::Mp4).iter().map(Into::into));
         args.extend(["-i".into(), file(path)]);
+        // A video kept in HDR gives pictures in SDR, as its converted copy
+        // would, rather than ones that look washed out.
+        if hdr && self.zscale {
+            args.extend(["-vf".into(), format!("{TONEMAP},format=rgb24").into()]);
+        }
         args.extend(
             [
                 "-frames:v",
@@ -727,26 +734,19 @@ impl Probe {
         matches!(self.video.transfer.as_str(), "smpte2084" | "arib-std-b67")
     }
 
-    /// Whether browsers play it as uploaded, at a bitrate a phone keeps up
-    /// with.
-    pub fn playable(&self) -> bool {
+    /// Whether it is what a conversion would make: H.264, 8-bit 4:2:0, SDR,
+    /// at most [`FULL_MAX`] long, with AAC or MP3 sound or none.
+    pub fn compatible(&self) -> bool {
         let v = &self.video;
         let (w, h) = self.shown();
-        let bitrate = if v.bitrate > 0 {
-            v.bitrate
-        } else {
-            self.bitrate
-        };
         v.codec == "h264"
             && matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p")
             && !self.hdr()
-            && w.max(h) <= PLAY_MAX
-            && v.fps <= 61.0
-            && bitrate <= PLAY_BITRATE
+            && w.max(h) <= FULL_MAX
             && self
                 .audio
                 .as_ref()
-                .is_none_or(|a| matches!(a.codec.as_str(), "aac" | "mp3") && a.channels <= 2)
+                .is_none_or(|a| matches!(a.codec.as_str(), "aac" | "mp3"))
     }
 
     /// Output held to the length the file declared, which the length limit
@@ -896,7 +896,7 @@ pub mod tests {
         assert_eq!(probe.shown(), (360, 640));
         assert!((probe.duration - 2.0).abs() < 0.2, "{}", probe.duration);
         assert_eq!(probe.audio.as_ref().map(|a| a.codec.as_str()), Some("aac"));
-        assert!(!probe.playable(), "HEVC plays in too few browsers");
+        assert!(!probe.compatible(), "HEVC plays in too few browsers");
 
         let plain = clip(
             dir.path(),
@@ -906,7 +906,7 @@ pub mod tests {
             &["-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"],
         );
         let probe = tools.probe(Container::Mp4, &plain).await.unwrap();
-        assert!(probe.playable(), "{probe:?}");
+        assert!(probe.compatible(), "{probe:?}");
 
         // Told it is Matroska, ffmpeg does not go looking for what it is.
         assert!(tools.probe(Container::Matroska, &plain).await.is_err());
@@ -940,7 +940,7 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn a_playback_copy_is_upright_h264_within_bounds() {
+    async fn a_converted_copy_is_upright_h264_at_its_own_size() {
         let Some(tools) = tools().await else { return };
         let dir = tempfile::tempdir().unwrap();
         let phone = phone_clip(dir.path());
@@ -959,14 +959,14 @@ pub mod tests {
         // Turned as it was made, so it needs no turning to show.
         assert_eq!((play.video.width, play.video.height), (360, 640));
         assert_eq!(play.video.rotation, 0);
-        assert!(play.playable(), "{play:?}");
-        let png = tools.frame(&out, 0.5, &never()).await.unwrap();
+        assert!(play.compatible(), "{play:?}");
+        let png = tools.frame(&out, 0.5, false, &never()).await.unwrap();
         let frame = image::load_from_memory(&png).unwrap();
         assert_eq!((frame.width(), frame.height()), (360, 640));
     }
 
     #[tokio::test]
-    async fn a_large_or_webm_video_is_scaled_and_transcoded() {
+    async fn a_webm_is_converted_at_its_own_size() {
         let Some(tools) = tools().await else { return };
         let dir = tempfile::tempdir().unwrap();
         let webm = clip(
@@ -986,7 +986,7 @@ pub mod tests {
             ],
         );
         let probe = tools.probe(Container::Matroska, &webm).await.unwrap();
-        assert!(!probe.playable());
+        assert!(!probe.compatible());
         let original = dir.path().join("original.mp4");
         assert!(fits_mp4(&probe.video.codec));
         tools
@@ -1006,7 +1006,8 @@ pub mod tests {
             .await
             .unwrap();
         let play = tools.probe(Container::Mp4, &out).await.unwrap();
-        assert_eq!((play.video.width, play.video.height), (1920, 1080));
+        // Converted at its own size: 1440p stays 1440p.
+        assert_eq!((play.video.width, play.video.height), (2560, 1440));
         assert_eq!(play.audio.as_ref().unwrap().codec, "aac");
     }
 
@@ -1047,7 +1048,7 @@ pub mod tests {
         let play = tools.probe(Container::Mp4, &out).await.unwrap();
         assert_eq!(play.video.pix_fmt, "yuv420p");
         assert_eq!(play.video.transfer, "bt709");
-        assert!(play.playable(), "{play:?}");
+        assert!(play.compatible(), "{play:?}");
     }
 
     #[tokio::test]
@@ -1121,7 +1122,7 @@ pub mod tests {
         assert_eq!(p.shown(), (1080, 1920));
         assert!((p.video.fps - 29.97).abs() < 0.01);
         assert_eq!(p.audio.as_ref().unwrap().index, 3);
-        assert!(p.playable());
+        assert!(p.compatible());
         let hdr = Probe {
             video: Stream {
                 transfer: "arib-std-b67".into(),
@@ -1129,7 +1130,7 @@ pub mod tests {
             },
             ..p.clone()
         };
-        assert!(hdr.hdr() && !hdr.playable());
+        assert!(hdr.hdr() && !hdr.compatible());
         let fast = Probe {
             video: Stream {
                 bitrate: 40_000_000,
@@ -1137,10 +1138,16 @@ pub mod tests {
             },
             ..p.clone()
         };
-        assert!(
-            !fast.playable(),
-            "a camera's bitrate is too much for a phone"
-        );
+        assert!(fast.compatible(), "a camera's bitrate is kept as it is");
+        let huge = Probe {
+            video: Stream {
+                width: 7680,
+                height: 4320,
+                ..p.video.clone()
+            },
+            ..p.clone()
+        };
+        assert!(!huge.compatible(), "8K H.264 plays almost nowhere");
         assert_eq!(
             Probe::parse(br#"{"streams": [{"index": 0, "codec_type": "audio", "codec_name": "aac"}], "format": {"duration": "3"}}"#),
             Err("it has no video in it".into())

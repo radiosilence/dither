@@ -468,9 +468,12 @@ async fn nobody_reaches_someone_elses_album() {
     let (album, done) = app.upload(&[&jpeg(40, 30)]).await;
     let id = image_id(&done[0]);
     let bob = app.session("bob").await;
+    // Its editor is not bob's: he is sent to the page anyone with its link sees.
+    let editor = app.get_as(&format!("/albums/{album}"), &bob).await;
+    assert_eq!(editor.status, StatusCode::SEE_OTHER);
     assert_eq!(
-        app.get_as(&format!("/albums/{album}"), &bob).await.status,
-        StatusCode::NOT_FOUND
+        editor.header("location"),
+        format!("http://app.test/a/{album}")
     );
     assert_eq!(
         app.get_as(&format!("/images/{id}/view"), &bob).await.status,
@@ -857,7 +860,7 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
     let image = made(&app, &id).await;
     assert!(image.ready(), "{}", image.failure);
     assert_eq!((image.width, image.height), (360, 640));
-    assert!(image.display, "HEVC gets a playback copy");
+    assert!(!image.display, "one copy is kept");
     assert!(image.audio);
     assert!(app.state.uploads.jobs.progress(&id).is_none());
 
@@ -870,6 +873,13 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
     assert_eq!(whole.status, StatusCode::OK);
     assert_eq!(whole.header("content-type"), "video/mp4");
     assert_eq!(whole.header("accept-ranges"), "bytes");
+    // Opened on its own, the browser's player loads it: no sandbox, whose
+    // opaque origin `'self'` would not match.
+    let policy = whole.header("content-security-policy");
+    assert!(
+        policy.contains("media-src 'self'") && !policy.contains("sandbox"),
+        "{policy}"
+    );
     assert_eq!(
         whole.header("content-encoding"),
         "",
@@ -911,10 +921,20 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
         .await;
     assert_eq!((stale.status, stale.body.len()), (StatusCode::OK, len));
 
+    // HEVC, converted: the one copy is H.264 at the video's own size.
+    let kept = dir.path().join("kept.mp4");
+    std::fs::write(&kept, &whole.body).unwrap();
+    let tools = crate::video::tests::tools().await.unwrap();
+    let probe = tools
+        .probe(crate::sanitize::Container::Mp4, &kept)
+        .await
+        .unwrap();
+    assert_eq!(probe.video.codec, "h264");
+    assert_eq!(probe.shown(), (360, 640));
+    // A display address names it too, for links made before.
     let play = app.get(&format!("/d/{id}.mp4")).await;
     assert_eq!(play.status, StatusCode::OK);
-    assert_eq!(play.header("content-type"), "video/mp4");
-    assert_ne!(play.body, whole.body);
+    assert_eq!(play.body, whole.body);
     assert_eq!(
         app.get(&format!("/d/{id}.webp")).await.status,
         StatusCode::NOT_FOUND
@@ -941,14 +961,53 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
     assert!(page.contains("data-player"));
     assert!(page.contains("<meta property=\"og:type\" content=\"video.other\">"));
     assert!(page.contains(&format!(
-        "<meta property=\"og:video\" content=\"http://app.test/d/{id}.mp4\">"
+        "<meta property=\"og:video\" content=\"http://app.test/{id}.mp4\">"
     )));
     assert!(page.contains(&format!(
         "<meta property=\"og:image\" content=\"http://app.test/p/{id}.jpg\">"
     )));
     assert!(page.contains("· 0:02 ·"), "{page}");
     let public = app.get(&format!("/a/{album}")).await.text();
-    assert!(public.contains(&format!("src=\"/d/{id}.mp4\"")), "{public}");
+    assert!(public.contains(&format!("src=\"/{id}.mp4\"")), "{public}");
+}
+
+#[tokio::test]
+async fn a_video_kept_as_recorded_is_its_one_copy() {
+    let Some(tools) = crate::video::tests::tools().await else {
+        return;
+    };
+    let app = app().await;
+    let dir = tempfile::tempdir().unwrap();
+    let phone = std::fs::read(crate::video::tests::phone_clip(dir.path())).unwrap();
+    let album = app.post("/api/albums", json!({})).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let begun = app
+        .post(
+            &format!("/api/albums/{album}/uploads"),
+            json!({ "files": [{ "name": "phone.mov", "size": phone.len(), "type": "video/quicktime" }], "as_recorded": true }),
+        )
+        .await;
+    let upload = begun.json()["uploads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.chunk(&upload, &phone, 0, phone.len()).await;
+    let id = image_id(
+        &app.post(&format!("/api/uploads/{upload}/finish"), json!({}))
+            .await,
+    );
+    let image = made(&app, &id).await;
+    assert!(image.ready() && image.as_recorded && !image.display);
+    let kept = dir.path().join("kept.mp4");
+    std::fs::write(&kept, &app.get(&format!("/{id}.mp4")).await.body).unwrap();
+    let probe = tools
+        .probe(crate::sanitize::Container::Mp4, &kept)
+        .await
+        .unwrap();
+    assert_eq!(probe.video.codec, "hevc", "as recorded");
+    assert_eq!(probe.shown(), (360, 640));
 }
 
 #[tokio::test]
@@ -1008,6 +1067,31 @@ async fn a_picture_that_cannot_be_made_is_refused_to_its_sender_and_leaves_nothi
     );
     let images = app.state.db.images(&album).await.unwrap();
     assert!(images.is_empty(), "{images:?}");
+}
+
+#[tokio::test]
+async fn an_albums_app_address_sends_anyone_but_its_owner_to_its_link() {
+    let app = app().await;
+    let (album, _) = app.upload(&[&jpeg(64, 48)]).await;
+    // Its owner gets the editor.
+    let own = app.get(&format!("/albums/{album}")).await;
+    assert_eq!(own.status, StatusCode::OK);
+    assert!(own.text().contains("data-album"));
+    // Anyone else, a link preview's fetcher included, the page it shares.
+    let bob = app.session("bob").await;
+    let other = app.get_as(&format!("/albums/{album}"), &bob).await;
+    assert_eq!(other.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        other.header("location"),
+        format!("http://app.test/a/{album}")
+    );
+    // Unless it is private, when it is as if there were none.
+    app.post(&format!("/albums/{album}/meta"), json!({ "private": true }))
+        .await;
+    let hidden = app.get_as(&format!("/albums/{album}"), &bob).await;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    let none = app.get_as("/albums/AAAAAAAAAA", &bob).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

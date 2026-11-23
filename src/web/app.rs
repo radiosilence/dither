@@ -291,15 +291,42 @@ async fn owned(state: &AppState, session: &Session, id: &str) -> AppResult<crate
     }
 }
 
+/// `/albums/<id>`: the album's editor for its owner. Its address is what a
+/// browser's bar shows, so it is what people copy: anyone else is sent to the
+/// page its link shares, unless the album is private, and someone not signed
+/// in to sign-in, which says nothing of whether the album exists.
 pub async fn album(
     State(state): State<AppState>,
-    Extension(session): Extension<Session>,
     Path(id): Path<String>,
-) -> AppResult<Html<String>> {
-    let album = owned(&state, &session, &id).await?;
-    let (grid, summary, _) = album_parts(&state, &album).await?;
-    Ok(Html(render(&AlbumPage {
-        shell: shell(&state, &session).await,
+    headers: HeaderMap,
+) -> Response {
+    let session = crate::auth::extract::current(&state, &headers).await;
+    let found = if crate::id::valid(&id) {
+        state.db.album(&id).await.ok().flatten()
+    } else {
+        None
+    };
+    match (session, found) {
+        (Some(session), Some(album)) if album.owner == session.sub => {
+            match editor(&state, &session, album).await {
+                Ok(html) => Html(html).into_response(),
+                Err(e) => e.into_response(),
+            }
+        }
+        (_, Some(album)) if !album.private => {
+            Redirect::to(&format!("{}/a/{}", state.config.public_url, album.id)).into_response()
+        }
+        (None, _) => {
+            Redirect::to(&crate::auth::routes::login_url(&format!("/albums/{id}"))).into_response()
+        }
+        (Some(_), _) => AppError::NotFound.into_response(),
+    }
+}
+
+async fn editor(state: &AppState, session: &Session, album: crate::db::Album) -> AppResult<String> {
+    let (grid, summary, _) = album_parts(state, &album).await?;
+    render(&AlbumPage {
+        shell: shell(state, session).await,
         share: format!("{}/a/{}", state.config.public_url, album.id),
         id: album.id,
         title: album.title,
@@ -307,7 +334,7 @@ pub async fn album(
         private: album.private,
         grid,
         summary,
-    })?))
+    })
 }
 
 /// An album page's live parts: the grid of images and the line counting them,

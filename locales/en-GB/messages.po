@@ -166,6 +166,12 @@ msgstr ""
 msgid "Nothing here yet."
 msgstr ""
 
+#: templates/app/album.html templates/app/library.html
+msgid ""
+"Otherwise a video is converted to H.264 at its own size, which plays "
+"everywhere."
+msgstr ""
+
 #: templates/app/viewer.html
 msgid "Processing. It can be shared once it's done."
 msgstr ""
@@ -276,6 +282,10 @@ msgstr ""
 
 #: templates/app/grid.html
 msgid "has a caption"
+msgstr ""
+
+#: templates/app/album.html templates/app/library.html
+msgid "keep videos as recorded"
 msgstr ""
 
 #: templates/player.html

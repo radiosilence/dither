@@ -635,7 +635,7 @@ mod tests {
 
     async fn begin(db: &Db, size: u64) -> Upload {
         let album = db.create_album("ann", "").await.unwrap();
-        db.begin_uploads("ann", &album.id, vec![("a.jpg".into(), size)])
+        db.begin_uploads("ann", &album.id, vec![("a.jpg".into(), size)], false)
             .await
             .unwrap()
             .unwrap()

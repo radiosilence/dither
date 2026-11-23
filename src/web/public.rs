@@ -53,9 +53,12 @@ const CSP_PUBLIC_VIDEO: &str = "default-src 'none'; img-src 'self'; media-src 's
 /// Image files: nothing at all, in a sandbox, should a browser ever render
 /// one as a document.
 const CSP_FILE: &str = "default-src 'none'; sandbox";
-/// A video file: the same, but a browser opening one on its own plays it in a
-/// document of its making, which the policy's media rule then governs.
-const CSP_VIDEO_FILE: &str = "default-src 'none'; media-src 'self'; sandbox";
+/// A video file. A browser opening one on its own plays it in a document of
+/// its making, which this governs: it loads the video from here and styles
+/// itself inline. Not sandboxed, since a sandboxed document has no origin of
+/// its own for `'self'` to match, and Safari's then never loads the video; a
+/// file served as video with `nosniff` is never read as a page regardless.
+const CSP_VIDEO_FILE: &str = "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'";
 /// An animated picture up to this size is its own `og:image`, so it plays in
 /// the previews that play one (X's limit is 5 MB).
 const OG_ANIMATED_MAX: u64 = 5_000_000;

@@ -8,7 +8,7 @@ An image host: axum, askama, Datastar and Tailwind, with images in an object sto
 - The database is the queue: a job is an image row in state `processing`, claimed with a lease. The socket between the web process and a worker (`jobs.rs`) only says what happened; whatever it misses, the rows still say what is waiting, made or failed. A write the worker makes is announced to the web process (`FromWorker::Ended`), which redraws pages and prompts a snapshot (`Db::announce`).
 - Every database write that a person can cause takes the owner and checks it in the same statement. Handlers never check ownership themselves and then write.
 - Routes behind sign-in go in the `protected` router in `web/mod.rs`; public routes take no session and must work on the public domain, which has no cookies.
-- The public pages carry no script but the video player's (`browser/player.ts`), loaded only on a page with a video. Image files are served with `CSP: default-src 'none'; sandbox`; video files also allow `media-src 'self'`, for the player a browser makes of one opened on its own.
+- The public pages carry no script but the video player's (`browser/player.ts`), loaded only on a page with a video. Image files are served with `CSP: default-src 'none'; sandbox`; video files are not sandboxed (a sandboxed document's opaque origin defeats `'self'`, and Safari's own player then never loads) and allow `media-src 'self'` and inline styles, for the player a browser makes of one opened on its own.
 - Store keys are built by `store::key` from ids checked by `id::valid`; nothing a client sends becomes part of a path otherwise.
 
 ## Git

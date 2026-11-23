@@ -3,14 +3,15 @@
 //!
 //! ```text
 //! POST   /api/albums                 {title?}            → {id}
-//! POST   /api/albums/{id}/uploads    {files: [{name, size, type?}]} → {uploads: [{id}], chunk}
+//! POST   /api/albums/{id}/uploads    {files: [{name, size, type?}], as_recorded?} → {uploads: [{id}], chunk}
 //! PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 //! GET    /api/uploads/{id}                               → {received, size, image?, error?}
 //! POST   /api/uploads/{id}/finish                        → {image: {..., processing}} | {error}
 //! ```
 //!
 //! A file's `type` is the MIME type its browser gives: a video's is held to
-//! the video limit rather than the image one. The bytes decide what it is
+//! the video limit rather than the image one. `as_recorded` keeps a batch's
+//! videos as they were recorded; otherwise they are converted to H.264. The bytes decide what it is
 //! when it finishes, and a video finishes as processing: its copies follow.
 //!
 //! ```text
@@ -99,6 +100,9 @@ impl File {
 #[derive(serde::Deserialize)]
 pub struct Batch {
     files: Vec<File>,
+    /// Keep its videos as recorded, rather than converting them to H.264.
+    #[serde(default)]
+    as_recorded: bool,
 }
 
 pub async fn begin(
@@ -153,12 +157,17 @@ pub async fn begin(
             "the disk is nearly full, so nothing more can be stored",
         );
     }
+    let batch_as_recorded = batch.as_recorded;
     let files = batch
         .files
         .into_iter()
         .map(|f| (f.name.chars().take(NAME_MAX).collect::<String>(), f.size))
         .collect();
-    match state.db.begin_uploads(&session.sub, &album, files).await {
+    match state
+        .db
+        .begin_uploads(&session.sub, &album, files, batch_as_recorded)
+        .await
+    {
         Ok(Some(uploads)) => Json(json!({
             "uploads": uploads.iter().map(|u| json!({ "id": u.id })).collect::<Vec<_>>(),
             "chunk": CHUNK,
