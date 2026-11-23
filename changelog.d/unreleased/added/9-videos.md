@@ -1,0 +1,1 @@
+- **Videos.** MP4, MOV and WebM uploads are kept as MP4 originals without their metadata, with an H.264 playback copy when browsers would not play the original, a poster frame for thumbnails and link previews, byte-range serving and `og:video` tags. They are processed in the background by ffmpeg, which ships in the image, and show their progress on the album.
