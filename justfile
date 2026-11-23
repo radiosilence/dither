@@ -3,8 +3,15 @@
 # Run it on http://127.0.0.1:8080 with no sign-in and everything under ./data.
 # A laptop's disk is usually fuller than a server's, so uploads stop at 1 GB
 # free here rather than at the default share.
+# The worker beside it makes uploads' copies, as its container does in the pod.
 dev:
-    INSECURE_NO_AUTH=1 MIN_FREE_BYTES=1000000000 cargo run
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export INSECURE_NO_AUTH=1 MIN_FREE_BYTES=1000000000
+    cargo build
+    cargo run -q -- worker &
+    trap 'kill %1 2>/dev/null || true' EXIT
+    cargo run -q -- serve
 
 # What CI checks, short of the audit and the release builds.
 check:

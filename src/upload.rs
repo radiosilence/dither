@@ -1,27 +1,26 @@
-//! Uploads: chunks into a file in the state directory, then processing into
-//! the store.
+//! Uploads: chunks into a file in the state directory, then a job for a
+//! worker to make into an image or a video.
 //!
 //! A file arrives in chunks of at most [`CHUNK`], each a request of its own,
 //! so a large photo on a phone's connection never holds one request open past
 //! a proxy's timeout, and a dropped connection resumes from what arrived. Once
-//! every byte is in, `finish` cleans and resizes it under a budget of memory
-//! for processing at once, which is what bounds what a batch of three hundred
-//! photos can take, writes the copies to the store, and only then adds the
-//! image's row: a row never names a file that is not there.
+//! every byte is in, `finish` checks what can be checked from the file's
+//! first bytes (what it is, how large, and for a picture how many pixels and
+//! how much memory it needs), so a file that will be refused is refused while
+//! its sender waits. Then its image's row is added as processing and its file
+//! handed to the queue (`jobs`), which a worker takes it from: the web
+//! process decodes nothing.
 //!
-//! The copies are recorded as strays before they are written (see the
-//! `strays` table), and recording the image claims them. Copies a failure or
-//! a crash strands are ones the database knows it made, which the sweep
-//! removes; it never deletes a copy merely because no row names it, so a
-//! database restored from an older copy leaves newer images alone.
+//! The worker records the copies as strays before it writes them (see the
+//! `strays` table), and marking the image ready claims them. Copies a failure
+//! or a crash strands are ones the database knows were made, which the sweep
+//! removes once no row names them; it never deletes a copy merely because no
+//! row names it, so a database restored from an older copy leaves newer
+//! images alone.
 //!
-//! Processing runs in a task of its own that the request only waits on, so a
+//! Finishing runs in a task of its own that the request only waits on, so a
 //! client that disconnects mid-way does not stop it, and asking again joins
 //! the run already going or reads how it ended.
-//!
-//! A video is only probed here: its row is added as processing and its file
-//! handed to the video worker (`video`), since making its copies takes
-//! longer than a request should wait.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,18 +30,17 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures_util::{FutureExt as _, Stream, StreamExt};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore, watch};
+use tokio::sync::{Mutex, OwnedMutexGuard, watch};
 
-use crate::db::{Db, NewImage, Upload};
+use crate::db::{Db, NewJob, Upload};
+use crate::jobs::{self, Hub};
 use crate::media;
-use crate::store::{self, Store, Variant};
-use crate::video::{self, Problem, Videos};
+use crate::sanitize::Kind;
+use crate::store::{self, Store};
 
 /// The share of a disk uploads leave free when no floor is set.
 const DEFAULT_FREE_SHARE: f64 = 0.15;
-/// The processing budget's unit.
-const MIB: u64 = 1 << 20;
-/// What processing reads of a file to size it before holding any of the
+/// What finishing reads of a file to size it before holding any of the
 /// budget: every header dither takes ends well within it.
 const HEAD: u64 = 4 << 20;
 
@@ -86,19 +84,22 @@ pub struct Uploads {
     db: Db,
     store: Store,
     dir: PathBuf,
-    /// Memory for processing, in MiB.
-    budget: Arc<Semaphore>,
+    state_dir: PathBuf,
+    /// The memory a worker may take processing: a picture that needs more
+    /// is refused here.
     budget_bytes: u64,
     max_pixels: u64,
     /// The largest image: a file whose bytes are not a video is held to this
     /// whatever type it was declared as.
     max_image_bytes: u64,
+    /// The largest video, when videos are taken.
+    max_video_bytes: Option<u64>,
     /// Free space kept on the disks uploads write to; `None` keeps a share of
     /// each disk instead ([`DEFAULT_FREE_SHARE`]).
     min_free: Option<u64>,
     locks: Locks,
     running: parking_lot::Mutex<HashMap<String, watch::Receiver<Option<Outcome>>>>,
-    pub videos: Arc<Videos>,
+    pub jobs: Arc<Hub>,
 }
 
 /// An upload's lock, held until this drops. A lock lives in the map only
@@ -122,38 +123,26 @@ impl Drop for Held<'_> {
 }
 
 impl Uploads {
-    /// Uploads as `config` sets them, taking videos with `tools`.
+    /// Uploads as `config` sets them, handing jobs to `jobs`.
     pub fn new(
         db: Db,
         store: Store,
         config: &crate::config::Config,
-        tools: Option<video::Tools>,
+        jobs: Arc<Hub>,
     ) -> std::io::Result<Self> {
         let dir = config.state_dir.join("incoming");
         std::fs::create_dir_all(&dir)?;
-        // Whole MiB, and no more than one acquire can ask for.
-        let mib = (config.process_memory / MIB).clamp(1, u64::from(u32::MAX));
-        let budget = Arc::new(Semaphore::new(mib as usize));
-        let videos = Arc::new(Videos::new(
-            db.clone(),
-            store.clone(),
-            &config.state_dir,
-            video::Settings {
-                tools,
-                max_bytes: config.video.max_bytes,
-                max_seconds: config.video.max_seconds,
-                max_pixels: config.max_pixels,
-            },
-        )?);
         Ok(Self {
             db,
             store,
             dir,
-            videos,
-            budget,
-            budget_bytes: mib * MIB,
+            state_dir: config.state_dir.clone(),
+            jobs,
+            budget_bytes: config.process_memory,
             max_pixels: config.max_pixels,
             max_image_bytes: config.max_upload_bytes,
+            max_video_bytes: (config.video.mode != crate::config::VideoMode::Off)
+                .then_some(config.video.max_bytes),
             min_free: config.min_free_bytes,
             locks: Default::default(),
             running: Default::default(),
@@ -379,10 +368,9 @@ impl Uploads {
             Ok(None) => return Outcome::Rejected("its album was deleted while it uploaded".into()),
             Err(_) => return Outcome::Failed("the image could not be saved; try again".into()),
         }
-        let started = Instant::now();
         let path = self.file(&upload.id);
-        // Sized from its first bytes, so the files waiting for the budget are
-        // not held in memory beside it.
+        // What can be judged from the first bytes is judged before the
+        // sender is told it worked.
         let mut head = Vec::new();
         let read = async {
             use tokio::io::AsyncReadExt as _;
@@ -395,131 +383,109 @@ impl Uploads {
         if read.await.is_err() || (head.len() as u64) < upload.size.min(HEAD) {
             return self.recount(&upload).await;
         }
-        if self.videos.enabled()
-            && let Some(container) = crate::sanitize::sniff_video(&head)
-        {
-            return self.video(upload, container, &path).await;
-        }
-        // Begun as a video, perhaps, but not one: held to the image limit.
-        if upload.size > self.max_image_bytes {
-            let why = format!(
-                "{} is over the {} limit for an image",
-                crate::web::human(upload.size),
-                crate::web::human(self.max_image_bytes)
-            );
-            return self.reject(&upload, why).await;
-        }
-        let cost = match media::cost(&head, upload.size, self.max_pixels) {
-            Ok(cost) => cost,
-            // A header longer than the first bytes: size it from the whole file.
-            Err(media::Reject::Broken(_)) if (head.len() as u64) < upload.size => {
-                match tokio::fs::read(&path).await {
-                    Ok(all) => {
-                        head = all;
-                        match media::cost(&head, upload.size, self.max_pixels) {
+        let video = crate::sanitize::sniff_video(&head).is_some();
+        let kind = if video {
+            let Some(max) = self.max_video_bytes else {
+                return self
+                    .reject(&upload, "this server doesn't take videos".into())
+                    .await;
+            };
+            if upload.size > max {
+                let why = format!(
+                    "{} is over the {} limit for a video",
+                    crate::web::human(upload.size),
+                    crate::web::human(max)
+                );
+                return self.reject(&upload, why).await;
+            }
+            Kind::Mp4
+        } else {
+            // Begun as a video, perhaps, but not one: held to the image limit.
+            if upload.size > self.max_image_bytes {
+                let why = format!(
+                    "{} is over the {} limit for an image",
+                    crate::web::human(upload.size),
+                    crate::web::human(self.max_image_bytes)
+                );
+                return self.reject(&upload, why).await;
+            }
+            let cost = match media::cost(&head, upload.size, self.max_pixels) {
+                Ok(cost) => cost,
+                // A header longer than the first bytes: size it from the
+                // whole file.
+                Err(media::Reject::Broken(_)) if (head.len() as u64) < upload.size => {
+                    match tokio::fs::read(&path).await {
+                        Ok(all) => match media::cost(&all, upload.size, self.max_pixels) {
                             Ok(cost) => cost,
                             Err(reject) => return self.reject(&upload, reject.to_string()).await,
-                        }
+                        },
+                        Err(_) => return self.recount(&upload).await,
                     }
-                    Err(_) => return self.recount(&upload).await,
                 }
+                Err(reject) => return self.reject(&upload, reject.to_string()).await,
+            };
+            if cost > self.budget_bytes {
+                let why = format!(
+                    "the image needs about {} of memory to process, and this server allows {}",
+                    crate::web::human(cost),
+                    crate::web::human(self.budget_bytes)
+                );
+                return self.reject(&upload, why).await;
             }
-            Err(reject) => return self.reject(&upload, reject.to_string()).await,
+            match crate::sanitize::sniff(&head) {
+                Ok(kind) => kind,
+                Err(why) => return self.reject(&upload, why.into()).await,
+            }
         };
-        if cost > self.budget_bytes {
-            let why = format!(
-                "the image needs about {} of memory to process, and this server allows {}",
-                crate::web::human(cost),
-                crate::web::human(self.budget_bytes)
+        // A video's original and its playback copy are made beside the
+        // upload before it goes.
+        let needed = if video {
+            upload.size.saturating_mul(2)
+        } else {
+            upload.size
+        };
+        if !self.room_for(needed) {
+            return Outcome::Failed(
+                "the disk is nearly full, so nothing more can be stored".into(),
             );
-            return self.reject(&upload, why).await;
         }
-        let processed = {
-            let permits = u32::try_from(cost.div_ceil(MIB)).unwrap_or(u32::MAX).max(1);
-            let Ok(_permit) = self.budget.acquire_many(permits).await else {
-                return Outcome::Failed("shutting down".into());
-            };
-            let bytes = if head.len() as u64 == upload.size {
-                head
-            } else {
-                match tokio::fs::read(&path).await {
-                    Ok(b) if b.len() as u64 == upload.size => b,
-                    _ => return self.recount(&upload).await,
-                }
-            };
-            let max = self.max_pixels;
-            match tokio::task::spawn_blocking(move || media::process(&bytes, max)).await {
-                Ok(Ok(p)) => p,
-                Ok(Err(reject)) => return self.reject(&upload, reject.to_string()).await,
-                Err(e) => {
-                    tracing::error!(upload = %upload.id, error = %e, "processing panicked");
-                    return self
-                        .reject(&upload, "the image could not be processed".into())
-                        .await;
-                }
-            }
-        };
-
         let id = crate::id::new();
-        if let Err(e) = self.db.add_stray(&id).await {
-            tracing::error!(upload = %upload.id, error = %e, "recording an upload's copies failed");
-            return Outcome::Failed("the image could not be saved; try again".into());
+        let queued = jobs::source(&self.state_dir, &id);
+        if let Err(e) = tokio::fs::rename(&path, &queued).await {
+            tracing::error!(upload = %upload.id, error = %e, "queueing an upload failed");
+            return Outcome::Failed("the upload could not be saved; try again".into());
         }
-        let size = processed.original.len() as u64;
-        let mut puts = vec![
-            (Variant::Original, Bytes::from(processed.original)),
-            (Variant::Thumb, Bytes::from(processed.thumb)),
-            (Variant::Preview, Bytes::from(processed.preview)),
-        ];
-        let display = processed.display.is_some();
-        if let Some(d) = processed.display {
-            puts.push((Variant::Display, Bytes::from(d)));
-        }
-        for (variant, bytes) in puts {
-            if let Err(e) = self.store.put(&store::key(variant, &id), bytes).await {
-                tracing::error!(upload = %upload.id, error = %e, "storing an upload failed");
-                store::discard(&self.store, &self.db, vec![id]).await;
-                return Outcome::Failed("the image could not be stored; try again".into());
-            }
-        }
-        let image = NewImage {
+        let job = NewJob {
             id: id.clone(),
-            kind: processed.kind,
-            width: processed.width,
-            height: processed.height,
-            bytes: size,
-            animated: processed.animated,
-            display,
-            sha256: processed.sha256.to_vec(),
+            kind,
+            bytes: upload.size,
         };
-        match self
-            .db
-            .finish_upload(&upload.owner, &upload.id, image)
-            .await
-        {
+        let put_back = || async {
+            if let Err(e) = tokio::fs::rename(&queued, &path).await {
+                tracing::warn!(upload = %upload.id, error = %e, "returning an upload's file failed");
+            }
+        };
+        match self.db.begin_job(&upload.owner, &upload.id, job).await {
             Ok(true) => {
-                let _ = tokio::fs::remove_file(&path).await;
-                let took = started.elapsed();
-                crate::metrics::uploaded(size, took);
-                tracing::info!(image = %id, bytes = size, ms = took.as_millis() as u64, "stored");
+                tracing::info!(job = %id, bytes = upload.size, video, "queued");
+                self.jobs.wake();
                 Outcome::Done(id)
             }
             Ok(false) => {
-                store::discard(&self.store, &self.db, vec![id]).await;
+                put_back().await;
                 self.ended(&upload, &path).await
             }
             Err(e) => {
                 tracing::error!(upload = %upload.id, error = %e, "recording an upload failed");
-                store::discard(&self.store, &self.db, vec![id]).await;
-                Outcome::Failed("the image could not be saved; try again".into())
+                put_back().await;
+                Outcome::Failed("the upload could not be saved; try again".into())
             }
         }
     }
 
     /// What to say of an upload whose image could not be added because the
     /// upload ended another way first (cancelled, or its album deleted), or
-    /// is still open (the sweep took its copies' record first, which only an
-    /// hour between storing and recording allows: finishing again works).
+    /// is still open (finishing again works).
     async fn ended(&self, upload: &Upload, path: &Path) -> Outcome {
         let why = match self.db.upload(&upload.id).await {
             Ok(Some(u)) if u.image.is_none() && u.error.is_none() => {
@@ -533,49 +499,6 @@ impl Uploads {
         };
         let _ = tokio::fs::remove_file(path).await;
         Outcome::Rejected(why)
-    }
-
-    /// Add a video as processing and hand its file to the video worker.
-    async fn video(
-        &self,
-        upload: Upload,
-        container: crate::sanitize::Container,
-        path: &Path,
-    ) -> Outcome {
-        // The remuxed original and the playback copy are made beside the
-        // upload before it goes.
-        if !self.room_for(upload.size.saturating_mul(2)) {
-            return Outcome::Failed(
-                "the disk is nearly full, so nothing more can be stored".into(),
-            );
-        }
-        let video = match self.videos.check(container, path, upload.size).await {
-            Ok(v) => v,
-            Err(Problem::Rejected(why)) => return self.reject(&upload, why).await,
-            Err(Problem::Failed(why)) => return Outcome::Failed(why),
-            Err(Problem::Stopped) => return Outcome::Failed("try again".into()),
-        };
-        let id = video.id.clone();
-        if let Err(e) = self.videos.take(path, &id).await {
-            tracing::error!(upload = %upload.id, error = %e, "moving a video upload failed");
-            return Outcome::Failed("the video could not be saved; try again".into());
-        }
-        match self.db.begin_video(&upload.owner, &upload.id, video).await {
-            Ok(true) => {
-                tracing::info!(video = %id, bytes = upload.size, "video queued");
-                self.videos.enqueue(id.clone());
-                Outcome::Done(id)
-            }
-            Ok(false) => {
-                self.videos.give_back(&id, path).await;
-                self.ended(&upload, path).await
-            }
-            Err(e) => {
-                tracing::error!(upload = %upload.id, error = %e, "recording a video failed");
-                self.videos.give_back(&id, path).await;
-                Outcome::Failed("the video could not be saved; try again".into())
-            }
-        }
     }
 
     /// Wait, up to `limit`, for processing in progress to finish.
@@ -653,13 +576,14 @@ impl Uploads {
             }
             Err(e) => tracing::warn!(error = %e, "sweeping stored copies failed"),
         }
-        self.videos.sweep().await;
+        self.jobs.sweep().await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Variant;
     use image::ImageEncoder;
 
     pub fn jpeg(w: u32, h: u32) -> Vec<u8> {
@@ -680,7 +604,7 @@ mod tests {
                 db.clone(),
                 store.clone(),
                 &crate::config::Config::test(dir.path().to_path_buf()),
-                None,
+                Arc::new(Hub::new(db.clone(), dir.path()).unwrap()),
             )
             .unwrap(),
         );
@@ -706,8 +630,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chunks_resume_and_a_complete_file_becomes_an_image() {
-        let (uploads, db, store, _dir) = setup().await;
+    async fn chunks_resume_and_a_complete_file_becomes_a_job() {
+        let (uploads, db, _, dir) = setup().await;
         let file = jpeg(300, 200);
         let upload = begin(&db, file.len() as u64).await;
         let half = file.len() / 2;
@@ -735,23 +659,14 @@ mod tests {
         let Outcome::Done(id) = uploads.finish(upload.clone()).await else {
             panic!("expected an image");
         };
+        // Queued for a worker, its file with it.
         let (image, _) = db.image(&id).await.unwrap().unwrap();
-        assert_eq!((image.width, image.height), (300, 200));
-        assert!(
-            store
-                .read(&store::key(Variant::Original, &id))
-                .await
-                .unwrap()
-                .is_some()
+        assert_eq!(
+            (image.status, image.kind),
+            (crate::db::Status::Processing, Kind::Jpeg)
         );
-        assert!(
-            store
-                .read(&store::key(Variant::Thumb, &id))
-                .await
-                .unwrap()
-                .is_some()
-        );
-        // Finishing again reads the outcome rather than storing it twice.
+        assert_eq!(std::fs::read(jobs::source(dir.path(), &id)).unwrap(), file);
+        // Finishing again reads the outcome rather than queueing it twice.
         let again = db.upload(&upload.id).await.unwrap().unwrap();
         assert_eq!(uploads.finish(again).await, Outcome::Done(id));
         assert!(!uploads.file(&upload.id).exists());
@@ -851,7 +766,7 @@ mod tests {
                     process_memory: 8 << 20,
                     ..crate::config::Config::test(dir.path().to_path_buf())
                 },
-                None,
+                Arc::new(Hub::new(db.clone(), dir.path()).unwrap()),
             )
             .unwrap(),
         );

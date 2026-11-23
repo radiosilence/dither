@@ -4,7 +4,8 @@ An image host: axum, askama, Datastar and Tailwind, with images in an object sto
 
 ## Rules that hold the design together
 
-- Nothing an upload carries reaches the store without passing through `sanitize::clean` or, for a video, ffmpeg's remux without metadata (`video::Tools::remux`): `media::process` writes images' originals, reading the cleaned bytes back to prove they decode, and the video worker (`video::Videos`) writes videos'. Every ffmpeg run goes through `Tools::run` with `Tools::input`'s limits.
+- Nothing an upload carries reaches the store without passing through `sanitize::clean` (in `media::process`, which reads the cleaned bytes back to prove they decode) or, for a video, ffmpeg's remux without metadata (`video::Tools::remux`). Only the worker (`worker.rs`) writes copies; the web process decodes nothing. Every ffmpeg run goes through `Tools::run` with `Tools::input`'s limits.
+- The database is the queue: a job is an image row in state `processing`, claimed with a lease. The socket between the web process and a worker (`jobs.rs`) only says what happened; whatever it misses, the rows still say what is waiting, made or failed. A write the worker makes is announced to the web process (`FromWorker::Ended`), which redraws pages and prompts a snapshot (`Db::announce`).
 - Every database write that a person can cause takes the owner and checks it in the same statement. Handlers never check ownership themselves and then write.
 - Routes behind sign-in go in the `protected` router in `web/mod.rs`; public routes take no session and must work on the public domain, which has no cookies.
 - The public pages carry no script but the video player's (`browser/player.ts`), loaded only on a page with a video. Image and video files are served with `CSP: default-src 'none'; sandbox`.

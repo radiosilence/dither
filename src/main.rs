@@ -8,6 +8,7 @@ mod error;
 mod i18n;
 mod icon;
 mod id;
+mod jobs;
 mod media;
 mod metrics;
 mod sanitize;
@@ -16,6 +17,7 @@ mod store;
 mod upload;
 mod video;
 mod web;
+mod worker;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +42,12 @@ async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("serve") => serve().await,
+        // Make uploads' copies, beside a `serve` sharing the state directory.
+        Some("worker") => {
+            let config = Config::for_worker()?;
+            let store = Store::open(&config.storage, 0)?;
+            worker::run(&config, store).await
+        }
         // Move every image and the database from one store to another: how a
         // disk store becomes a bucket. Safe to repeat; it resumes.
         Some("copy-store") => {
@@ -56,7 +64,9 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(other) => {
-            bail!("unknown command {other}: dither [serve | copy-store <from> <to> | version]")
+            bail!(
+                "unknown command {other}: dither [serve | worker | copy-store <from> <to> | version]"
+            )
         }
     }
 }
@@ -71,13 +81,9 @@ async fn serve() -> anyhow::Result<()> {
         .await
         .context("restoring the database")?;
     let db = Db::open(&db_path).await.context("opening the database")?;
-    let uploads = Arc::new(Uploads::new(
-        db.clone(),
-        store.clone(),
-        &config,
-        video::Tools::find(&config.video).await?,
-    )?);
-    uploads.videos.start();
+    let jobs = Arc::new(jobs::Hub::new(db.clone(), &config.state_dir)?);
+    jobs.listen()?;
+    let uploads = Arc::new(Uploads::new(db.clone(), store.clone(), &config, jobs)?);
 
     let (snapshot_stop, snapshot_rx) = watch::channel(false);
     let snapshots = tokio::spawn(snapshot::run(db.clone(), store.clone(), snapshot_rx));
@@ -160,7 +166,8 @@ async fn serve() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn signal() {
+/// A request to stop: Ctrl-C, or SIGTERM from Kubernetes.
+pub(crate) async fn signal() {
     let interrupt = tokio::signal::ctrl_c();
     #[cfg(unix)]
     let terminate = async {

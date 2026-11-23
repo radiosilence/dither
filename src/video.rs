@@ -1,5 +1,5 @@
-//! Videos: what ffprobe says of one, and the worker that makes its copies with
-//! ffmpeg.
+//! Videos: ffmpeg and ffprobe, and what a video is made into. The worker
+//! (`worker.rs`) runs them.
 //!
 //! A video's original is kept as recorded but remuxed into MP4 with only its
 //! first video and audio streams and none of the container's or streams'
@@ -15,35 +15,23 @@
 //! ffmpeg build can. A frame from the playback copy becomes the thumbnail and
 //! the link preview through the same code as an image's.
 //!
-//! Transcoding takes minutes, so finishing an upload only probes the file and
-//! adds the video as processing, and one worker makes copies a video at a
-//! time, reporting its progress to the album. A video interrupted by a
-//! restart is still processing, with its upload kept, and is made again.
-//!
 //! ffmpeg parses untrusted files with a great deal of code, so it runs as a
-//! process of its own, told which container it reads rather than left to
-//! guess, limited to the file protocol and to the decoders a phone or camera
-//! needs, at a lower priority than serving, and with a time limit. Its memory
-//! is outside the budget images are processed under, which a transcode
-//! lasting minutes would hold up; one video at a time on a few threads keeps
-//! it to a few hundred megabytes, which the pod's limit allows beside the
-//! budget.
+//! process of its own with none of the environment, told which container it
+//! reads rather than left to guess, limited to the file protocol and to the
+//! decoders a phone or camera needs, on a fixed number of threads at a lower
+//! priority, and with a time limit.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Context as _;
-use bytes::Bytes;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
-use tokio::sync::{broadcast, mpsc, watch};
+use tokio::sync::watch;
 
-use crate::db::{Db, MadeVideo, NewVideo, Status};
 use crate::sanitize::Container;
-use crate::store::{self, Store, Variant};
 
 /// A playback copy's longer side, and the longest a video plays as uploaded.
 pub const PLAY_MAX: u32 = 1920;
@@ -56,6 +44,18 @@ const CRF: &str = "23";
 /// Decoders ffmpeg may open: what phones, cameras and screen recorders write.
 const DECODERS: &str = "h264,hevc,vp8,vp9,av1,libdav1d,prores,mpeg4,aac,mp3,mp3float,opus,libopus,\
      vorbis,flac,alac,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_f32le,ac3,eac3";
+/// Whether ffmpeg may decode `codec` here.
+pub fn decodable(codec: &str) -> bool {
+    DECODERS.split(',').any(|d| d == codec)
+}
+
+/// Whether MP4 holds a video of `codec`, so the original can be remuxed into
+/// it as recorded. One that does not (VP8, Theora, ProRes) keeps only its
+/// playback copy.
+pub fn fits_mp4(codec: &str) -> bool {
+    matches!(codec, "h264" | "hevc" | "av1" | "vp9" | "mpeg4")
+}
+
 /// Tone mapping from PQ or HLG to SDR, before the playback copy's own format:
 /// to linear light, to BT.709 primaries, Hable's curve, back to BT.709.
 const TONEMAP: &str = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
@@ -152,22 +152,25 @@ impl Tools {
         mut stop: watch::Receiver<bool>,
         mut progress: Option<&mut (dyn FnMut(f64) + Send)>,
     ) -> Result<Vec<u8>, String> {
-        let mut child = command(program)
-            .args(&args)
+        let mut cmd = command(program);
+        cmd.args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        // Serving comes first: the priority is lowered in the child before it
+        // runs ffmpeg, so every thread ffmpeg starts has it too.
+        // SAFETY: the closure runs between fork and exec, where only
+        // async-signal-safe calls are allowed; setpriority is a system call
+        // and allocates nothing.
+        unsafe {
+            cmd.pre_exec(|| {
+                rustix::process::setpriority_process(None, 10).map_err(std::io::Error::from)
+            });
+        }
+        let mut child = cmd
             .spawn()
             .map_err(|e| format!("starting {}: {e}", program.display()))?;
-        // Serving comes first. Threads ffmpeg starts later take this from
-        // the one that starts them.
-        if let Some(pid) = child
-            .id()
-            .and_then(|id| rustix::process::Pid::from_raw(id as i32))
-        {
-            let _ = rustix::process::setpriority_process(Some(pid), 10);
-        }
         let mut stdout = child.stdout.take().expect("piped");
         let mut stderr = child.stderr.take().expect("piped");
         let errors = tokio::spawn(async move {
@@ -234,9 +237,7 @@ impl Tools {
         }
     }
 
-    /// What `path`, a `container`, holds. Sound in a codec ffmpeg may not
-    /// decode here is left out, as if there were none, rather than failing
-    /// the whole video.
+    /// What `path`, a `container`, holds.
     pub async fn probe(&self, container: Container, path: &Path) -> Result<Probe, String> {
         let mut args: Vec<OsString> = ["-hide_banner", "-v", "error"]
             .iter()
@@ -258,36 +259,41 @@ impl Tools {
                 None,
             )
             .await?;
-        let mut probe = Probe::parse(&out)?;
-        if probe
-            .audio
-            .as_ref()
-            .is_some_and(|a| !DECODERS.split(',').any(|d| d == a.codec))
-        {
-            probe.audio = None;
-        }
-        Ok(probe)
+        Probe::parse(&out)
     }
 
+    /// What every ffmpeg run starts with: no questions, errors only, and its
+    /// filters held to its thread count, which is otherwise the machine's
+    /// (a pod's CPU limit is not what ffmpeg counts).
     fn ffmpeg_args(&self) -> Vec<OsString> {
-        ["-nostdin", "-hide_banner", "-v", "error", "-y"]
+        let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-v", "error", "-y"]
             .iter()
             .map(Into::into)
-            .collect()
+            .collect();
+        args.extend(["-filter_threads".into(), self.threads.to_string().into()]);
+        args
+    }
+
+    /// An input's decoding held to the thread count.
+    fn threads(&self) -> [OsString; 2] {
+        ["-threads".into(), self.threads.to_string().into()]
     }
 
     /// The original as MP4, without metadata: streams copied, or failing
     /// that (audio MP4 cannot hold, such as Vorbis) with the audio as AAC.
-    /// False when MP4 cannot hold the video itself.
-    async fn remux(
+    /// The video's codec is one MP4 holds ([`fits_mp4`]); `size` is the
+    /// file's, which the time limit allows for at a slow disk's pace.
+    pub async fn remux(
         &self,
         container: Container,
         probe: &Probe,
         from: &Path,
         to: &Path,
+        size: u64,
         stop: &watch::Receiver<bool>,
-    ) -> Result<bool, String> {
-        let limit = Duration::from_secs(600);
+    ) -> Result<(), String> {
+        let limit = Duration::from_secs(600) + Duration::from_secs(size / (2 << 20));
+        let mut failure = String::new();
         for audio_copy in [true, false] {
             if !audio_copy && probe.audio.is_none() {
                 break;
@@ -316,17 +322,20 @@ impl Tools {
                 .run(&self.ffmpeg, args, limit, stop.clone(), None)
                 .await
             {
-                Ok(_) => return Ok(true),
+                Ok(_) => return Ok(()),
                 Err(e) if e == "stopped" => return Err(e),
-                Err(e) => tracing::info!(error = %e, audio_copy, "remuxing into MP4 failed"),
+                Err(e) => {
+                    tracing::info!(error = %e, audio_copy, "remuxing into MP4 failed");
+                    failure = e;
+                }
             }
         }
-        Ok(false)
+        Err(failure)
     }
 
     /// A copy every browser plays: H.264 at most [`PLAY_MAX`] long, 8-bit
     /// 4:2:0 SDR, at most 60 frames a second, with stereo AAC.
-    async fn transcode(
+    pub async fn transcode(
         &self,
         container: Container,
         probe: &Probe,
@@ -335,16 +344,23 @@ impl Tools {
         stop: &watch::Receiver<bool>,
         progress: &mut (dyn FnMut(f64) + Send),
     ) -> Result<(), String> {
-        let threads = self.threads.to_string();
         let mut args = self.ffmpeg_args();
-        args.extend(["-threads".into(), threads.clone().into()]);
+        args.extend(self.threads());
         args.extend(Self::input(container).iter().map(Into::into));
         args.extend(["-i".into(), file(from)]);
         args.extend(probe.maps());
+        let hdr = probe.hdr();
+        let tonemap = hdr && self.zscale;
+        // Without zimg, HDR is at least converted to BT.709's matrix and
+        // labelled as SDR, rather than an 8-bit copy claiming to be HDR.
+        let matrix = if hdr && !tonemap {
+            ":out_color_matrix=bt709:out_range=tv"
+        } else {
+            ""
+        };
         let mut chain = vec![format!(
-            "scale=w='min({PLAY_MAX},iw)':h='min({PLAY_MAX},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
+            "scale=w='min({PLAY_MAX},iw)':h='min({PLAY_MAX},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2{matrix}"
         )];
-        let tonemap = probe.hdr() && self.zscale;
         if tonemap {
             chain.push(TONEMAP.into());
         }
@@ -366,7 +382,7 @@ impl Tools {
             .iter()
             .map(Into::into),
         );
-        if tonemap {
+        if hdr {
             args.extend(
                 [
                     "-colorspace",
@@ -389,7 +405,7 @@ impl Tools {
             };
             args.extend(a.iter().map(Into::into));
         }
-        args.extend(["-threads".into(), threads.into()]);
+        args.extend(self.threads());
         args.extend(["-progress", "pipe:1", "-nostats"].iter().map(Into::into));
         args.extend(probe.length());
         args.extend(clean_output().iter().map(Into::into));
@@ -404,13 +420,14 @@ impl Tools {
 
     /// A frame of `path`, an MP4 this made, as PNG: upright, since ffmpeg
     /// applies a video's rotation as it decodes.
-    async fn frame(
+    pub async fn frame(
         &self,
         path: &Path,
         at: f64,
         stop: &watch::Receiver<bool>,
     ) -> Result<Vec<u8>, String> {
         let mut args = self.ffmpeg_args();
+        args.extend(self.threads());
         args.extend(["-ss".into(), format!("{at:.3}").into()]);
         args.extend(Self::input(Container::Mp4).iter().map(Into::into));
         args.extend(["-i".into(), file(path)]);
@@ -607,10 +624,12 @@ impl Probe {
                     && s.width.unwrap_or(0) > 0
             })
             .ok_or("it has no video in it")?;
-        let audio = raw
-            .streams
-            .iter()
-            .find(|s| s.codec_type.as_deref() == Some("audio") && s.codec_name.is_some());
+        // The first sound ffmpeg may decode here: a track in a codec it may
+        // not (spatial audio beside a stereo one) is passed over.
+        let audio = raw.streams.iter().find(|s| {
+            s.codec_type.as_deref() == Some("audio")
+                && s.codec_name.as_deref().is_some_and(decodable)
+        });
         let duration = number(&raw.format.duration)
             .or_else(|| number(&video.duration))
             .filter(|d| d.is_finite() && *d > 0.0)
@@ -677,539 +696,6 @@ impl Probe {
     }
 }
 
-/// Why a video was not made: the file's fault, said to its owner, or this
-/// side's.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Problem {
-    Rejected(String),
-    Failed(String),
-    /// Deleted while it was made.
-    Stopped,
-}
-
-/// What [`Videos`] needs beyond the database and the store.
-pub struct Settings {
-    pub tools: Option<Tools>,
-    pub max_bytes: u64,
-    pub max_seconds: u64,
-    pub max_pixels: u64,
-}
-
-/// What a failed video records: its file could not be read, or something on
-/// this side failed. The pages word each.
-pub const FAILED_UNREADABLE: &str = "unreadable";
-pub const FAILED: &str = "failed";
-
-/// The video the worker is making.
-struct Making {
-    id: String,
-    owner: Arc<str>,
-    album: String,
-}
-
-/// Whether the worker should come back to a video.
-#[derive(Debug, PartialEq, Eq)]
-enum Again {
-    No,
-    Later,
-}
-
-/// How far along a video is, for the album showing it.
-#[derive(Debug, Clone)]
-pub struct Tick {
-    pub owner: Arc<str>,
-    pub album: String,
-    pub id: String,
-    /// Thousandths.
-    pub done: u16,
-}
-
-pub struct Videos {
-    settings: Settings,
-    db: Db,
-    store: Store,
-    /// Uploads being made into videos, by the video's id.
-    dir: PathBuf,
-    queue: mpsc::UnboundedSender<String>,
-    waiting: parking_lot::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
-    progress: parking_lot::Mutex<HashMap<String, u16>>,
-    ticks: broadcast::Sender<Tick>,
-    /// The video being made, and how to stop it.
-    current: parking_lot::Mutex<Option<(String, watch::Sender<bool>)>>,
-}
-
-impl Videos {
-    pub fn new(
-        db: Db,
-        store: Store,
-        state_dir: &Path,
-        settings: Settings,
-    ) -> std::io::Result<Self> {
-        let dir = state_dir.join("videos");
-        std::fs::create_dir_all(&dir)?;
-        let (queue, waiting) = mpsc::unbounded_channel();
-        Ok(Self {
-            settings,
-            db,
-            store,
-            dir,
-            queue,
-            waiting: parking_lot::Mutex::new(Some(waiting)),
-            progress: Default::default(),
-            ticks: broadcast::channel(256).0,
-            current: Default::default(),
-        })
-    }
-
-    pub fn enabled(&self) -> bool {
-        self.settings.tools.is_some()
-    }
-
-    pub fn max_bytes(&self) -> u64 {
-        self.settings.max_bytes
-    }
-
-    /// Thousandths done of video `id`, while it is being made.
-    pub fn progress(&self, id: &str) -> Option<u16> {
-        self.progress.lock().get(id).copied()
-    }
-
-    pub fn ticks(&self) -> broadcast::Receiver<Tick> {
-        self.ticks.subscribe()
-    }
-
-    /// Where an upload waits to be made into video `id`. Ids are checked by
-    /// [`crate::id`], so this names nothing outside the directory.
-    fn source(&self, id: &str) -> PathBuf {
-        self.dir.join(id)
-    }
-
-    fn work(&self, id: &str) -> PathBuf {
-        self.dir.join(format!("{id}.work"))
-    }
-
-    /// Probe an upload that is a `container`, and say what video it makes,
-    /// or why it makes none. Nothing changes.
-    pub async fn check(
-        &self,
-        container: Container,
-        path: &Path,
-        size: u64,
-    ) -> Result<NewVideo, Problem> {
-        let tools = self
-            .settings
-            .tools
-            .as_ref()
-            .ok_or_else(|| Problem::Rejected("this server doesn't take videos".into()))?;
-        if size > self.settings.max_bytes {
-            return Err(Problem::Rejected(format!(
-                "{} is over the {} limit for a video",
-                crate::web::human(size),
-                crate::web::human(self.settings.max_bytes)
-            )));
-        }
-        let probe = tools.probe(container, path).await.map_err(|e| {
-            tracing::info!(error = %e, "ffprobe could not read an upload");
-            Problem::Rejected("the video can't be read: it may be damaged".into())
-        })?;
-        if probe.duration > self.settings.max_seconds as f64 {
-            return Err(Problem::Rejected(format!(
-                "it runs {}; the limit is {}",
-                clock(probe.duration),
-                clock(self.settings.max_seconds as f64)
-            )));
-        }
-        let (width, height) = probe.shown();
-        let pixels = u64::from(width) * u64::from(height);
-        if pixels == 0 || pixels > self.settings.max_pixels {
-            return Err(Problem::Rejected(format!(
-                "{width}×{height} is larger than this server takes"
-            )));
-        }
-        if !DECODERS.split(',').any(|d| d == probe.video.codec) {
-            return Err(Problem::Rejected(format!(
-                "its video is {}, which dither can't read",
-                probe.video.codec
-            )));
-        }
-        Ok(NewVideo {
-            id: crate::id::new(),
-            width,
-            height,
-            duration_ms: (probe.duration * 1000.0).round() as u64,
-            audio: probe.audio.is_some(),
-            bytes: size,
-        })
-    }
-
-    /// Move an upload's file to where video `id` is made from.
-    pub async fn take(&self, from: &Path, id: &str) -> std::io::Result<()> {
-        tokio::fs::rename(from, self.source(id)).await
-    }
-
-    /// Put it back, when the video's row could not be added.
-    pub async fn give_back(&self, id: &str, to: &Path) {
-        if let Err(e) = tokio::fs::rename(self.source(id), to).await {
-            tracing::warn!(video = id, error = %e, "returning an upload's file failed");
-        }
-    }
-
-    /// Make video `id` when the worker reaches it.
-    pub fn enqueue(&self, id: String) {
-        let _ = self.queue.send(id);
-    }
-
-    /// Stop making any of `ids`: they were deleted.
-    pub fn cancel(&self, ids: &[String]) {
-        if let Some((id, stop)) = self.current.lock().as_ref()
-            && ids.contains(id)
-        {
-            let _ = stop.send(true);
-        }
-    }
-
-    /// Start the worker, first with the videos a restart interrupted.
-    pub fn start(self: &Arc<Self>) {
-        let Some(mut waiting) = self.waiting.lock().take() else {
-            return;
-        };
-        let this = self.clone();
-        // Without ffmpeg, videos waiting to be made wait on, their uploads
-        // kept, for a start that has it.
-        if !self.enabled() {
-            tokio::spawn(async move {
-                if let Ok(videos) = this.db.processing().await
-                    && !videos.is_empty()
-                {
-                    tracing::warn!(
-                        count = videos.len(),
-                        "videos wait to be made, and ffmpeg is off"
-                    );
-                }
-            });
-            return;
-        }
-        tokio::spawn(async move {
-            match this.db.processing().await {
-                Ok(videos) => {
-                    if !videos.is_empty() {
-                        tracing::info!(count = videos.len(), "resuming videos");
-                    }
-                    for (image, _) in videos {
-                        this.enqueue(image.id);
-                    }
-                }
-                Err(e) => tracing::error!(error = %e, "listing videos to resume failed"),
-            }
-            while let Some(id) = waiting.recv().await {
-                if this.make(&id).await == Again::Later {
-                    // The database could not be asked or told: try again
-                    // once whatever held it has let go.
-                    let queue = this.queue.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(Duration::from_secs(30)).await;
-                        let _ = queue.send(id);
-                    });
-                }
-            }
-        });
-    }
-
-    fn tick(&self, video: &Making, done: u16) {
-        let mut progress = self.progress.lock();
-        if progress.get(&video.id) == Some(&done) {
-            return;
-        }
-        progress.insert(video.id.clone(), done);
-        let _ = self.ticks.send(Tick {
-            owner: video.owner.clone(),
-            album: video.album.clone(),
-            id: video.id.clone(),
-            done,
-        });
-    }
-
-    /// Make video `id`'s copies and mark it ready, or failed with why.
-    async fn make(&self, id: &str) -> Again {
-        let (image, album) = match self.db.image(id).await {
-            Ok(Some(found)) => found,
-            // Deleted while it waited its turn.
-            Ok(None) => {
-                let _ = tokio::fs::remove_file(self.source(id)).await;
-                return Again::No;
-            }
-            Err(e) => {
-                tracing::warn!(video = id, error = %e, "reading a video to make failed");
-                return Again::Later;
-            }
-        };
-        if image.status != Status::Processing {
-            let _ = tokio::fs::remove_file(self.source(id)).await;
-            return Again::No;
-        }
-        let video = Making {
-            id: id.to_string(),
-            owner: album.owner.as_str().into(),
-            album: album.id,
-        };
-        let owner = video.owner.clone();
-        let started = Instant::now();
-        let (stop, stopped) = watch::channel(false);
-        *self.current.lock() = Some((id.to_string(), stop));
-        self.tick(&video, 0);
-        let outcome = self.copies(&image, &video, stopped).await;
-        *self.current.lock() = None;
-        let _ = tokio::fs::remove_dir_all(self.work(id)).await;
-        let ok = match outcome {
-            Ok(made) => match self.db.finish_video(&owner, id, made).await {
-                Ok(true) => {
-                    let _ = tokio::fs::remove_file(self.source(id)).await;
-                    tracing::info!(video = id, secs = started.elapsed().as_secs(), "video made");
-                    true
-                }
-                // Deleted while it was made.
-                Ok(false) => {
-                    let _ = tokio::fs::remove_file(self.source(id)).await;
-                    store::discard(&self.store, &self.db, vec![id.to_string()]).await;
-                    false
-                }
-                Err(e) => {
-                    // Still processing, with its upload kept: made again.
-                    tracing::error!(video = id, error = %e, "recording a video failed");
-                    self.progress.lock().remove(id);
-                    return Again::Later;
-                }
-            },
-            Err(Problem::Stopped) => {
-                let _ = tokio::fs::remove_file(self.source(id)).await;
-                store::discard(&self.store, &self.db, vec![id.to_string()]).await;
-                false
-            }
-            Err(problem) => {
-                // Recorded as a key the pages word, not as words.
-                let why = match problem {
-                    Problem::Rejected(why) => {
-                        tracing::info!(video = id, reason = %why, "a video could not be read");
-                        FAILED_UNREADABLE
-                    }
-                    Problem::Stopped => unreachable!("matched above"),
-                    Problem::Failed(why) => {
-                        tracing::error!(video = id, error = %why, "making a video failed");
-                        FAILED
-                    }
-                };
-                let _ = tokio::fs::remove_file(self.source(id)).await;
-                store::discard(&self.store, &self.db, vec![id.to_string()]).await;
-                if let Err(e) = self.db.fail_video(&owner, id, why).await {
-                    tracing::warn!(video = id, error = %e, "recording a failed video failed");
-                }
-                false
-            }
-        };
-        crate::metrics::video(ok, started.elapsed());
-        self.progress.lock().remove(id);
-        Again::No
-    }
-
-    async fn copies(
-        &self,
-        image: &crate::db::Image,
-        video: &Making,
-        stop: watch::Receiver<bool>,
-    ) -> Result<MadeVideo, Problem> {
-        let failed = |what: &str| {
-            let what = what.to_string();
-            move |e: String| {
-                if e == "stopped" {
-                    Problem::Stopped
-                } else {
-                    Problem::Failed(format!("{what}: {e}"))
-                }
-            }
-        };
-        let tools = self
-            .settings
-            .tools
-            .as_ref()
-            .ok_or_else(|| Problem::Failed("videos are off".into()))?;
-        let id = image.id.as_str();
-        let source = self.source(id);
-        if !tokio::fs::try_exists(&source).await.unwrap_or(false) {
-            return Err(Problem::Failed(
-                "its upload was lost before it was processed".into(),
-            ));
-        }
-        let work = self.work(id);
-        let _ = tokio::fs::remove_dir_all(&work).await;
-        tokio::fs::create_dir_all(&work)
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?;
-        let mut head = Vec::new();
-        tokio::fs::File::open(&source)
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?
-            .take(16)
-            .read_to_end(&mut head)
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?;
-        let container = crate::sanitize::sniff_video(&head)
-            .ok_or_else(|| Problem::Failed("its upload is no longer a video".into()))?;
-
-        let probe = tools
-            .probe(container, &source)
-            .await
-            .map_err(|_| Problem::Rejected("the video can't be read: it may be damaged".into()))?;
-        let playable = probe.playable();
-        let original = work.join("original.mp4");
-        let remuxed = tools
-            .remux(container, &probe, &source, &original, &stop)
-            .await
-            .map_err(failed("remuxing"))?;
-        let span = if playable && remuxed { 900.0 } else { 100.0 };
-        self.tick(video, span as u16);
-
-        let play = work.join("play.mp4");
-        let transcoded = !playable || !remuxed;
-        if transcoded {
-            let duration = probe.duration;
-            let mut report = |secs: f64| {
-                let share = (secs / duration).clamp(0.0, 1.0);
-                self.tick(video, (100.0 + share * 850.0) as u16);
-            };
-            tools
-                .transcode(container, &probe, &source, &play, &stop, &mut report)
-                .await
-                .map_err(failed("transcoding"))?;
-        }
-        // MP4 could not hold the original's video: the playback copy is the
-        // only copy.
-        let (original, display) = match (remuxed, transcoded) {
-            (true, true) => (original, Some(play)),
-            (true, false) => (original, None),
-            (false, _) => (play, None),
-        };
-        let playback = display.as_deref().unwrap_or(&original);
-
-        let at = (probe.duration / 3.0).min(1.0);
-        let png = tools
-            .frame(playback, at, &stop)
-            .await
-            .map_err(failed("taking a frame"))?;
-        let max = self.settings.max_pixels;
-        let still = tokio::task::spawn_blocking(move || crate::media::process(&png, max))
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?
-            .map_err(|e| Problem::Failed(format!("the frame: {e}")))?;
-        self.tick(video, 960);
-
-        let (bytes, sha256) = digest(&original)
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?;
-        let stored = async {
-            self.db.add_stray(id).await?;
-            self.store
-                .put_file(&store::key(Variant::Original, id), &original)
-                .await?;
-            if let Some(display) = &display {
-                self.store
-                    .put_file(&store::key(Variant::Display, id), display)
-                    .await?;
-            }
-            self.store
-                .put(&store::key(Variant::Thumb, id), Bytes::from(still.thumb))
-                .await?;
-            self.store
-                .put(
-                    &store::key(Variant::Preview, id),
-                    Bytes::from(still.preview),
-                )
-                .await?;
-            Ok::<_, anyhow::Error>(())
-        };
-        stored
-            .await
-            .map_err(|e| Problem::Failed(format!("storing: {e:#}")))?;
-        self.tick(video, 1000);
-        // The playback copy standing in for the original has its own size.
-        let (width, height) = if remuxed {
-            probe.shown()
-        } else {
-            tools
-                .probe(Container::Mp4, &original)
-                .await
-                .map_or(probe.shown(), |p| p.shown())
-        };
-        Ok(MadeVideo {
-            width,
-            height,
-            duration_ms: (probe.duration * 1000.0).round() as u64,
-            audio: probe.audio.is_some(),
-            bytes,
-            display: display.is_some(),
-            sha256,
-        })
-    }
-}
-
-impl Videos {
-    /// Remove what a video left in the directory once it is no longer being
-    /// made: a crash between finishing and tidying, or a row deleted while
-    /// its file waited. A day's grace, as uploads get.
-    pub async fn sweep(&self) {
-        let Ok(mut entries) = tokio::fs::read_dir(&self.dir).await else {
-            return;
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let id = name.strip_suffix(".work").unwrap_or(&name);
-            let stale = entry
-                .metadata()
-                .await
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > Duration::from_secs(24 * 3600));
-            let making = self.current.lock().as_ref().is_some_and(|(c, _)| c == id);
-            if !stale || making {
-                continue;
-            }
-            let keep = match self.db.image(id).await {
-                Ok(Some((image, _))) => image.status == Status::Processing,
-                Ok(None) => false,
-                Err(_) => true,
-            };
-            if !keep {
-                let path = entry.path();
-                let _ = tokio::fs::remove_dir_all(&path).await;
-                let _ = tokio::fs::remove_file(&path).await;
-            }
-        }
-    }
-}
-
-/// The size and SHA-256 of the file at `path`, read in pieces.
-async fn digest(path: &Path) -> std::io::Result<(u64, Vec<u8>)> {
-    use sha2::Digest as _;
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read as _;
-        let mut file = std::fs::File::open(path)?;
-        let mut hash = sha2::Sha256::new();
-        let mut buf = vec![0u8; 1 << 20];
-        let mut n = 0u64;
-        loop {
-            let read = file.read(&mut buf)?;
-            if read == 0 {
-                break;
-            }
-            hash.update(&buf[..read]);
-            n += read as u64;
-        }
-        Ok((n, hash.finalize().to_vec()))
-    })
-    .await?
-}
-
 /// Seconds as a clock reads them: `0:42`, `1:02:03`.
 pub fn clock(seconds: f64) -> String {
     let s = seconds.max(0.0).round() as u64;
@@ -1224,6 +710,7 @@ pub fn clock(seconds: f64) -> String {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use std::time::Instant;
 
     /// The tools, or `None` where ffmpeg is not installed, and the test
     /// returns early. CI sets `DITHER_REQUIRE_FFMPEG`, where a missing
@@ -1366,12 +853,10 @@ pub mod tests {
         );
         let probe = tools.probe(Container::Mp4, &phone).await.unwrap();
         let out = dir.path().join("original.mp4");
-        assert!(
-            tools
-                .remux(Container::Mp4, &probe, &phone, &out, &never())
-                .await
-                .unwrap()
-        );
+        tools
+            .remux(Container::Mp4, &probe, &phone, &out, 0, &never())
+            .await
+            .unwrap();
         let after = report(&out);
         for gone in ["51.5072", "ISO6709", "Apple", "timecode", "tmcd"] {
             assert!(!after.contains(gone), "{gone} survived: {after}");
@@ -1433,13 +918,11 @@ pub mod tests {
         let probe = tools.probe(Container::Matroska, &webm).await.unwrap();
         assert!(!probe.playable());
         let original = dir.path().join("original.mp4");
-        assert!(
-            tools
-                .remux(Container::Matroska, &probe, &webm, &original, &never())
-                .await
-                .unwrap(),
-            "VP9 and Opus fit in MP4"
-        );
+        assert!(fits_mp4(&probe.video.codec));
+        tools
+            .remux(Container::Matroska, &probe, &webm, &original, 0, &never())
+            .await
+            .expect("VP9 and Opus fit in MP4");
         let out = dir.path().join("play.mp4");
         tools
             .transcode(

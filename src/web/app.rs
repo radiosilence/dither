@@ -63,11 +63,8 @@ async fn shell(state: &AppState, session: &Session) -> Shell {
             .flatten()
             .unwrap_or_else(|| session.sub.clone()),
         max_upload: state.config.max_upload_bytes,
-        max_video: state
-            .uploads
-            .videos
-            .enabled()
-            .then(|| state.uploads.videos.max_bytes()),
+        max_video: (state.config.video.mode != crate::config::VideoMode::Off)
+            .then_some(state.config.video.max_bytes),
         chunk: CHUNK,
     }
 }
@@ -173,13 +170,13 @@ struct Tile {
 }
 
 impl Tile {
-    fn new(i: &Image, videos: &crate::video::Videos) -> Self {
+    fn new(i: &Image, jobs: &crate::jobs::Hub) -> Self {
         Self {
             id: i.id.clone(),
             thumb: format!("/t/{}.webp", i.id),
             animated: i.animated,
             length: i.is_video().then(|| crate::video::clock(i.seconds())),
-            progress: (i.status == Status::Processing).then(|| videos.progress(&i.id).unwrap_or(0)),
+            progress: (i.status == Status::Processing).then(|| jobs.progress(&i.id).unwrap_or(0)),
             failure: (i.status == Status::Failed).then(|| i.failure.clone()),
             captioned: !i.caption.is_empty(),
             label: if i.caption.is_empty() {
@@ -300,7 +297,7 @@ pub async fn album(
     Path(id): Path<String>,
 ) -> AppResult<Html<String>> {
     let album = owned(&state, &session, &id).await?;
-    let (grid, summary) = album_parts(&state, &album).await?;
+    let (grid, summary, _) = album_parts(&state, &album).await?;
     Ok(Html(render(&AlbumPage {
         shell: shell(&state, &session).await,
         share: format!("{}/a/{}", state.config.public_url, album.id),
@@ -313,8 +310,12 @@ pub async fn album(
     })?))
 }
 
-/// An album page's live parts: the grid of images and the line counting them.
-async fn album_parts(state: &AppState, album: &crate::db::Album) -> AppResult<(String, String)> {
+/// An album page's live parts: the grid of images and the line counting them,
+/// and the images' ids.
+async fn album_parts(
+    state: &AppState,
+    album: &crate::db::Album,
+) -> AppResult<(String, String, Vec<String>)> {
     let images = state.db.images(&album.id).await?;
     let cover = album
         .cover
@@ -326,7 +327,7 @@ async fn album_parts(state: &AppState, album: &crate::db::Album) -> AppResult<(S
         cover,
         tiles: images
             .iter()
-            .map(|i| Tile::new(i, &state.uploads.videos))
+            .map(|i| Tile::new(i, &state.uploads.jobs))
             .collect(),
     })?;
     let bytes: u64 = images.iter().map(|i| i.bytes).sum();
@@ -334,7 +335,7 @@ async fn album_parts(state: &AppState, album: &crate::db::Album) -> AppResult<(S
         count: images.len() as u64,
         size: (bytes > 0).then(|| human(bytes)),
     })?;
-    Ok((grid, summary))
+    Ok((grid, summary, images.into_iter().map(|i| i.id).collect()))
 }
 
 pub async fn album_meta(
@@ -406,7 +407,7 @@ pub async fn delete_album(
         .await?
         .ok_or(AppError::NotFound)?;
     let count = images.len();
-    state.uploads.videos.cancel(&images);
+    state.uploads.jobs.forget(&images).await;
     crate::store::discard(&state.store, &state.db, images).await;
     tracing::info!(album = %id, images = count, "album deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -469,7 +470,7 @@ pub async fn delete_images(
 ) -> AppResult<Json<serde_json::Value>> {
     let deleted = state.db.delete_images(&session.sub, body.ids).await?;
     let count = deleted.len();
-    state.uploads.videos.cancel(&deleted);
+    state.uploads.jobs.forget(&deleted).await;
     crate::store::discard(&state.store, &state.db, deleted).await;
     Ok(Json(serde_json::json!({ "deleted": count })))
 }
@@ -578,7 +579,7 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
             .is_video()
             .then(|| crate::video::clock(image.seconds())),
         progress: (image.status == Status::Processing)
-            .then(|| state.uploads.videos.progress(&image.id).unwrap_or(0)),
+            .then(|| state.uploads.jobs.progress(&image.id).unwrap_or(0)),
         failure: (image.status == Status::Failed).then(|| image.failure.clone()),
         id: image.id,
     })
@@ -601,15 +602,20 @@ pub async fn stream(
 ) -> Response {
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     let mut changes = state.db.changes();
-    let mut ticks = state.uploads.videos.ticks();
+    let mut ticks = state.uploads.jobs.ticks();
     let me: std::sync::Arc<str> = session.sub.as_str().into();
     let mut stopping = state.stopping.clone();
     let events = async_stream::stream! {
         let mut sent: HashMap<&'static str, String> = HashMap::new();
+        // The album's images as last drawn: progress is sent for these.
+        let mut shown = std::collections::HashSet::new();
         loop {
             let parts = match &q.album {
                 Some(id) => match owned(&state, &session, id).await {
-                    Ok(album) => album_parts(&state, &album).await.map(|(g, s)| vec![("grid", g), ("summary", s)]),
+                    Ok(album) => album_parts(&state, &album).await.map(|(g, s, ids)| {
+                        shown = ids.into_iter().collect();
+                        vec![("grid", g), ("summary", s)]
+                    }),
                     // Only a missing album ends the stream. A database that
                     // could not answer (a long write holding the lock) is
                     // logged below and asked again on the next write.
@@ -649,7 +655,7 @@ pub async fn stream(
                 };
                 if let Ok(tick) = tick
                     && tick.owner == me
-                    && q.album.as_deref() == Some(tick.album.as_str())
+                    && shown.contains(&tick.id)
                 {
                     yield Ok(patch(&format!(
                         "<progress id=\"vp-{}\" class=\"meter\" max=\"1000\" value=\"{}\"></progress>",

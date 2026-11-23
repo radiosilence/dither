@@ -101,10 +101,10 @@ pub async fn begin(
             format!("send between 1 and {BATCH_MAX} files at a time"),
         );
     }
-    let videos = &state.uploads.videos;
+    let videos = state.config.video.mode != crate::config::VideoMode::Off;
     let max = |f: &File| {
-        if videos.enabled() && f.video() {
-            videos.max_bytes()
+        if videos && f.video() {
+            state.config.video.max_bytes
         } else {
             state.config.max_upload_bytes
         }

@@ -82,9 +82,33 @@ export type DitherArgs = {
   /** The longest video taken, in seconds (30 minutes by default). */
   maxVideoSeconds?: number;
   video?: boolean;
+  /** The web container's resources. It decodes nothing, so needs little beyond its cache. */
   limits?: { cpu: string; memory: string };
   requests?: { cpu: string; memory: string };
+  /** The worker container's: the processing budget (1 GiB by default) and one ffmpeg beside it. */
+  workerLimits?: { cpu: string; memory: string };
+  workerRequests?: { cpu: string; memory: string };
 };
+
+/**
+ * The worker's environment, apart from the bucket's keys: the store and the
+ * limits it processes to, and none of the sign-in. Exported for its test.
+ */
+export function workerEnvironment(args: DitherArgs) {
+  return [
+    { name: "STATE_DIR", value: "/data/state" },
+    { name: "STORAGE", value: args.bucket ? args.bucket.url : "file:///data/objects" },
+    ...(args.bucket
+      ? [
+          { name: "AWS_ENDPOINT", value: args.bucket.endpoint },
+          { name: "AWS_REGION", value: args.bucket.region ?? "auto" },
+        ]
+      : []),
+    ...(args.video === false ? [{ name: "VIDEO", value: "off" }] : []),
+    ...(args.maxVideoSeconds ? [{ name: "MAX_VIDEO_SECONDS", value: String(args.maxVideoSeconds) }] : []),
+    { name: "RUST_LOG", value: "info" },
+  ];
+}
 
 /** The container's environment, apart from the secrets. Exported for its test. */
 export function environment(args: DitherArgs) {
@@ -243,14 +267,42 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
                   initialDelaySeconds: 10,
                   periodSeconds: 30,
                 },
-                // Processing is what takes memory: the service holds images
-                // to a budget (1 GiB by default), and makes one video at a
-                // time in an ffmpeg of a few hundred megabytes, which this
-                // limit allows beside the image cache. ffmpeg runs two
-                // threads at a lower priority, within the same CPU limit.
+                // The web process decodes nothing: its memory is the image
+                // cache (256 MiB by default) and requests.
                 resources: {
-                  limits: args.limits ?? { cpu: "2", memory: "2Gi" },
+                  limits: args.limits ?? { cpu: "1", memory: "512Mi" },
                   requests: args.requests ?? { cpu: "10m", memory: "64Mi" },
+                },
+                securityContext: {
+                  allowPrivilegeEscalation: false,
+                  readOnlyRootFilesystem: true,
+                  capabilities: { drop: ["ALL"] },
+                },
+                volumeMounts: [{ name: "state", mountPath: "/data" }],
+              },
+              // Makes uploads into images and videos, from the queue in the
+              // shared database, told what to do over a socket in the state
+              // directory. It holds the store's keys but not the sign-in
+              // secret, and its own limits bound what processing can take:
+              // the budget pictures are made under (1 GiB by default) and
+              // one ffmpeg of a few hundred megabytes on two threads.
+              {
+                name: "worker",
+                image: VERSIONS.dither,
+                imagePullPolicy: "IfNotPresent",
+                args: ["worker"],
+                env: [
+                  ...workerEnvironment(args),
+                  ...(args.bucket
+                    ? [
+                        { name: "AWS_ACCESS_KEY_ID", ...secretRef("s3-access-key-id") },
+                        { name: "AWS_SECRET_ACCESS_KEY", ...secretRef("s3-secret-access-key") },
+                      ]
+                    : []),
+                ],
+                resources: {
+                  limits: args.workerLimits ?? { cpu: "2", memory: "2Gi" },
+                  requests: args.workerRequests ?? { cpu: "10m", memory: "64Mi" },
                 },
                 securityContext: {
                   allowPrivilegeEscalation: false,

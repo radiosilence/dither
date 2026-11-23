@@ -36,6 +36,14 @@ pub struct Video {
     pub threads: u32,
 }
 
+/// How many jobs a worker makes at once.
+pub struct Workers {
+    /// Pictures, each also held to the memory budget.
+    pub pictures: usize,
+    /// Videos, each an ffmpeg of a few hundred megabytes on `Video::threads`.
+    pub videos: usize,
+}
+
 pub struct Config {
     pub bind_addr: String,
     /// `/metrics`, on a port of its own so the scraper is let in without
@@ -65,6 +73,7 @@ pub struct Config {
     /// machine depends on. Unset, each disk keeps 15% of its size free.
     pub min_free_bytes: Option<u64>,
     pub video: Video,
+    pub workers: Workers,
 }
 
 fn var(key: &str) -> Option<String> {
@@ -95,7 +104,18 @@ fn origin(key: &str, value: &str) -> Result<String> {
 }
 
 impl Config {
+    /// The web process's configuration: sign-in is required.
     pub fn from_env() -> Result<Self> {
+        Self::read(false)
+    }
+
+    /// A worker's: it serves nothing and signs nobody in, so needs neither
+    /// the provider nor its secret.
+    pub fn for_worker() -> Result<Self> {
+        Self::read(true)
+    }
+
+    fn read(worker: bool) -> Result<Self> {
         let oidc = match (
             var("OIDC_ISSUER"),
             var("OIDC_CLIENT_ID"),
@@ -110,7 +130,7 @@ impl Config {
                     client_secret,
                 })
             }
-            (None, None, None) if var("INSECURE_NO_AUTH").as_deref() == Some("1") => None,
+            (None, None, None) if worker || var("INSECURE_NO_AUTH").as_deref() == Some("1") => None,
             (None, None, None) => bail!(
                 "OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET are required (or INSECURE_NO_AUTH=1 for local development)"
             ),
@@ -118,6 +138,7 @@ impl Config {
         };
         let bind_addr = or("BIND_ADDR", "127.0.0.1:8080");
         if oidc.is_none()
+            && !worker
             && !bind_addr.starts_with("127.0.0.1:")
             && !bind_addr.starts_with("[::1]:")
         {
@@ -169,6 +190,10 @@ impl Config {
                 max_seconds: num("MAX_VIDEO_SECONDS", 1800)?,
                 threads: num::<u32>("VIDEO_THREADS", 2)?.max(1),
             },
+            workers: Workers {
+                pictures: num("PICTURE_WORKERS", 4)?,
+                videos: num("VIDEO_WORKERS", 1)?,
+            },
         })
     }
 
@@ -217,6 +242,10 @@ impl Config {
                 max_bytes: 64 << 20,
                 max_seconds: 600,
                 threads: 2,
+            },
+            workers: Workers {
+                pictures: 2,
+                videos: 1,
             },
         }
     }

@@ -299,6 +299,14 @@ document.addEventListener(
 {
   const grid = $("#grid");
   if (grid) new MutationObserver(paintSelection).observe(grid, { childList: true, subtree: true });
+  // A video the viewer shows while it is made is drawn again once it is
+  // made, or failed: its tile has lost its waiting state.
+  if (grid)
+    new MutationObserver(() => {
+      const waiting = $<HTMLElement>("#viewer[open] [data-progress-of]")?.dataset["progressOf"];
+      const tile = waiting ? $<HTMLElement>(`#i-${waiting}`) : null;
+      if (tile && !tile.querySelector("progress") && !body.classList.contains("selecting")) tile.click();
+    }).observe(grid, { childList: true, subtree: true });
   // A video's bar in the viewer follows its tile's, which the live stream moves.
   if (grid)
     new MutationObserver((records) => {

@@ -25,23 +25,30 @@ struct App {
     _dir: tempfile::TempDir,
 }
 
-async fn app_with(edit: impl FnOnce(&mut Config)) -> App {
+/// The service as it runs: the web process, and a worker beside it over the
+/// socket, sharing the state directory and the store.
+async fn app_with(edit: impl Fn(&mut Config)) -> App {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::test(dir.path().join("state"));
-    edit(&mut config);
+    let config_for = |dir: &std::path::Path| {
+        let mut config = Config::test(dir.join("state"));
+        edit(&mut config);
+        config
+    };
+    let config = config_for(dir.path());
     std::fs::create_dir_all(&config.state_dir).unwrap();
     let store = Store::memory();
     let db = Db::open(&config.state_dir.join("dither.db")).await.unwrap();
-    let uploads = Arc::new(
-        Uploads::new(
-            db.clone(),
-            store.clone(),
-            &config,
-            crate::video::Tools::find(&config.video).await.unwrap(),
-        )
-        .unwrap(),
-    );
-    uploads.videos.start();
+    let jobs = Arc::new(crate::jobs::Hub::new(db.clone(), &config.state_dir).unwrap());
+    jobs.listen().unwrap();
+    let uploads = Arc::new(Uploads::new(db.clone(), store.clone(), &config, jobs).unwrap());
+    {
+        let (config, store) = (config_for(dir.path()), store.clone());
+        tokio::spawn(async move {
+            if let Err(e) = crate::worker::run(&config, store).await {
+                tracing::warn!(error = %e, "the test's worker stopped");
+            }
+        });
+    }
     let (stop, stopping) = tokio::sync::watch::channel(false);
     // Kept for the life of the test: a dropped sender reads as stopping.
     std::mem::forget(stop);
@@ -167,6 +174,22 @@ impl App {
     }
 
     async fn upload_to(&self, album: &str, files: &[&[u8]]) -> Vec<Reply> {
+        self.send_files(album, files, true).await
+    }
+
+    /// [`upload`](Self::upload), returning as soon as each file is queued.
+    async fn upload_queued(&self, files: &[&[u8]]) -> (String, Vec<Reply>) {
+        let album = self
+            .post("/api/albums", json!({ "title": "trip" }))
+            .await
+            .json()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (album.clone(), self.send_files(&album, files, false).await)
+    }
+
+    async fn send_files(&self, album: &str, files: &[&[u8]], wait: bool) -> Vec<Reply> {
         let batch = json!({ "files": files.iter().enumerate().map(|(n, f)| json!({ "name": format!("{n}.jpg"), "size": f.len() })).collect::<Vec<_>>() });
         let begun = self
             .post(&format!("/api/albums/{album}/uploads"), batch)
@@ -183,10 +206,16 @@ impl App {
                 let put = self.chunk(id, &file[start..end], start, file.len()).await;
                 assert_eq!(put.status, StatusCode::OK, "{}", put.text());
             }
-            out.push(
-                self.post(&format!("/api/uploads/{id}/finish"), json!({}))
-                    .await,
-            );
+            let finished = self
+                .post(&format!("/api/uploads/{id}/finish"), json!({}))
+                .await;
+            // Queued for the worker: most callers want what it made.
+            if let Some(image) = finished.json()["image"]["id"].as_str()
+                && wait
+            {
+                made(self, image).await;
+            }
+            out.push(finished);
         }
         out
     }
@@ -830,7 +859,7 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
     assert_eq!((image.width, image.height), (360, 640));
     assert!(image.display, "HEVC gets a playback copy");
     assert!(image.audio);
-    assert!(app.state.uploads.videos.progress(&id).is_none());
+    assert!(app.state.uploads.jobs.progress(&id).is_none());
 
     let whole = app
         .get_with(
@@ -933,7 +962,7 @@ async fn an_image_declared_a_video_is_still_held_to_the_image_limit() {
             json!({ "files": [{ "name": "a.mp4", "size": file.len(), "type": "video/mp4" }] }),
         )
         .await;
-    if !app.state.uploads.videos.enabled() {
+    if app.state.config.video.mode == crate::config::VideoMode::Off {
         assert_eq!(begun.status, StatusCode::PAYLOAD_TOO_LARGE);
         return;
     }
@@ -971,7 +1000,7 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
         &["-c:v", "mpeg4", "-q:v", "20", "-c:a", "aac"],
     );
     let file = std::fs::read(path).unwrap();
-    let (album, done) = app.upload(&[&file]).await;
+    let (album, done) = app.upload_queued(&[&file]).await;
     let id = image_id(&done[0]);
     // Grids and pages show its progress to its owner, and nothing to anyone else.
     assert_eq!(
@@ -979,7 +1008,7 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
         StatusCode::NOT_FOUND
     );
     assert!(!app.get(&format!("/a/{album}")).await.text().contains(&id));
-    let videos = &app.state.uploads.videos;
+    let videos = &app.state.uploads.jobs;
     for _ in 0..3000 {
         if videos.progress(&id).is_some_and(|p| p > 110) {
             break;
@@ -994,13 +1023,17 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
         .post("/images/delete", json!({ "ids": [id.clone()] }))
         .await;
     assert_eq!(gone.json()["deleted"], 1);
+    assert!(videos.progress(&id).is_none());
+    // The worker stops, and tidies what it was working in.
+    let jobs = crate::jobs::dir(&app.state.config.state_dir);
+    let left = || std::fs::read_dir(&jobs).unwrap().count();
     for _ in 0..1000 {
-        if videos.progress(&id).is_none() {
+        if left() == 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(videos.progress(&id).is_none(), "the worker let it go");
+    assert_eq!(left(), 0, "the worker let it go and tidied up");
     for v in [
         Variant::Original,
         Variant::Display,
@@ -1017,8 +1050,4 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
             "{v:?} was left behind"
         );
     }
-    let left: Vec<_> = std::fs::read_dir(app.state.config.state_dir.join("videos"))
-        .unwrap()
-        .collect();
-    assert!(left.is_empty(), "{left:?}");
 }

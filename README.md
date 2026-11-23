@@ -69,20 +69,16 @@ recorded. A frame of the playback copy becomes the thumbnail and the link
 preview, and a page's `og:video` names the playback copy, for the sites that
 play one inline.
 
-Transcoding takes minutes, so finishing a video's upload only probes it
-(ffprobe) and adds it to the album as processing; one worker then makes each
-video's copies in turn, showing its progress on the album page, and marks it
-ready, or failed with the reason. Until it is ready a video is its owner's
-alone. A restart resumes whatever was processing, and deleting a video stops
-its ffmpeg.
+The worker (see *Processing*) makes a video's copies, showing its progress
+on the album page, and marks it ready, or failed with the reason: unreadable,
+too long or too large. Until it is ready a video is its owner's alone.
 
 ffmpeg parses untrusted files, so it runs as a process of its own, with none
-of the service's environment (which holds its secrets): told the container
-it reads rather than left to probe, limited to the file protocol and to the
-decoders phones and cameras need, at a lower priority than
-serving, and with a time limit. Its memory is outside the image processing
-budget, which a transcode lasting minutes would otherwise hold up; one video
-at a time on `VIDEO_THREADS` threads keeps it to a few hundred megabytes.
+of the environment: told the container it reads rather than left to probe,
+limited to the file protocol and to the decoders phones and cameras need, on
+`VIDEO_THREADS` threads (filters included) at a lower priority, and with a
+time limit. A video whose codec MP4 cannot hold (VP8, Theora, ProRes) keeps
+only its playback copy.
 
 Every file is served with byte ranges, which seeking needs and Safari requires
 before it plays a video at all; video is never compressed again on the way
@@ -138,15 +134,40 @@ not the file. Chunks are small enough to arrive within Traefik's default
 60-second read timeout on a slow connection. A batch keeps the order its
 files were picked in, whatever order they finish in.
 
-Processing (cleaning, decoding, resizing, encoding) runs under a budget of
-memory (`PROCESS_MEMORY_BYTES`), which is what bounds what a batch of hundreds
-of photos can take. Each image's share is worked out from its header, read
-from the file's first few megabytes before the file is read whole, in bytes
-rather than pixels: a 16-bit PNG decodes to twice an 8-bit one's size, and a
-photo turning upright needs a second copy. An image that needs more than the
-whole budget is refused with the reason. Processing runs in a task the
+Finishing an upload checks what its first few megabytes can tell (what it
+is, how large, and for a picture its pixels and the memory it needs), so a
+file that will be refused is refused while its sender waits. Then it is
+queued: its image's row is added as processing, at once visible in the
+album, and its file moved to `STATE_DIR/jobs`. Finishing runs in a task the
 request only waits on, so a client that disconnects does not stop it, and
 asking again reads how it ended.
+
+### Processing
+
+A worker, `dither worker`, makes uploads' copies: the web process decodes
+nothing. In Kubernetes it is a second container in the pod, sharing the
+state directory and the store, holding the store's keys but not the sign-in
+secret, with its own resource limits. `just dev` runs one beside the server.
+
+The queue is the database. A worker claims a job with a lease it renews while
+it works, so a worker that stops leaves its jobs for the next once their
+leases lapse (a minute), and one stopped by a signal gives them back at
+once. A job that fails on this side is tried again later, three times; one
+whose file is at fault fails at once. Pictures are made several at a time
+(`PICTURE_WORKERS`) under a budget of memory (`PROCESS_MEMORY_BYTES`), each
+one's share worked out from its header in bytes rather than pixels: a 16-bit
+PNG decodes to twice an 8-bit one's size, and a photo turning upright needs a
+second copy. Videos are made one at a time (`VIDEO_WORKERS`).
+
+The two processes talk over a Unix socket in the state directory, a line of
+JSON each way: the web process says a job is waiting, so the worker need not
+poll, and that images were deleted, so a worker making one stops; the worker
+says how far along a job is, which the album page shows as it happens, and
+that a job ended, which redraws its owner's pages and prompts a copy of the
+database. A worker opens the database only once the web process listens,
+since the web process may first replace a database that is behind the
+store's copy, and stops when the web process goes away, to be started again
+with it.
 
 The database counts the bytes that arrived and the file on disk holds them.
 Where the two disagree (a disk restored without an upload's file, or a crash
@@ -249,12 +270,13 @@ startup.
 | `STATE_DIR` | `data/state` | The database and uploads in progress, on a local disk. |
 | `MIN_FREE_BYTES` | 15% of each disk | Uploads are refused below this much free space on a disk they write to. |
 | `MAX_UPLOAD_BYTES`, `MAX_PIXELS` | 64 000 000, 100 000 000 | Per image. |
-| `PROCESS_MEMORY_BYTES` | 1 GiB | Memory processing takes at once, across all uploads. An image that needs more alone is refused. |
+| `PROCESS_MEMORY_BYTES` | 1 GiB | Memory a worker's pictures take at once. A picture that needs more alone is refused when its upload finishes. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |
 | `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
-| `VIDEO_THREADS` | 2 | Threads a transcode uses, of the CPU serving shares. |
+| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. |
+| `PICTURE_WORKERS`, `VIDEO_WORKERS` | 4, 1 | Jobs a worker makes at once. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 
 ## Development

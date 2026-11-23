@@ -42,16 +42,27 @@ pub fn cache(hit: bool) {
     if hit { &CACHE_HITS } else { &CACHE_MISSES }.fetch_add(1, Relaxed);
 }
 
-pub fn uploaded(bytes: u64, took: std::time::Duration) {
-    UPLOADS.fetch_add(1, Relaxed);
-    UPLOAD_BYTES.fetch_add(bytes, Relaxed);
-    PROCESS_MS.fetch_add(took.as_millis() as u64, Relaxed);
-}
-
-/// A video made, or not, and how long it took.
-pub fn video(ok: bool, took: std::time::Duration) {
-    if ok { &VIDEOS } else { &VIDEO_FAILURES }.fetch_add(1, Relaxed);
-    VIDEO_MS.fetch_add(took.as_millis() as u64, Relaxed);
+/// A job a worker ended: made or not, a video or a picture, how long it
+/// took, and its original's size when made.
+pub fn processed(made: bool, video: bool, took: std::time::Duration, bytes: u64) {
+    let ms = took.as_millis() as u64;
+    match (made, video) {
+        (true, false) => {
+            UPLOADS.fetch_add(1, Relaxed);
+            UPLOAD_BYTES.fetch_add(bytes, Relaxed);
+            PROCESS_MS.fetch_add(ms, Relaxed);
+        }
+        (false, false) => {
+            REJECTED.fetch_add(1, Relaxed);
+        }
+        (made, true) => {
+            if made { &VIDEOS } else { &VIDEO_FAILURES }.fetch_add(1, Relaxed);
+            VIDEO_MS.fetch_add(ms, Relaxed);
+            if made {
+                UPLOAD_BYTES.fetch_add(bytes, Relaxed);
+            }
+        }
+    }
 }
 
 pub fn rejected() {

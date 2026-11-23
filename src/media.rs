@@ -35,7 +35,6 @@ pub const PREVIEW_BYTES: usize = 300_000;
 const PREVIEW_QUALITIES: [u8; 6] = [82, 72, 62, 50, 40, 30];
 
 pub struct Processed {
-    pub kind: Kind,
     /// As shown: after the orientation is applied.
     pub width: u32,
     pub height: u32,
@@ -135,7 +134,6 @@ pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
     );
     Ok(Processed {
         preview,
-        kind,
         width,
         height,
         animated: clean.animated,
@@ -409,7 +407,6 @@ mod tests {
     fn a_large_photo_gets_a_display_copy_and_a_thumbnail() {
         let p = process(&jpeg(3000, 2000), 100_000_000).unwrap();
         assert_eq!((p.width, p.height), (3000, 2000));
-        assert_eq!(p.kind, Kind::Jpeg);
         assert!(!p.animated);
         assert_eq!(
             dims(p.display.as_ref().expect("a display copy")),
@@ -514,7 +511,6 @@ mod tests {
             p.display.is_none(),
             "a display copy would stop the animation"
         );
-        assert_eq!(p.kind, Kind::Gif);
         assert_eq!(dims(&p.thumb), (1440, 24));
         let still = image::load_from_memory(&p.preview).unwrap();
         assert_eq!((still.width(), still.height()), (1200, 20));

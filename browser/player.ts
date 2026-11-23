@@ -378,11 +378,25 @@ function release(root: HTMLElement) {
   if (p.tap) clearTimeout(p.tap.timer);
   p.video.pause();
   players.delete(root);
+  // The system's media keys and lock screen must not play a player that is gone.
+  if (sounding === p && "mediaSession" in navigator) {
+    navigator.mediaSession.metadata = null;
+    for (const action of ["play", "pause", "seekbackward", "seekforward", "seekto"] as const) {
+      try {
+        navigator.mediaSession.setActionHandler(action, null);
+      } catch {}
+    }
+    sounding = null;
+  }
 }
+
+/** The player the system's media controls drive. */
+let sounding: Player | null = null;
 
 /** The system's media controls name what plays and drive it. */
 function session(p: Player) {
   if (!("mediaSession" in navigator) || p.looping) return;
+  sounding = p;
   const title = p.root.dataset["title"] ?? "";
   navigator.mediaSession.metadata = new MediaMetadata({ title });
   const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [

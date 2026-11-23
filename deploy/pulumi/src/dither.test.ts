@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { egress, environment } from "./dither.ts";
+import { egress, environment, workerEnvironment } from "./dither.ts";
 
 const base = {
   hostname: "dither.example",
@@ -38,6 +38,18 @@ describe("environment", () => {
     const e = env({ ...base, maxVideoBytes: 2e9, maxVideoSeconds: 600 });
     expect(e.MAX_VIDEO_BYTES).toBe("2000000000");
     expect(e.MAX_VIDEO_SECONDS).toBe("600");
+  });
+
+  it("gives the worker the store but none of the sign-in", () => {
+    const w = Object.fromEntries(
+      workerEnvironment({
+        ...base,
+        bucket: { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "a", secretAccessKey: "b" },
+      }).map((e) => [e.name, e.value]),
+    );
+    expect(w.STORAGE).toBe("s3://pics");
+    expect(w.AWS_ENDPOINT).toBe("https://r2.example");
+    expect(Object.keys(w).some((k) => k.startsWith("OIDC"))).toBe(false);
   });
 
   it("links to the public domain when there is one", () => {
