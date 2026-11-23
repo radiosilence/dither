@@ -9,11 +9,12 @@ pub enum Served {
     Original,
     Thumb,
     Display,
+    Preview,
     Page,
 }
 
-static SERVED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-static SERVED_BYTES: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+static SERVED: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static SERVED_BYTES: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
 static NOT_MODIFIED: AtomicU64 = AtomicU64::new(0);
 static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 static CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
@@ -72,8 +73,8 @@ pub fn render(t: &Totals) -> String {
             let _ = writeln!(out, "{name}{labels} {value}");
         }
     };
-    let by_kind = |values: &[AtomicU64; 4]| -> Vec<(String, u64)> {
-        ["original", "thumb", "display", "page"]
+    let by_kind = |values: &[AtomicU64; 5]| -> Vec<(String, u64)> {
+        ["original", "thumb", "display", "preview", "page"]
             .iter()
             .zip(values)
             .map(|(k, v)| (format!("{{kind=\"{k}\"}}"), v.load(Relaxed)))

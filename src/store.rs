@@ -6,6 +6,9 @@
 //! Keys are sharded by the id's first two characters, so a directory on disk
 //! never holds more than a few thousand entries.
 //!
+//! An image's copies are its original, a thumbnail, a display copy when it
+//! is large, and a link preview.
+//!
 //! Reads go through an in-memory cache weighted by size. Thumbnails are what a
 //! grid asks for a hundred at a time; originals are cached up to
 //! [`CACHE_ITEM_MAX`] and streamed past it, so one popular large GIF cannot
@@ -30,6 +33,8 @@ pub enum Variant {
     Original,
     Thumb,
     Display,
+    /// A link preview: a small JPEG.
+    Preview,
 }
 
 impl Variant {
@@ -38,6 +43,7 @@ impl Variant {
             Variant::Original => "o",
             Variant::Thumb => "t",
             Variant::Display => "d",
+            Variant::Preview => "p",
         }
     }
 }
@@ -217,7 +223,12 @@ impl Store {
     /// Every variant of image `id`. True when all are gone.
     pub async fn delete_image(&self, id: &str) -> bool {
         let mut gone = true;
-        for variant in [Variant::Original, Variant::Thumb, Variant::Display] {
+        for variant in [
+            Variant::Original,
+            Variant::Thumb,
+            Variant::Display,
+            Variant::Preview,
+        ] {
             if let Err(e) = self.delete(&key(variant, id)).await {
                 tracing::warn!(image = id, error = %e, "could not delete a stored copy; the sweep will retry");
                 gone = false;
@@ -309,6 +320,7 @@ mod tests {
         );
         assert_eq!(key(Variant::Thumb, "Zx9").as_ref(), "t/Zx/Zx9");
         assert_eq!(key(Variant::Display, "q").as_ref(), "d/q/q");
+        assert_eq!(key(Variant::Preview, "q").as_ref(), "p/q/q");
     }
 
     #[tokio::test]

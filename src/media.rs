@@ -1,6 +1,6 @@
 //! From uploaded bytes to what is stored: the original with its metadata
-//! removed, a thumbnail for grids, and a display copy for pictures too large to
-//! send whole to a phone.
+//! removed, a thumbnail for grids, a display copy for pictures too large to
+//! send whole to a phone, and a JPEG for link previews.
 //!
 //! Derived copies are lossy WebP: a third smaller than JPEG at the same
 //! quality, and they keep transparency. They carry the original's colour
@@ -25,6 +25,14 @@ pub const THUMB_LONG: u32 = 1440;
 pub const DISPLAY_MAX: u32 = 2048;
 const THUMB_QUALITY: f32 = 74.0;
 const DISPLAY_QUALITY: f32 = 82.0;
+/// A link preview's longer side: the width Facebook, Reddit and WhatsApp draw
+/// a large card at.
+pub const PREVIEW_MAX: u32 = 1200;
+/// What a link preview is held to. WhatsApp shows no picture for an
+/// `og:image` much larger than this, and says so nowhere.
+pub const PREVIEW_BYTES: usize = 300_000;
+/// Qualities tried in turn until a preview fits [`PREVIEW_BYTES`].
+const PREVIEW_QUALITIES: [u8; 6] = [82, 72, 62, 50, 40, 30];
 
 pub struct Processed {
     pub kind: Kind,
@@ -35,6 +43,7 @@ pub struct Processed {
     pub original: Vec<u8>,
     pub thumb: Vec<u8>,
     pub display: Option<Vec<u8>>,
+    pub preview: Vec<u8>,
     pub sha256: [u8; 32],
 }
 
@@ -79,8 +88,9 @@ fn check_size(w: u32, h: u32, max_pixels: u64) -> Result<(), Reject> {
 /// its `head` (the first bytes, or all of them) so the budget can be held
 /// before the file is: the file and its cleaned copy, the decoded pixels
 /// (16-bit ones take twice the room) beside the eight-bit copy made from
-/// them, as much again while a photo turns upright, and the display copy with
-/// the resizer's and encoder's working rows. A header that runs past `head`
+/// them, as much again while a photo turns upright, the display copy with
+/// the resizer's and encoder's working rows, and the preview with its
+/// flattened copy. A header that runs past `head`
 /// reads as broken.
 pub fn cost(head: &[u8], size: u64, max_pixels: u64) -> Result<u64, Reject> {
     let kind = sanitize::sniff(head).map_err(Reject::Unsupported)?;
@@ -89,7 +99,8 @@ pub fn cost(head: &[u8], size: u64, max_pixels: u64) -> Result<u64, Reject> {
     check_size(w, h, max_pixels)?;
     let eight = 4 * u64::from(w) * u64::from(h);
     let copies = 4 * u64::from(DISPLAY_MAX) * (u64::from(w.max(h)) + u64::from(DISPLAY_MAX));
-    Ok(2 * size + decoder.total_bytes().max(eight) + eight + copies)
+    let preview = 8 * u64::from(PREVIEW_MAX) * u64::from(PREVIEW_MAX);
+    Ok(2 * size + decoder.total_bytes().max(eight) + eight + copies + preview)
 }
 
 pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
@@ -102,9 +113,71 @@ pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
 
     // Everything from here reads the cleaned file, so what is stored is
     // proven to decode.
-    let mut decoder = decoder(&clean.bytes, kind)?;
+    let (img, icc) = decoded(&clean.bytes, kind, max_pixels, Some(orientation))?;
+    let (width, height) = (img.width(), img.height());
+
+    let display = (!clean.animated && width.max(height) > DISPLAY_MAX)
+        .then(|| resize(&img, fit(width, height, DISPLAY_MAX)));
+    let thumb = resize(display.as_ref().unwrap_or(&img), thumb_size(width, height));
+    // An animated picture's preview is a still, as its thumbnail is.
+    let still = if clean.animated {
+        &thumb
+    } else {
+        display.as_ref().unwrap_or(&img)
+    };
+    let preview = jpeg_preview(
+        still,
+        preview_size(width, height, clean.animated),
+        icc.as_deref(),
+    );
+    Ok(Processed {
+        preview,
+        kind,
+        width,
+        height,
+        animated: clean.animated,
+        sha256: Sha256::digest(&clean.bytes).into(),
+        original: clean.bytes,
+        thumb: webp(&thumb, THUMB_QUALITY, icc.as_deref()),
+        display: display.map(|d| webp(&d, DISPLAY_QUALITY, icc.as_deref())),
+    })
+}
+
+/// A link preview's size for a `w`×`h` image. An animated one's is made from
+/// its thumbnail (a still), so it is no larger than that.
+pub fn preview_size(w: u32, h: u32, animated: bool) -> (u32, u32) {
+    let (w, h) = if animated { thumb_size(w, h) } else { (w, h) };
+    fit(w, h, PREVIEW_MAX)
+}
+
+/// A link preview of `source`, one of an image's stored copies, at `size`: a
+/// JPEG, which every preview fetcher takes, with transparency laid over white
+/// and the colour profile kept, at the best quality that fits
+/// [`PREVIEW_BYTES`]. The source is at most [`DISPLAY_MAX`] on a side (a
+/// display copy, a thumbnail, or an original too small to have a display
+/// copy), so this needs little memory.
+pub fn preview(source: &[u8], size: (u32, u32)) -> Result<Vec<u8>, Reject> {
+    let kind = sanitize::sniff(source).map_err(Reject::Unsupported)?;
+    let max = u64::from(DISPLAY_MAX) * u64::from(DISPLAY_MAX);
+    let (img, icc) = decoded(source, kind, max, None)?;
+    Ok(jpeg_preview(&img, size, icc.as_deref()))
+}
+
+/// `bytes` decoded at eight bits a channel and turned upright, by
+/// `orientation` or else by the file's own, with its colour profile when that
+/// is an RGB one.
+fn decoded(
+    bytes: &[u8],
+    kind: Kind,
+    max_pixels: u64,
+    orientation: Option<Orientation>,
+) -> Result<(DynamicImage, Option<Vec<u8>>), Reject> {
+    let mut decoder = decoder(bytes, kind)?;
     let (w, h) = decoder.dimensions();
     check_size(w, h, max_pixels)?;
+    let orientation = orientation
+        .or_else(|| decoder.orientation().ok())
+        .unwrap_or(Orientation::NoTransforms);
     let icc = decoder
         .icc_profile()
         .ok()
@@ -116,21 +189,48 @@ pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
     // a copy.
     let mut img = eight_bit(img);
     img.apply_orientation(orientation);
-    let (width, height) = (img.width(), img.height());
+    Ok((img, icc))
+}
 
-    let display = (!clean.animated && width.max(height) > DISPLAY_MAX)
-        .then(|| resize(&img, fit(width, height, DISPLAY_MAX)));
-    let thumb = resize(display.as_ref().unwrap_or(&img), thumb_size(width, height));
-    Ok(Processed {
-        kind,
-        width,
-        height,
-        animated: clean.animated,
-        sha256: Sha256::digest(&clean.bytes).into(),
-        original: clean.bytes,
-        thumb: webp(&thumb, THUMB_QUALITY, icc.as_deref()),
-        display: display.map(|d| webp(&d, DISPLAY_QUALITY, icc.as_deref())),
-    })
+fn jpeg_preview(img: &DynamicImage, size: (u32, u32), icc: Option<&[u8]>) -> Vec<u8> {
+    let rgb = match resize(img, size) {
+        DynamicImage::ImageRgba8(b) => {
+            let mut flat = image::RgbImage::new(b.width(), b.height());
+            for (to, from) in flat.pixels_mut().zip(b.pixels()) {
+                let a = u16::from(from.0[3]);
+                for c in 0..3 {
+                    to.0[c] = ((u16::from(from.0[c]) * a + 255 * (255 - a) + 127) / 255) as u8;
+                }
+            }
+            flat
+        }
+        DynamicImage::ImageRgb8(b) => b,
+        _ => unreachable!("eight_bit makes every image RGB or RGBA"),
+    };
+    let mut out = Vec::new();
+    for quality in PREVIEW_QUALITIES {
+        out.clear();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
+        if let Some(profile) = icc {
+            let _ = image::ImageEncoder::set_icc_profile(&mut encoder, profile.to_vec());
+        }
+        image::ImageEncoder::write_image(
+            encoder,
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .expect("an RGB buffer of its own size encodes");
+        if out.len() <= PREVIEW_BYTES {
+            return out;
+        }
+    }
+    tracing::warn!(
+        bytes = out.len(),
+        "a link preview is over its size at the lowest quality"
+    );
+    out
 }
 
 /// RGB or RGBA at eight bits a channel, which the resizer and the encoder
@@ -313,6 +413,8 @@ mod tests {
             (2048, 1365)
         );
         assert_eq!(dims(&p.thumb), (720, 480));
+        let preview = image::load_from_memory(&p.preview).unwrap();
+        assert_eq!((preview.width(), preview.height()), (1200, 800));
         assert_eq!(p.sha256, <[u8; 32]>::from(Sha256::digest(&p.original)));
     }
 
@@ -411,6 +513,52 @@ mod tests {
         );
         assert_eq!(p.kind, Kind::Gif);
         assert_eq!(dims(&p.thumb), (1440, 24));
+        let still = image::load_from_memory(&p.preview).unwrap();
+        assert_eq!((still.width(), still.height()), (1200, 20));
+    }
+
+    #[test]
+    fn a_preview_is_a_small_jpeg_from_any_stored_copy() {
+        assert_eq!(preview_size(3000, 2000, false), (1200, 800));
+        assert_eq!(preview_size(800, 600, false), (800, 600));
+        // Animated: from the thumbnail, a still no larger than it.
+        assert_eq!(preview_size(2400, 40, true), (1200, 20));
+
+        // A busy photo's display copy, which would not fit at full quality.
+        let noisy = image::RgbImage::from_fn(3000, 2000, |x, y| {
+            let n = x.wrapping_mul(2_654_435_761) ^ y.wrapping_mul(40_503);
+            image::Rgb([n as u8, (n >> 8) as u8, (n >> 16) as u8])
+        });
+        let mut source = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut source)
+            .write_image(noisy.as_raw(), 3000, 2000, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let p = process(&source, 100_000_000).unwrap();
+        let jpeg = preview(p.display.as_ref().unwrap(), (1200, 800)).unwrap();
+        assert_eq!(&jpeg[..3], &[0xFF, 0xD8, 0xFF]);
+        assert!(jpeg.len() <= PREVIEW_BYTES, "{} bytes", jpeg.len());
+        let img = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!((img.width(), img.height()), (1200, 800));
+    }
+
+    #[test]
+    fn a_preview_lays_transparency_over_white_and_turns_upright() {
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_pixel(40, 20, image::Rgba([0, 0, 0, 0]));
+        image::codecs::png::PngEncoder::new(&mut png)
+            .write_image(img.as_raw(), 40, 20, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let p = preview(&process(&png, 1_000_000).unwrap().original, (40, 20)).unwrap();
+        let shown = image::load_from_memory(&p).unwrap().into_rgb8();
+        assert!(shown.pixels().all(|px| px.0.iter().all(|&c| c > 250)));
+
+        let mut exif = b"Exif\0\0MM\0*\0\0\0\x08\0\x01".to_vec();
+        exif.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
+        let turned = process(&with_segment(&jpeg(300, 200), 0xE1, &exif), 1_000_000).unwrap();
+        assert_eq!((turned.width, turned.height), (200, 300));
+        let p = preview(&turned.original, (200, 300)).unwrap();
+        let shown = image::load_from_memory(&p).unwrap();
+        assert_eq!((shown.width(), shown.height()), (200, 300));
     }
 
     #[test]
