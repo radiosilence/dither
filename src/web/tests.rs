@@ -1294,3 +1294,80 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
         );
     }
 }
+
+#[tokio::test]
+async fn views_are_counted_anonymously_and_go_with_their_image() {
+    let app = app().await;
+    let (album, done) = app.upload(&[&jpeg(300, 200)]).await;
+    let id = image_id(&done[0]);
+    let page = format!("/{id}");
+    let forwarded = header::HeaderName::from_static("x-forwarded-for");
+    let from = |address| {
+        [
+            (header::USER_AGENT, "a browser"),
+            (forwarded.clone(), address),
+            (header::REFERER, "https://forum.example/t/1?page=2"),
+        ]
+    };
+    // One visitor twice, behind a proxy that appends their address; another
+    // once; a link preview; and the owner, who is not counted.
+    app.get_with(&page, &from("10.0.0.9, 192.0.2.1")).await;
+    app.get_with(&page, &from("192.0.2.1")).await;
+    app.get_with(&page, &from("192.0.2.2")).await;
+    app.get_with(
+        &format!("/p/{id}.jpg"),
+        &[(header::USER_AGENT, "WhatsApp/2.24")],
+    )
+    .await;
+    let owner = app.session("dev").await;
+    app.get_as(&page, &owner).await;
+    let part = app
+        .get_with(
+            &format!("/{id}.jpg"),
+            &[
+                (header::RANGE, "bytes=0-99"),
+                (forwarded.clone(), "192.0.2.1"),
+            ],
+        )
+        .await;
+    assert_eq!(part.status, StatusCode::PARTIAL_CONTENT);
+    app.state.views.flush(&app.state.db).await;
+
+    let stats = app.state.db.view_stats(&id, 0).await.unwrap();
+    assert_eq!(stats.all.views, 3);
+    // The range request carried no user agent: a visitor of its own.
+    assert_eq!(stats.all.visitors, 3);
+    assert_eq!(stats.recent, stats.all);
+    assert_eq!(stats.shared, vec![("WhatsApp".to_string(), 1)]);
+    assert_eq!(stats.referrers, vec![("forum.example".to_string(), 3)]);
+    let album_stats = app.state.db.view_stats(&album, 0).await.unwrap();
+    assert_eq!(album_stats.all, stats.all);
+    let original: i64 = app
+        .state
+        .db
+        .run({
+            let id = id.clone();
+            move |c| {
+                c.query_row(
+                    "SELECT bytes FROM views WHERE target = ?1 AND kind = 'original'",
+                    [id],
+                    |r| r.get(0),
+                )
+            }
+        })
+        .await
+        .unwrap();
+    assert_eq!(original, 100, "a range counts its own length");
+
+    let viewer = app.get(&format!("/images/{id}/view")).await.text();
+    assert!(viewer.contains("3 views"), "{viewer}");
+    assert!(viewer.contains("forum.example 3"), "{viewer}");
+
+    // Counts gathered before a delete and written after it are dropped.
+    app.get_with(&page, &from("192.0.2.3")).await;
+    let gone = app.post("/images/delete", json!({ "ids": [id] })).await;
+    assert!(gone.status.is_success(), "{}", gone.text());
+    app.state.views.flush(&app.state.db).await;
+    let stats = app.state.db.view_stats(&id, 0).await.unwrap();
+    assert_eq!(stats, crate::views::Stats::default());
+}
