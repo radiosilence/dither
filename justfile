@@ -3,7 +3,8 @@
 # Run it on http://127.0.0.1:8080 with no sign-in and everything under ./data.
 # A laptop's disk is usually fuller than a server's, so uploads stop at 1 GB
 # free here rather than at the default share.
-# The worker beside it makes uploads' copies, as its container does in the pod.
+# A worker beside it makes uploads' copies, sharing its state directory and
+# reaching it over the worker API on loopback.
 dev:
     #!/usr/bin/env bash
     set -euo pipefail

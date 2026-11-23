@@ -44,12 +44,8 @@ async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("serve") => serve().await,
-        // Make uploads' copies, beside a `serve` sharing the state directory.
-        Some("worker") => {
-            let config = Config::for_worker()?;
-            let store = Store::open(&config.storage, 0)?;
-            worker::run(&config, store).await
-        }
+        // Make uploads' copies, for a `serve` reached at QUEUE_URL.
+        Some("worker") => worker::run(&Config::for_worker()?).await,
         // Move every image and the database from one store to another: how a
         // disk store becomes a bucket. Safe to repeat; it resumes.
         Some("copy-store") => {
@@ -83,8 +79,24 @@ async fn serve() -> anyhow::Result<()> {
         .await
         .context("restoring the database")?;
     let db = Db::open(&db_path).await.context("opening the database")?;
-    let jobs = Arc::new(jobs::Hub::new(db.clone(), &config.state_dir)?);
-    jobs.listen()?;
+    let jobs = Arc::new(jobs::Hub::new(db.clone(), store.clone(), &config)?);
+    {
+        let listener = tokio::net::TcpListener::bind(&config.worker_addr)
+            .await
+            .with_context(|| format!("binding {} for workers", config.worker_addr))?;
+        tracing::info!(addr = %config.worker_addr, "the worker API");
+        let router = web::work::router(web::work::Work {
+            hub: jobs.clone(),
+            token: config.worker_token.as_deref().map(web::work::digest),
+            limit: usize::try_from(4 * config.max_upload_bytes.max(config.video.max_bytes))
+                .unwrap_or(usize::MAX),
+        });
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(listener, router).await {
+                tracing::error!(error = %e, "the worker API stopped");
+            }
+        });
+    }
     let uploads = Arc::new(Uploads::new(db.clone(), store.clone(), &config, jobs)?);
 
     let (snapshot_stop, snapshot_rx) = watch::channel(false);

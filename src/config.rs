@@ -74,6 +74,13 @@ pub struct Config {
     pub min_free_bytes: Option<u64>,
     pub video: Video,
     pub workers: Workers,
+    /// Where the web process serves the worker API. Loopback unless workers
+    /// run on other machines, when `worker_token` is required.
+    pub worker_addr: String,
+    /// What a worker presents to the worker API, and what the API asks for.
+    pub worker_token: Option<String>,
+    /// Where a worker reaches the worker API.
+    pub queue_url: String,
 }
 
 fn var(key: &str) -> Option<String> {
@@ -137,11 +144,7 @@ impl Config {
             _ => bail!("OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET must be set together"),
         };
         let bind_addr = or("BIND_ADDR", "127.0.0.1:8080");
-        if oidc.is_none()
-            && !worker
-            && !bind_addr.starts_with("127.0.0.1:")
-            && !bind_addr.starts_with("[::1]:")
-        {
+        if oidc.is_none() && !worker && !loopback(&bind_addr) {
             bail!(
                 "INSECURE_NO_AUTH serves the app with no sign-in, so BIND_ADDR must be loopback, not {bind_addr}"
             );
@@ -149,6 +152,18 @@ impl Config {
         let app_url = origin("APP_URL", &or("APP_URL", &format!("http://{bind_addr}")))?;
         let public_url = origin("PUBLIC_URL", &or("PUBLIC_URL", &app_url))?;
         let state_dir = PathBuf::from(or("STATE_DIR", "data/state"));
+        let worker_addr = or("WORKER_ADDR", "127.0.0.1:8081");
+        let worker_token = var("WORKER_TOKEN");
+        if !worker && worker_token.is_none() && !loopback(&worker_addr) {
+            bail!(
+                "WORKER_ADDR {worker_addr} is reachable from other machines, so WORKER_TOKEN is required"
+            );
+        }
+        let queue_url = or("QUEUE_URL", "http://127.0.0.1:8081");
+        if !url::Url::parse(&queue_url).is_ok_and(|u| matches!(u.scheme(), "http" | "https")) {
+            bail!("QUEUE_URL must be an http(s) URL");
+        }
+        let queue_url = queue_url.trim_end_matches('/').to_string();
         let storage = match var("STORAGE") {
             Some(s) => s,
             None => {
@@ -194,6 +209,9 @@ impl Config {
                 pictures: num("PICTURE_WORKERS", 4)?,
                 videos: num("VIDEO_WORKERS", 1)?,
             },
+            worker_addr,
+            worker_token,
+            queue_url,
         })
     }
 
@@ -252,8 +270,15 @@ impl Config {
                 pictures: 2,
                 videos: 1,
             },
+            worker_addr: "127.0.0.1:0".into(),
+            worker_token: None,
+            queue_url: "http://127.0.0.1:0".into(),
         }
     }
+}
+
+fn loopback(addr: &str) -> bool {
+    addr.starts_with("127.0.0.1:") || addr.starts_with("[::1]:") || addr.starts_with("localhost:")
 }
 
 fn host_of(origin: &str) -> &str {

@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 
 /// What one run may do.
 #[derive(Debug, Clone, Default)]
+// Read only where there is a sandbox to apply them.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub struct Sandbox {
     /// Files it reads.
     read: Vec<PathBuf>,

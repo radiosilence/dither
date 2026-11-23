@@ -1,6 +1,6 @@
 [package]
 name = "dither"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 
 [dependencies]
@@ -24,7 +24,7 @@ object_store = { version = "0.14.2", features = ["aws"] }
 parking_lot = "0.13.0"
 quick_cache = "0.7.0"
 rand = "0.10.4"
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "form", "rustls", "stream"] }
 rusqlite = { version = "0.43.0", features = ["bundled"] }
 rustix = { version = "1.1.6", features = ["fs", "process"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -37,8 +37,11 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url = "2.5.9"
 webp = { version = "0.3.1", default-features = false }
-landlock = "0.4.8"
 libc = "0.2.191"
+
+# The ffmpeg sandbox (`sandbox.rs`), which only Linux has.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.8"
 
 [dev-dependencies]
 # Extracts the templates' messages for the catalogue test.

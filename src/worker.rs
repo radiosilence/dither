@@ -1,46 +1,36 @@
-//! `dither worker`: the process that makes uploads' copies. It runs beside
-//! the web process (in Kubernetes, a second container in its pod), shares
-//! the state directory and the object store, and holds none of its secrets
-//! but the store's.
+//! `dither worker`: the process that makes uploads' copies. It runs wherever
+//! it reaches the web process's worker API (`web::work`), as many as there
+//! are machines to spare. It holds none of the web process's secrets, and
+//! neither the database nor the store: it asks for a job, fetches the upload,
+//! makes it, sends what it made and says how it ended.
 //!
-//! It waits for the web process to listen before it opens the database: the
-//! web process may first replace a database that is behind the store's
-//! latest copy, and a worker holding the old file would write into one that
-//! is gone. For the same reason it stops when the web process goes away, to
-//! be started again with it, rather than carrying on with a file that may be
-//! replaced.
+//! One sharing the web process's state directory, as `just dev` runs it,
+//! reads an upload where it waits rather than fetching a copy.
 //!
-//! Jobs are claimed from the database with a lease, renewed while the job is
-//! made and lost when the job is deleted, which stops it. Pictures are made
-//! several at a time under the memory budget, sized from each one's header;
-//! videos one at a time by default, since ffmpeg's memory is its own. A job
-//! that fails in a way that may pass is put back for later, three times
-//! before it is marked failed; one whose file is at fault fails at once.
+//! A job is held with a lease, renewed while the job is made; a renewal that
+//! is refused means the job was deleted or taken by another worker, and this
+//! one stops. Pictures are made several at a time under the memory budget,
+//! sized from each one's header; videos one at a time by default, since
+//! ffmpeg's memory is its own.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Context as _;
 use bytes::Bytes;
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
-use tokio::sync::{Notify, Semaphore, mpsc, watch};
+use tokio::sync::{Semaphore, watch};
 
 use crate::config::Config;
-use crate::db::{Claimed, Db, Made};
-use crate::jobs::{self, FromWorker, ToWorker};
+use crate::db::Made;
+use crate::jobs::{self, Job, LEASE, Outcome, Want};
 use crate::sanitize::Container;
-use crate::store::{self, Store, Variant};
+use crate::store::Variant;
 use crate::video::{self, Tools};
 
-/// How long a claim lasts unrenewed, and how often it is renewed.
-const LEASE: Duration = Duration::from_secs(60);
+/// How often a job's claim is renewed when there is no progress to report.
 const RENEW: Duration = Duration::from_secs(20);
-/// How often to look for jobs when nobody says one is waiting.
-const IDLE: Duration = Duration::from_secs(30);
-/// Claims before a job that keeps failing on this side is marked failed.
-const ATTEMPTS: u32 = 3;
+/// How often progress is reported, at most.
+const REPORT: Duration = Duration::from_secs(1);
 /// The processing budget's unit.
 const MIB: u64 = 1 << 20;
 
@@ -52,350 +42,416 @@ enum Problem {
     Rejected(&'static str, String),
     /// Something on this side failed: tried again later.
     Failed(String),
-    /// Deleted while it was made.
+    /// Deleted while it was made, or no longer this worker's.
     Stopped,
 }
 
 pub struct Worker {
-    db: Db,
-    store: Store,
+    http: reqwest::Client,
+    /// The web process's worker API.
+    queue: String,
+    token: Option<String>,
     tools: Option<Tools>,
     state_dir: PathBuf,
     /// Who holds a claim: this run of this process.
     name: String,
     budget: Arc<Semaphore>,
     budget_mib: u32,
-    max_pixels: u64,
-    max_seconds: u64,
     pictures: Arc<Semaphore>,
     videos: Arc<Semaphore>,
-    events: mpsc::UnboundedSender<FromWorker>,
-    wake: Notify,
-    /// The jobs being made, and how to stop each.
-    running: parking_lot::Mutex<HashMap<String, watch::Sender<bool>>>,
-    /// What was last said of each job's progress, so a step is said once.
-    said: parking_lot::Mutex<HashMap<String, u16>>,
+    /// Whether it makes pictures: it has slots for them.
+    makes_pictures: bool,
+    /// Whether it makes videos: it has ffmpeg, and slots for them.
+    makes_videos: bool,
+    /// The jobs being made now.
+    making: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
-/// Run until the web process goes away (an error, so the process exits and
-/// is started again) or a signal to stop (released claims, and `Ok`).
-pub async fn run(config: &Config, store: Store) -> anyhow::Result<()> {
-    // The environment holds the bucket's keys, and a process running as the
-    // same user can otherwise read it from /proc: ffmpeg, the worker's own
-    // child, parses untrusted files. Not dumpable, /proc keeps it from them.
+/// A job being made: whether to stop, and how far along it is.
+struct Making {
+    stop: watch::Receiver<bool>,
+    done: watch::Sender<u16>,
+}
+
+impl Making {
+    /// `done` thousandths made. Never backwards: ffmpeg's time out wavers as
+    /// it interleaves sound and picture.
+    fn report(&self, done: u16) {
+        self.done.send_if_modified(|d| {
+            let ahead = done > *d;
+            if ahead {
+                *d = done;
+            }
+            ahead
+        });
+    }
+
+    fn stopped(&self) -> bool {
+        *self.stop.borrow()
+    }
+}
+
+/// Run until a signal to stop, when the claims held are given back.
+pub async fn run(config: &Config) -> anyhow::Result<()> {
+    // The environment holds the worker API's token, and a process running
+    // as the same user can otherwise read it from /proc: ffmpeg, the
+    // worker's own child, parses untrusted files. Not dumpable, /proc keeps
+    // it from them.
     #[cfg(target_os = "linux")]
     rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
         .context("keeping the worker's memory and environment from other processes")?;
-    let path = jobs::socket(&config.state_dir);
-    let stream = connect(&path).await;
-    let db = Db::open(&config.state_dir.join("dither.db"))
-        .await
-        .context("opening the database")?;
     let tools = Tools::find(&config.video, config.min_free_bytes).await?;
     std::fs::create_dir_all(jobs::dir(&config.state_dir))?;
-    let (events, mut said) = mpsc::unbounded_channel();
     let mib = (config.process_memory / MIB).clamp(1, u64::from(u32::MAX)) as u32;
     let worker = Arc::new(Worker {
-        db,
-        store,
-        tools,
+        http: reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            // Longer than a claim is held waiting, so only a connection gone
+            // quiet mid-transfer trips it.
+            .read_timeout(jobs::POLL + Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(30))
+            .build()?,
+        queue: config.queue_url.trim_end_matches('/').to_string(),
+        token: config.worker_token.clone(),
         state_dir: config.state_dir.clone(),
         name: crate::id::new(),
         budget: Arc::new(Semaphore::new(mib as usize)),
         budget_mib: mib,
-        max_pixels: config.max_pixels,
-        max_seconds: config.video.max_seconds,
-        pictures: Arc::new(Semaphore::new(config.workers.pictures.max(1))),
-        videos: Arc::new(Semaphore::new(config.workers.videos.max(1))),
-        events,
-        wake: Notify::new(),
-        running: Default::default(),
-        said: Default::default(),
+        pictures: Arc::new(Semaphore::new(config.workers.pictures)),
+        videos: Arc::new(Semaphore::new(config.workers.videos)),
+        makes_pictures: config.workers.pictures > 0,
+        makes_videos: tools.is_some() && config.workers.videos > 0,
+        tools,
+        making: Default::default(),
     });
+    worker.tidy().await;
     tracing::info!(
         worker = %worker.name,
-        videos = worker.tools.is_some(),
+        queue = %worker.queue,
+        pictures = config.workers.pictures,
+        videos = if worker.makes_videos { config.workers.videos } else { 0 },
         "working"
     );
-    worker.say(FromWorker::Hello {
-        videos: worker.tools.is_some(),
-    });
-    let (read, mut write) = stream.into_split();
-    let writer = async {
-        while let Some(event) = said.recv().await {
-            let mut line = serde_json::to_string(&event).expect("serialisable");
-            line.push('\n');
-            write.write_all(line.as_bytes()).await?;
+    let videos = async {
+        if worker.makes_videos {
+            worker.clone().claim_forever(true).await;
         }
-        Ok::<_, std::io::Error>(())
+        std::future::pending::<()>().await;
     };
-    let reader = {
-        let worker = worker.clone();
-        async move {
-            let mut lines = tokio::io::BufReader::new(read).lines();
-            while let Some(line) = lines.next_line().await? {
-                match serde_json::from_str(&line) {
-                    Ok(ToWorker::Wake) => worker.wake.notify_one(),
-                    Ok(ToWorker::Cancel { ids }) => worker.cancel(&ids),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "the web process said something unreadable")
-                    }
-                }
-            }
-            Ok::<_, std::io::Error>(())
-        }
-    };
-    let outcome = tokio::select! {
-        r = writer => r.map_err(anyhow::Error::from).and(Err(anyhow::anyhow!("the web process went away"))),
-        r = reader => r.map_err(anyhow::Error::from).and(Err(anyhow::anyhow!("the web process went away"))),
-        () = worker.clone().claim_forever() => unreachable!("claims until stopped"),
-        () = crate::signal() => Ok(()),
-    };
-    worker.let_go().await;
-    outcome
-}
-
-/// The web process's socket, once it listens.
-async fn connect(path: &Path) -> tokio::net::UnixStream {
-    let mut said = false;
-    loop {
-        match tokio::net::UnixStream::connect(path).await {
-            Ok(stream) => return stream,
-            Err(e) => {
-                if !said {
-                    tracing::info!(socket = %path.display(), error = %e, "waiting for the web process");
-                    said = true;
-                }
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-        }
+    tokio::select! {
+        () = worker.clone().claim_forever(false) => unreachable!("claims until stopped"),
+        () = videos => unreachable!("claims until stopped"),
+        () = crate::signal() => {}
     }
-}
-
-fn now() -> i64 {
-    crate::db::now()
+    worker.let_go().await;
+    Ok(())
 }
 
 impl Worker {
-    fn cancel(&self, ids: &[String]) {
-        for id in ids {
-            if let Some(stop) = self.running.lock().get(id) {
-                let _ = stop.send(true);
-            }
+    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        let request = self
+            .http
+            .request(method, format!("{}{path}", self.queue))
+            .header("x-worker", &self.name);
+        match &self.token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
         }
     }
 
-    /// Give back every claim, for the next worker to take up at once: those
-    /// being made, and one a claim stopped part way still made.
+    /// Give back every claim, for the next worker to take up at once.
     async fn let_go(&self) {
-        if let Err(e) = self.db.release_all(&self.name).await {
+        let given = self
+            .request(reqwest::Method::POST, "/work/release")
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status);
+        if let Err(e) = given {
             tracing::warn!(error = %e, "giving back claims failed; their leases will lapse");
         }
     }
 
-    fn say(&self, event: FromWorker) {
-        let _ = self.events.send(event);
-    }
-
-    /// Say job `id` is `done` thousandths made. Never backwards: ffmpeg's
-    /// time out wavers as it interleaves sound and picture.
-    fn progress(&self, owner: &str, id: &str, done: u16) {
-        {
-            let mut said = self.said.lock();
-            let last = said.get(id).copied();
-            if last.is_some_and(|last| done <= last) {
-                return;
-            }
-            said.insert(id.to_string(), done);
-        }
-        self.say(FromWorker::Progress {
-            owner: owner.to_string(),
-            id: id.to_string(),
-            done,
-        });
-    }
-
-    async fn claim_forever(self: Arc<Self>) {
+    /// Ask for jobs of one kind, `video` or pictures, whenever there is a
+    /// slot for one, and make each.
+    async fn claim_forever(self: Arc<Self>, video: bool) {
+        let slots = if video { &self.videos } else { &self.pictures };
+        let mut unreachable = false;
         loop {
-            let mut claimed = false;
-            for video in [false, true] {
-                let slots = if video { &self.videos } else { &self.pictures };
-                let Ok(slot) = slots.clone().try_acquire_owned() else {
-                    continue;
-                };
-                let until = now() + LEASE.as_millis() as i64;
-                match self.db.claim(&self.name, video, until).await {
-                    Ok(Some(job)) => {
-                        claimed = true;
-                        let this = self.clone();
-                        tokio::spawn(async move {
-                            this.clone().make(job).await;
-                            drop(slot);
-                            this.wake.notify_one();
-                        });
-                    }
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!(error = %e, "claiming a job failed"),
+            let Ok(slot) = slots.clone().acquire_owned().await else {
+                return;
+            };
+            let want = Want {
+                pictures: !video,
+                videos: video,
+                makes_pictures: self.makes_pictures,
+                makes_videos: self.makes_videos,
+                making: self.making.lock().iter().cloned().collect(),
+            };
+            match self.ask(&want).await {
+                Ok(Some(job)) => {
+                    unreachable = false;
+                    let this = self.clone();
+                    tokio::spawn(async move {
+                        this.make(job).await;
+                        drop(slot);
+                    });
                 }
-            }
-            if !claimed {
-                tokio::select! {
-                    () = self.wake.notified() => {}
-                    () = tokio::time::sleep(IDLE) => {}
+                Ok(None) => unreachable = false,
+                Err(e) => {
+                    if !unreachable {
+                        tracing::warn!(queue = %self.queue, error = %e, "the queue cannot be reached; trying again");
+                        unreachable = true;
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             }
         }
     }
 
-    /// Make a claimed job, and record how it ended.
-    async fn make(self: Arc<Self>, job: Claimed) {
-        let id = job.image.id.clone();
-        let owner = job.owner.clone();
-        let video = job.image.is_video();
+    async fn ask(&self, want: &Want) -> anyhow::Result<Option<Job>> {
+        let response = self
+            .request(reqwest::Method::POST, "/work/claim")
+            .json(want)
+            .timeout(jobs::POLL + Duration::from_secs(15))
+            .send()
+            .await?;
+        match response.status() {
+            reqwest::StatusCode::OK => Ok(Some(response.json().await?)),
+            reqwest::StatusCode::NO_CONTENT => Ok(None),
+            status => anyhow::bail!("the queue answered {status}"),
+        }
+    }
+
+    /// Renew job `id`'s claim, saying it is `done` thousandths made: whether
+    /// it is still this worker's.
+    async fn renew(&self, id: &str, done: Option<u16>) -> anyhow::Result<bool> {
+        let response = self
+            .request(reqwest::Method::POST, &format!("/work/{id}/renew"))
+            .json(&serde_json::json!({ "done": done }))
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await?;
+        match response.status() {
+            reqwest::StatusCode::NO_CONTENT => Ok(true),
+            reqwest::StatusCode::GONE => Ok(false),
+            status => anyhow::bail!("the queue answered {status}"),
+        }
+    }
+
+    /// Send job `id`'s copy of `variant`.
+    async fn put(&self, id: &str, variant: Variant, body: reqwest::Body) -> Result<(), Problem> {
+        let name = variant.name();
+        let response = self
+            .request(reqwest::Method::PUT, &format!("/work/{id}/files/{name}"))
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| Problem::Failed(format!("sending its {name}: {e}")))?;
+        match response.status() {
+            reqwest::StatusCode::NO_CONTENT => Ok(()),
+            reqwest::StatusCode::GONE => Err(Problem::Stopped),
+            status => Err(Problem::Failed(format!(
+                "sending its {name}: the queue answered {status}"
+            ))),
+        }
+    }
+
+    /// Say how job `id` ended, until the web process hears it: it may be
+    /// restarting. Unheard, the job's lease lapses and another worker makes
+    /// it again.
+    async fn end(&self, id: &str, outcome: Outcome, ms: u64) {
+        let mut body = serde_json::to_value(&outcome).expect("serialisable");
+        body["ms"] = ms.into();
+        for attempt in 1..=5u32 {
+            let said = self
+                .request(reqwest::Method::POST, &format!("/work/{id}/end"))
+                .json(&body)
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status);
+            match said {
+                Ok(_) => return,
+                Err(e) => {
+                    tracing::warn!(job = %id, attempt, error = %e, "saying how a job ended failed");
+                    tokio::time::sleep(Duration::from_secs(2) * attempt).await;
+                }
+            }
+        }
+    }
+
+    /// Make a claimed job, and say how it ended.
+    async fn make(self: Arc<Self>, job: Job) {
+        let id = job.id.clone();
+        self.making.lock().insert(id.clone());
         let started = Instant::now();
-        // A job that has killed workers before is not tried again.
-        let outcome = if job.image.attempts > ATTEMPTS {
-            Err(Problem::Rejected(
-                jobs::FAILED,
-                format!("claimed {} times without ending", job.image.attempts - 1),
-            ))
-        } else if video && self.tools.is_none() {
-            Err(Problem::Rejected(
-                jobs::FAILED_UNSUPPORTED,
-                "this worker has no ffmpeg".into(),
-            ))
-        } else {
-            let (stop, stopped) = watch::channel(false);
-            self.running.lock().insert(id.clone(), stop.clone());
-            // The lease is renewed while the job is made; one that cannot be
-            // was deleted, or lapsed and taken by another, and this stops.
-            let heartbeat = {
-                let this = self.clone();
-                let id = id.clone();
-                tokio::spawn(async move {
-                    let mut renewed = Instant::now();
-                    loop {
-                        tokio::time::sleep(RENEW).await;
-                        let until = now() + LEASE.as_millis() as i64;
-                        match this.db.renew(&this.name, &id, until).await {
-                            Ok(true) => renewed = Instant::now(),
-                            Ok(false) => break,
-                            // Unrenewed for a lease's length, it may be
-                            // another's by now.
-                            Err(_) if renewed.elapsed() >= LEASE => break,
-                            Err(e) => {
-                                tracing::warn!(job = %id, error = %e, "renewing a lease failed")
-                            }
+        let (stop, stopped) = watch::channel(false);
+        let (done, mut reported) = watch::channel(0u16);
+        // The claim is kept while the job is made: progress is reported as
+        // it moves, and the lease renewed in between. One that cannot be
+        // was deleted, or lapsed and taken by another, and this stops.
+        let keeper = {
+            let this = self.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                let mut renewed = Instant::now();
+                loop {
+                    tokio::time::sleep(REPORT).await;
+                    let moved = reported.has_changed().unwrap_or(false);
+                    if !moved && renewed.elapsed() < RENEW {
+                        continue;
+                    }
+                    let done = moved.then(|| *reported.borrow_and_update());
+                    match this.renew(&id, done).await {
+                        Ok(true) => renewed = Instant::now(),
+                        Ok(false) => break,
+                        // Unrenewed for a lease's length, it may be
+                        // another's by now.
+                        Err(_) if renewed.elapsed() >= LEASE => break,
+                        Err(e) => {
+                            tracing::warn!(job = %id, error = %e, "renewing a claim failed")
                         }
                     }
-                    let _ = stop.send(true);
-                })
-            };
-            self.progress(&owner, &id, 0);
-            let outcome = if video {
-                self.video(&job, stopped).await
-            } else {
-                self.picture(&job, stopped).await
-            };
-            heartbeat.abort();
-            self.running.lock().remove(&id);
-            outcome
+                }
+                let _ = stop.send(true);
+            })
         };
-        self.said.lock().remove(&id);
+        let making = Making {
+            stop: stopped,
+            done,
+        };
+        let outcome = match self.fetch(&job, &making).await {
+            Ok(source) if job.video => self.video(&job, &source, &making).await,
+            Ok(source) => self.picture(&job, &source, &making).await,
+            Err(problem) => Err(problem),
+        };
+        keeper.abort();
         let _ = tokio::fs::remove_dir_all(self.work(&id)).await;
-        let ended = |made: bool, bytes: u64, why: &str| FromWorker::Ended {
-            owner: owner.clone(),
-            id: id.clone(),
-            made,
-            video,
-            ms: started.elapsed().as_millis() as u64,
-            bytes,
-            failure: why.to_string(),
-        };
-        // Whether the copies are kept, should this worker record the end.
-        let keep = outcome.is_ok();
-        let recorded = match outcome {
-            Ok(made) => {
-                let bytes = made.bytes;
-                let finished = self.db.finish_job(&owner, &self.name, &id, made).await;
-                if let Ok(true) = finished {
-                    tracing::info!(job = %id, video, ms = started.elapsed().as_millis() as u64, "made");
-                    self.say(ended(true, bytes, ""));
-                }
-                finished
-            }
-            // Deleted, or no longer this worker's: what to tidy is decided below.
-            Err(Problem::Stopped) => Ok(false),
-            Err(Problem::Failed(why)) if job.image.attempts < ATTEMPTS => {
-                tracing::warn!(job = %id, attempt = job.image.attempts, error = %why, "a job failed; it will be tried again");
-                self.later(&job).await;
-                return;
-            }
-            Err(problem) => {
-                let why = match problem {
-                    Problem::Rejected(key, detail) => {
-                        tracing::info!(job = %id, reason = %detail, "a job's file was refused");
-                        key
-                    }
-                    Problem::Failed(why) => {
-                        tracing::error!(job = %id, error = %why, "a job failed for good");
-                        jobs::FAILED
-                    }
-                    Problem::Stopped => unreachable!("matched above"),
-                };
-                let failed = self.db.fail_job(&owner, &self.name, &id, why).await;
-                if let Ok(true) = failed {
-                    self.say(ended(false, 0, why));
-                }
-                failed
-            }
-        };
-        match recorded {
-            // Ended here: the upload goes, and a failure's copies with it.
-            Ok(true) => {
-                let _ = tokio::fs::remove_file(self.source(&id)).await;
-                if !keep {
-                    store::discard(&self.store, &self.db, vec![id.clone()]).await;
-                }
-            }
-            // Not this worker's to record. Deleted: everything goes. Taken by
-            // another worker after this one's lease lapsed: everything stays,
-            // the copies included, which are that worker's now.
-            Ok(false) => match self.db.image(&id).await {
-                Ok(None) => {
-                    let _ = tokio::fs::remove_file(self.source(&id)).await;
-                    store::discard(&self.store, &self.db, vec![id.clone()]).await;
-                }
-                // Stopped while still this worker's (its lease could not be
-                // renewed): given back, since a worker does not take up a
-                // job it holds.
-                _ => {
-                    let _ = self.db.release(&self.name, &id, 0).await;
-                }
+        let outcome = match outcome {
+            Ok(made) => Outcome::Made { made },
+            Err(Problem::Rejected(key, detail)) => Outcome::Refused {
+                key: key.into(),
+                detail,
             },
-            Err(e) => {
-                tracing::error!(job = %id, error = %e, "recording how a job ended failed");
-                self.later(&job).await;
+            Err(Problem::Failed(why)) => Outcome::Failed { why },
+            Err(Problem::Stopped) => Outcome::Stopped,
+        };
+        self.end(&id, outcome, started.elapsed().as_millis() as u64)
+            .await;
+        self.making.lock().remove(&id);
+    }
+
+    /// Remove what a run before this one left in its scratch: it stopped
+    /// mid-job, killed or out of memory, and its name died with it. Only
+    /// what nothing has written to in a while, in case another worker shares
+    /// the directory.
+    async fn tidy(&self) {
+        let Ok(mut entries) = tokio::fs::read_dir(jobs::dir(&self.state_dir)).await else {
+            return;
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if !path.extension().is_some_and(|e| e == "work") {
+                continue;
+            }
+            let mut newest = entry.metadata().await.ok().and_then(|m| m.modified().ok());
+            if let Ok(mut inside) = tokio::fs::read_dir(&path).await {
+                while let Ok(Some(file)) = inside.next_entry().await {
+                    let modified = file.metadata().await.ok().and_then(|m| m.modified().ok());
+                    newest = newest.max(modified);
+                }
+            }
+            let idle = newest
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > Duration::from_secs(3600));
+            if idle {
+                let _ = tokio::fs::remove_dir_all(&path).await;
             }
         }
     }
 
-    /// Put a job back to be tried again, later with each attempt, and say
-    /// it waits, so its album does not show it stuck part way.
-    async fn later(&self, job: &Claimed) {
-        let wait = Duration::from_secs(30) * job.image.attempts.max(1);
-        let after = now() + wait.as_millis() as i64;
-        if let Err(e) = self.db.release(&self.name, &job.image.id, after).await {
-            tracing::warn!(job = %job.image.id, error = %e, "putting a job back failed; its lease will lapse");
+    /// Job `id`'s upload: where it waits, when this worker shares the web
+    /// process's state directory, or else fetched, carrying on from where a
+    /// fetch cut short stopped.
+    async fn fetch(&self, job: &Job, making: &Making) -> Result<PathBuf, Problem> {
+        use tokio::io::AsyncWriteExt as _;
+        let local = jobs::source(&self.state_dir, &job.id);
+        if tokio::fs::metadata(&local)
+            .await
+            .is_ok_and(|m| m.len() == job.bytes)
+        {
+            return Ok(local);
         }
-        self.say(FromWorker::Waiting {
-            owner: job.owner.clone(),
-            id: job.image.id.clone(),
-        });
-    }
-
-    fn source(&self, id: &str) -> PathBuf {
-        jobs::source(&self.state_dir, id)
+        let work = self.work(&job.id);
+        let _ = tokio::fs::remove_dir_all(&work).await;
+        tokio::fs::create_dir_all(&work)
+            .await
+            .map_err(|e| Problem::Failed(e.to_string()))?;
+        let path = work.join("source");
+        let mut file = tokio::fs::File::create(&path)
+            .await
+            .map_err(|e| Problem::Failed(e.to_string()))?;
+        let mut have = 0u64;
+        let mut last = String::new();
+        for _ in 0..5 {
+            let response = self
+                .request(reqwest::Method::GET, &format!("/work/{}/source", job.id))
+                .header(reqwest::header::RANGE, format!("bytes={have}-"))
+                .send()
+                .await;
+            let mut response = match response {
+                Ok(r) if r.status() == reqwest::StatusCode::GONE => return Err(Problem::Stopped),
+                Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
+                    return Err(Problem::Rejected(
+                        jobs::FAILED,
+                        "its upload was lost before it was made".into(),
+                    ));
+                }
+                Ok(r) if r.status().is_success() => r,
+                Ok(r) => {
+                    last = format!("the queue answered {}", r.status());
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+                Err(e) => {
+                    last = e.to_string();
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            loop {
+                if making.stopped() {
+                    return Err(Problem::Stopped);
+                }
+                match response.chunk().await {
+                    Ok(Some(chunk)) => {
+                        file.write_all(&chunk)
+                            .await
+                            .map_err(|e| Problem::Failed(format!("keeping its upload: {e}")))?;
+                        have += chunk.len() as u64;
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        last = e.to_string();
+                        break;
+                    }
+                }
+            }
+            if have >= job.bytes {
+                break;
+            }
+        }
+        file.flush()
+            .await
+            .map_err(|e| Problem::Failed(e.to_string()))?;
+        if have != job.bytes {
+            return Err(Problem::Failed(format!(
+                "fetched {have} of its {} bytes: {last}",
+                job.bytes
+            )));
+        }
+        Ok(path)
     }
 
     /// Where this worker works on job `id`: its own, so a worker that lost
@@ -419,37 +475,18 @@ impl Worker {
             .map_err(|_| Problem::Failed("stopping".into()))
     }
 
-    /// The upload's file: its first `limit` bytes, or all of it.
-    async fn upload(&self, id: &str, limit: Option<u64>) -> Result<Vec<u8>, Problem> {
-        let lost = |e: std::io::Error| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                Problem::Rejected(
-                    jobs::FAILED,
-                    "its upload was lost before it was made".into(),
-                )
-            } else {
-                Problem::Failed(e.to_string())
-            }
-        };
-        let path = self.source(id);
-        match limit {
-            None => tokio::fs::read(&path).await.map_err(lost),
-            Some(n) => crate::media::read_head(&path, n).await.map_err(lost),
-        }
-    }
-
     /// A picture: cleaned and resized under the memory budget, as sized
     /// from its header.
-    async fn picture(&self, job: &Claimed, stop: watch::Receiver<bool>) -> Result<Made, Problem> {
+    async fn picture(&self, job: &Job, source: &Path, making: &Making) -> Result<Made, Problem> {
         use crate::media::{self, Reject};
-        let id = job.image.id.as_str();
-        let size = job.image.bytes;
+        let id = job.id.as_str();
+        let size = job.bytes;
         let refused = |r: Reject| match r {
             Reject::TooBig(why) => Problem::Rejected(jobs::FAILED_TOO_LARGE, why),
             Reject::Unsupported(why) => Problem::Rejected(jobs::FAILED_UNREADABLE, why.into()),
             Reject::Broken(why) => Problem::Rejected(jobs::FAILED_UNREADABLE, why),
         };
-        let cost = match media::cost_of(&self.source(id), size, self.max_pixels).await {
+        let cost = match media::cost_of(source, size, job.max_pixels).await {
             Ok(cost) => cost,
             Err(media::Unsized::Refused(r)) => return Err(refused(r)),
             Err(media::Unsized::Unread(e)) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -461,16 +498,18 @@ impl Worker {
             Err(media::Unsized::Unread(e)) => return Err(Problem::Failed(e.to_string())),
         };
         let _held = self.hold(cost).await?;
-        if *stop.borrow() {
+        if making.stopped() {
             return Err(Problem::Stopped);
         }
-        let bytes = self.upload(id, None).await?;
-        let max = self.max_pixels;
+        let bytes = tokio::fs::read(source)
+            .await
+            .map_err(|e| Problem::Failed(e.to_string()))?;
+        let max = job.max_pixels;
         let processed = tokio::task::spawn_blocking(move || media::process(&bytes, max))
             .await
             .map_err(|e| Problem::Failed(format!("processing panicked: {e}")))?
             .map_err(refused)?;
-        if *stop.borrow() {
+        if making.stopped() {
             return Err(Problem::Stopped);
         }
         let made = Made {
@@ -491,22 +530,15 @@ impl Worker {
         if let Some(d) = processed.display {
             puts.push((Variant::Display, Bytes::from(d)));
         }
-        self.db
-            .add_stray(id)
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?;
         for (variant, bytes) in puts {
-            self.store
-                .put(&store::key(variant, id), bytes)
-                .await
-                .map_err(|e| Problem::Failed(format!("storing: {e}")))?;
+            self.put(id, variant, bytes.into()).await?;
         }
         Ok(made)
     }
 
     /// A video: probed, kept as recorded or converted to H.264 (either way
     /// without metadata), and a frame of it taken for its pictures.
-    async fn video(&self, job: &Claimed, stop: watch::Receiver<bool>) -> Result<Made, Problem> {
+    async fn video(&self, job: &Job, source: &Path, making: &Making) -> Result<Made, Problem> {
         // ffmpeg failing on a file it probed, or running past a limit
         // generous to the slowest machine, is the file's doing: retrying
         // would hold the video slot for hours to the same end. Not starting
@@ -526,14 +558,15 @@ impl Worker {
             .tools
             .as_ref()
             .ok_or_else(|| Problem::Failed("this worker has no ffmpeg".into()))?;
-        let id = job.image.id.as_str();
-        let owner = job.owner.as_str();
-        let source = self.source(id);
-        let head = self.upload(id, Some(16)).await?;
+        let id = job.id.as_str();
+        let stop = &making.stop;
+        let head = crate::media::read_head(source, 16)
+            .await
+            .map_err(|e| Problem::Failed(e.to_string()))?;
         let container = crate::sanitize::sniff_video(&head).ok_or_else(|| {
             Problem::Rejected(jobs::FAILED_UNREADABLE, "not a video after all".into())
         })?;
-        let probe = tools.probe(container, &source).await.map_err(|e| {
+        let probe = tools.probe(container, source).await.map_err(|e| {
             // Out of time, or trouble running ffprobe: this side's.
             if e.starts_with("timed out") || e.starts_with(video::LOCAL) {
                 Problem::Failed(format!("probing: {e}"))
@@ -541,7 +574,7 @@ impl Worker {
                 Problem::Rejected(jobs::FAILED_UNREADABLE, e)
             }
         })?;
-        if probe.duration > self.max_seconds as f64 {
+        if probe.duration > job.max_seconds as f64 {
             return Err(Problem::Rejected(
                 jobs::FAILED_TOO_LONG,
                 format!("{} long", video::clock(probe.duration)),
@@ -549,7 +582,7 @@ impl Worker {
         }
         let (width, height) = probe.shown();
         let pixels = u64::from(width) * u64::from(height);
-        if pixels == 0 || pixels > video::MAX_PIXELS.min(self.max_pixels) {
+        if pixels == 0 || pixels > video::MAX_PIXELS.min(job.max_pixels) {
             return Err(Problem::Rejected(
                 jobs::FAILED_TOO_LARGE,
                 format!("{width}×{height}"),
@@ -561,12 +594,11 @@ impl Worker {
                 format!("its video is {}", probe.video.codec),
             ));
         }
-        let size = tokio::fs::metadata(&source)
+        let size = tokio::fs::metadata(source)
             .await
             .map(|m| m.len())
             .unwrap_or(0);
         let work = self.work(id);
-        let _ = tokio::fs::remove_dir_all(&work).await;
         tokio::fs::create_dir_all(&work)
             .await
             .map_err(|e| Problem::Failed(e.to_string()))?;
@@ -575,22 +607,22 @@ impl Worker {
         // H.264 at its own size, which plays everywhere. A video already
         // H.264, 8-bit and SDR is that as it stands, and is not re-encoded.
         let fits = video::fits_mp4(&probe.video.codec);
-        let kept = fits && (job.image.as_recorded || probe.compatible());
+        let kept = fits && (job.as_recorded || probe.compatible());
         let made = work.join("video.mp4");
         if kept {
             tools
-                .remux(container, &probe, &source, &made, size, &stop)
+                .remux(container, &probe, source, &made, size, stop)
                 .await
                 .map_err(failed("remuxing"))?;
-            self.progress(owner, id, 900);
+            making.report(900);
         } else {
             let duration = probe.duration;
             let mut report = |secs: f64| {
                 let share = (secs / duration).clamp(0.0, 1.0);
-                self.progress(owner, id, (share * 950.0) as u16);
+                making.report((share * 950.0) as u16);
             };
             tools
-                .transcode(container, &probe, &source, &made, &stop, &mut report)
+                .transcode(container, &probe, source, &made, stop, &mut report)
                 .await
                 .map_err(failed("transcoding"))?;
         }
@@ -615,55 +647,44 @@ impl Worker {
         // that fail, a frame as it is beats no picture at all.
         let hdr = kept && stored.hdr();
         let at = (stored.duration / 3.0).min(1.0);
-        let png = match tools.frame(&made, at, hdr, &stop).await {
-            Err(e) if hdr && !*stop.borrow() => {
+        let png = match tools.frame(&made, at, hdr, stop).await {
+            Err(e) if hdr && !making.stopped() => {
                 tracing::warn!(id, error = %e, "tone-mapping a frame");
-                tools.frame(&made, at, false, &stop).await
+                tools.frame(&made, at, false, stop).await
             }
             done => done,
         }
         .map_err(failed("taking a frame"))?;
-        let cost = crate::media::cost(&png, png.len() as u64, self.max_pixels)
+        let cost = crate::media::cost(&png, png.len() as u64, job.max_pixels)
             .map_err(|e| Problem::Failed(format!("the frame: {e}")))?;
         let still = {
             let _held = self.hold(cost).await?;
-            let max = self.max_pixels;
+            let max = job.max_pixels;
             tokio::task::spawn_blocking(move || crate::media::stills(&png, max))
                 .await
                 .map_err(|e| Problem::Failed(e.to_string()))?
                 .map_err(|e| Problem::Failed(format!("the frame: {e}")))?
         };
-        self.progress(owner, id, 960);
+        making.report(960);
 
-        let put = async {
-            self.db.add_stray(id).await?;
-            let fingerprint = self
-                .store
-                .put_file(&store::key(Variant::Original, id), &made)
-                .await?;
-            self.store
-                .put(&store::key(Variant::Thumb, id), Bytes::from(still.thumb))
-                .await?;
-            self.store
-                .put(
-                    &store::key(Variant::Preview, id),
-                    Bytes::from(still.preview),
-                )
-                .await?;
-            Ok::<_, anyhow::Error>(fingerprint)
-        };
-        let (bytes, sha256) = put
+        let video = tokio::fs::File::open(&made)
             .await
-            .map_err(|e| Problem::Failed(format!("storing: {e:#}")))?;
-        self.progress(owner, id, 1000);
+            .map_err(|e| Problem::Failed(e.to_string()))?;
+        self.put(id, Variant::Original, video.into()).await?;
+        self.put(id, Variant::Thumb, Bytes::from(still.thumb).into())
+            .await?;
+        self.put(id, Variant::Preview, Bytes::from(still.preview).into())
+            .await?;
+        making.report(1000);
         let (width, height) = stored.shown();
         Ok(Made {
             width,
             height,
-            bytes,
+            // What the web process stored stands for these.
+            bytes: 0,
             animated: false,
             display: false,
-            sha256: sha256.to_vec(),
+            sha256: Vec::new(),
             duration_ms: Some((stored.duration * 1000.0).round() as u64),
             audio: stored.audio.is_some(),
         })
