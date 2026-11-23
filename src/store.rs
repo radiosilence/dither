@@ -7,7 +7,7 @@
 //! never holds more than a few thousand entries.
 //!
 //! An image's copies are its original, a thumbnail, a display copy when it
-//! is large, and a link preview once one has been asked for.
+//! is large, and a link preview.
 //!
 //! Reads go through an in-memory cache weighted by size. Thumbnails are what a
 //! grid asks for a hundred at a time; originals are cached up to
@@ -33,7 +33,7 @@ pub enum Variant {
     Original,
     Thumb,
     Display,
-    /// A link preview: a small JPEG, made the first time one is asked for.
+    /// A link preview: a small JPEG.
     Preview,
 }
 

@@ -16,9 +16,9 @@ at `/<id>.jpg` (or `.png`, `.gif`, `.webp`). The pages are plain HTML and CSS
 with no script. They carry Open Graph and Twitter card tags, so a link posted
 to Reddit, WhatsApp, Discord, iMessage, Slack or X previews as the picture, and
 the direct file address works anywhere an image link does. The preview's
-picture is a JPEG at most 1200 pixels wide and 300 KB, made the first time a
-preview asks for it: WhatsApp shows nothing for a larger one, and not every
-fetcher reads WebP.
+picture is a JPEG at most 1200 pixels wide and 300 KB, made at upload:
+WhatsApp shows nothing for a larger one, and not every fetcher reads WebP. An
+animated picture under 5 MB is its own preview, so it plays where previews do.
 
 Albums are unlisted: an address is ten characters of base62 from a CSPRNG
 (about 59.5 bits), long enough that enumerating them is hopeless where

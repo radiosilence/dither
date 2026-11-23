@@ -14,10 +14,11 @@
 //! change under an address, so they are cached for a year.
 //!
 //! A preview's picture is its own copy, `/p/<id>.jpg`: a JPEG held to
-//! [`PREVIEW_BYTES`], since WhatsApp shows nothing for a larger `og:image` and
-//! not every fetcher reads WebP. It is made the first time one is asked for,
-//! from the smallest stored copy large enough, so images uploaded before
-//! previews existed get theirs too.
+//! [`crate::media::PREVIEW_BYTES`], since WhatsApp shows nothing for a larger
+//! `og:image` and not every fetcher reads WebP. It is made at upload, and for
+//! an image uploaded before previews existed, the first time one is asked for.
+//! An animated picture small enough is its own preview, so it plays where
+//! previews do.
 
 use askama::Template;
 use askama_gettext::Translate as _;
@@ -28,7 +29,7 @@ use axum::response::{Html, IntoResponse, Response};
 use futures_util::StreamExt;
 
 use crate::db::{Album, Image};
-use crate::media::{DISPLAY_MAX, PREVIEW_BYTES, fit, preview_size};
+use crate::media::{DISPLAY_MAX, fit, preview_size};
 use crate::metrics::{self, Served};
 use crate::store::{self, Variant};
 use crate::web::Helpers as _;
@@ -40,9 +41,12 @@ const CSP_PUBLIC: &str = "default-src 'none'; img-src 'self'; style-src 'self'; 
 /// Image files: nothing at all, in a sandbox, should a browser ever render
 /// one as a document.
 const CSP_FILE: &str = "default-src 'none'; sandbox";
-/// Previews made at once. A link posted to a busy chat brings each member's
-/// client for it together; each preview holds a decoded copy of at most
-/// `DISPLAY_MAX` square, so two at a time is a bounded tens of megabytes.
+/// An animated picture up to this size is its own `og:image`, so it plays in
+/// the previews that play one (X's limit is 5 MB).
+const OG_ANIMATED_MAX: u64 = 5_000_000;
+/// Previews made at once for images uploaded before previews existed. Each
+/// holds a decoded copy of at most `DISPLAY_MAX` square, so two at a time is a
+/// bounded tens of megabytes.
 static MAKING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// An image as a page draws it.
@@ -106,6 +110,15 @@ pub struct Og {
 }
 
 fn og_image(public_url: &str, i: &Image) -> OgImage {
+    if i.animated && i.bytes <= OG_ANIMATED_MAX {
+        return OgImage {
+            url: format!("{public_url}/{}.{}", i.id, i.kind.ext()),
+            mime: i.kind.mime(),
+            width: i.width,
+            height: i.height,
+            alt: i.caption.clone(),
+        };
+    }
     let (width, height) = preview_size(i.width, i.height, i.animated);
     OgImage {
         url: format!("{public_url}/p/{}.jpg", i.id),
@@ -378,11 +391,13 @@ pub async fn preview(
     }
 }
 
-/// Image `image`'s preview, made from its smallest stored copy at least the
-/// preview's size and kept. An image deleted meanwhile has its preview
+/// Image `image`'s preview, for one uploaded before previews were made at
+/// upload: made from its smallest stored copy at least the preview's size,
+/// and kept. `None` when that copy is missing. A preview that cannot be kept
+/// is served all the same, and one made while its image was being deleted is
 /// deleted again, so none outlives it.
-async fn make_preview(state: &AppState, image: &Image) -> anyhow::Result<bytes::Bytes> {
-    let _turn = MAKING.acquire().await?;
+async fn make_preview(state: &AppState, image: &Image) -> anyhow::Result<Option<bytes::Bytes>> {
+    let key = store::key(Variant::Preview, &image.id);
     let source = if image.display {
         Variant::Display
     } else if image.animated {
@@ -390,21 +405,26 @@ async fn make_preview(state: &AppState, image: &Image) -> anyhow::Result<bytes::
     } else {
         Variant::Original
     };
-    let bytes = state
-        .store
-        .read(&store::key(source, &image.id))
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("its {source:?} copy is missing"))?;
+    let Some(bytes) = state.store.read(&store::key(source, &image.id)).await? else {
+        return Ok(None);
+    };
     let size = preview_size(image.width, image.height, image.animated);
-    let jpeg = tokio::task::spawn_blocking(move || crate::media::preview(&bytes, size)).await??;
-    debug_assert!(jpeg.len() <= PREVIEW_BYTES || size.0.max(size.1) > 0);
-    let key = store::key(Variant::Preview, &image.id);
+    let jpeg = {
+        let _turn = MAKING.acquire().await?;
+        // A link shared to a group brings every member's client at once: the
+        // first makes it, and the rest find it made.
+        if let Some(store::Body::Bytes(made)) = state.store.get(&key).await? {
+            return Ok(Some(made));
+        }
+        tokio::task::spawn_blocking(move || crate::media::preview(&bytes, size)).await??
+    };
     let jpeg = bytes::Bytes::from(jpeg);
-    state.store.put(&key, jpeg.clone()).await?;
-    if state.db.image(&image.id).await?.is_none() {
-        state.store.delete(&key).await?;
+    if let Err(e) = state.store.put(&key, jpeg.clone()).await {
+        tracing::warn!(image = %image.id, error = %e, "keeping a link preview failed");
+    } else if matches!(state.db.image(&image.id).await, Ok(None)) {
+        let _ = state.store.delete(&key).await;
     }
-    Ok(jpeg)
+    Ok(Some(jpeg))
 }
 
 async fn file(
@@ -482,15 +502,14 @@ async fn file(
         metrics::not_modified();
         return (StatusCode::NOT_MODIFIED, h).into_response();
     }
-    let body = match state.store.get(&store::key(variant, id)).await {
+    let found = match state.store.get(&store::key(variant, id)).await {
+        Ok(None) if variant == Variant::Preview => make_preview(state, &image)
+            .await
+            .map(|made| made.map(store::Body::Bytes)),
+        other => other.map_err(anyhow::Error::from),
+    };
+    let body = match found {
         Ok(Some(body)) => body,
-        Ok(None) if variant == Variant::Preview => match make_preview(state, &image).await {
-            Ok(bytes) => store::Body::Bytes(bytes),
-            Err(e) => {
-                tracing::error!(image = id, error = %e, "making a link preview failed");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        },
         Ok(None) => {
             tracing::error!(
                 image = id,
@@ -500,7 +519,7 @@ async fn file(
             return not_found().await;
         }
         Err(e) => {
-            tracing::error!(image = id, error = %e, "reading the store failed");
+            tracing::error!(image = id, ?variant, error = %e, "reading or making an image's file failed");
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };

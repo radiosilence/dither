@@ -294,15 +294,6 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
     assert!(html.contains("<meta property=\"og:image:width\" content=\"1200\">"));
     assert!(html.contains("<meta property=\"og:image:height\" content=\"800\">"));
 
-    // The preview is made when first asked for, then kept.
-    assert!(
-        app.state
-            .store
-            .read(&store::key(Variant::Preview, &id))
-            .await
-            .unwrap()
-            .is_none()
-    );
     let preview = app.get(&format!("/p/{id}.jpg")).await;
     assert_eq!(preview.status, StatusCode::OK);
     assert_eq!(preview.header("content-type"), "image/jpeg");
@@ -318,7 +309,18 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
             .as_deref(),
         Some(&preview.body[..])
     );
-    assert_eq!(app.get(&format!("/p/{id}.jpg")).await.body, preview.body);
+    // One uploaded before previews were made at upload gets one when first
+    // asked for, and keeps it.
+    let key = store::key(Variant::Preview, &id);
+    app.state.store.delete(&key).await.unwrap();
+    let made = app.get(&format!("/p/{id}.jpg")).await;
+    assert_eq!(made.status, StatusCode::OK);
+    let shown = image::load_from_memory(&made.body).unwrap();
+    assert_eq!((shown.width(), shown.height()), (1200, 800));
+    assert_eq!(
+        app.state.store.read(&key).await.unwrap().as_deref(),
+        Some(&made.body[..])
+    );
     assert_eq!(
         app.get(&format!("/p/{id}.webp")).await.status,
         StatusCode::NOT_FOUND

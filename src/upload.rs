@@ -433,6 +433,7 @@ impl Uploads {
         let mut puts = vec![
             (Variant::Original, Bytes::from(processed.original)),
             (Variant::Thumb, Bytes::from(processed.thumb)),
+            (Variant::Preview, Bytes::from(processed.preview)),
         ];
         let display = processed.display.is_some();
         if let Some(d) = processed.display {

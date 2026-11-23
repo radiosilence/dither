@@ -1,6 +1,6 @@
 //! From uploaded bytes to what is stored: the original with its metadata
-//! removed, a thumbnail for grids, and a display copy for pictures too large to
-//! send whole to a phone.
+//! removed, a thumbnail for grids, a display copy for pictures too large to
+//! send whole to a phone, and a JPEG for link previews.
 //!
 //! Derived copies are lossy WebP: a third smaller than JPEG at the same
 //! quality, and they keep transparency. They carry the original's colour
@@ -32,7 +32,7 @@ pub const PREVIEW_MAX: u32 = 1200;
 /// `og:image` much larger than this, and says so nowhere.
 pub const PREVIEW_BYTES: usize = 300_000;
 /// Qualities tried in turn until a preview fits [`PREVIEW_BYTES`].
-const PREVIEW_QUALITIES: [u8; 4] = [82, 72, 62, 50];
+const PREVIEW_QUALITIES: [u8; 6] = [82, 72, 62, 50, 40, 30];
 
 pub struct Processed {
     pub kind: Kind,
@@ -43,6 +43,7 @@ pub struct Processed {
     pub original: Vec<u8>,
     pub thumb: Vec<u8>,
     pub display: Option<Vec<u8>>,
+    pub preview: Vec<u8>,
     pub sha256: [u8; 32],
 }
 
@@ -87,8 +88,9 @@ fn check_size(w: u32, h: u32, max_pixels: u64) -> Result<(), Reject> {
 /// its `head` (the first bytes, or all of them) so the budget can be held
 /// before the file is: the file and its cleaned copy, the decoded pixels
 /// (16-bit ones take twice the room) beside the eight-bit copy made from
-/// them, as much again while a photo turns upright, and the display copy with
-/// the resizer's and encoder's working rows. A header that runs past `head`
+/// them, as much again while a photo turns upright, the display copy with
+/// the resizer's and encoder's working rows, and the preview with its
+/// flattened copy. A header that runs past `head`
 /// reads as broken.
 pub fn cost(head: &[u8], size: u64, max_pixels: u64) -> Result<u64, Reject> {
     let kind = sanitize::sniff(head).map_err(Reject::Unsupported)?;
@@ -97,7 +99,8 @@ pub fn cost(head: &[u8], size: u64, max_pixels: u64) -> Result<u64, Reject> {
     check_size(w, h, max_pixels)?;
     let eight = 4 * u64::from(w) * u64::from(h);
     let copies = 4 * u64::from(DISPLAY_MAX) * (u64::from(w.max(h)) + u64::from(DISPLAY_MAX));
-    Ok(2 * size + decoder.total_bytes().max(eight) + eight + copies)
+    let preview = 8 * u64::from(PREVIEW_MAX) * u64::from(PREVIEW_MAX);
+    Ok(2 * size + decoder.total_bytes().max(eight) + eight + copies + preview)
 }
 
 pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
@@ -110,26 +113,25 @@ pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
 
     // Everything from here reads the cleaned file, so what is stored is
     // proven to decode.
-    let mut decoder = decoder(&clean.bytes, kind)?;
-    let (w, h) = decoder.dimensions();
-    check_size(w, h, max_pixels)?;
-    let icc = decoder
-        .icc_profile()
-        .ok()
-        .flatten()
-        .filter(|p| p.get(16..20) == Some(b"RGB "));
-    let img = DynamicImage::from_decoder(decoder)
-        .map_err(|e| Reject::Broken(format!("the image can't be decoded: {e}")))?;
-    // Eight bits first, so the decoded buffer is freed before turning makes
-    // a copy.
-    let mut img = eight_bit(img);
-    img.apply_orientation(orientation);
+    let (img, icc) = decoded(&clean.bytes, kind, max_pixels, Some(orientation))?;
     let (width, height) = (img.width(), img.height());
 
     let display = (!clean.animated && width.max(height) > DISPLAY_MAX)
         .then(|| resize(&img, fit(width, height, DISPLAY_MAX)));
     let thumb = resize(display.as_ref().unwrap_or(&img), thumb_size(width, height));
+    // An animated picture's preview is a still, as its thumbnail is.
+    let still = if clean.animated {
+        &thumb
+    } else {
+        display.as_ref().unwrap_or(&img)
+    };
+    let preview = jpeg_preview(
+        still,
+        preview_size(width, height, clean.animated),
+        icc.as_deref(),
+    );
     Ok(Processed {
+        preview,
         kind,
         width,
         height,
@@ -156,8 +158,26 @@ pub fn preview_size(w: u32, h: u32, animated: bool) -> (u32, u32) {
 /// copy), so this needs little memory.
 pub fn preview(source: &[u8], size: (u32, u32)) -> Result<Vec<u8>, Reject> {
     let kind = sanitize::sniff(source).map_err(Reject::Unsupported)?;
-    let mut decoder = decoder(source, kind)?;
-    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let max = u64::from(DISPLAY_MAX) * u64::from(DISPLAY_MAX);
+    let (img, icc) = decoded(source, kind, max, None)?;
+    Ok(jpeg_preview(&img, size, icc.as_deref()))
+}
+
+/// `bytes` decoded at eight bits a channel and turned upright, by
+/// `orientation` or else by the file's own, with its colour profile when that
+/// is an RGB one.
+fn decoded(
+    bytes: &[u8],
+    kind: Kind,
+    max_pixels: u64,
+    orientation: Option<Orientation>,
+) -> Result<(DynamicImage, Option<Vec<u8>>), Reject> {
+    let mut decoder = decoder(bytes, kind)?;
+    let (w, h) = decoder.dimensions();
+    check_size(w, h, max_pixels)?;
+    let orientation = orientation
+        .or_else(|| decoder.orientation().ok())
+        .unwrap_or(Orientation::NoTransforms);
     let icc = decoder
         .icc_profile()
         .ok()
@@ -165,9 +185,15 @@ pub fn preview(source: &[u8], size: (u32, u32)) -> Result<Vec<u8>, Reject> {
         .filter(|p| p.get(16..20) == Some(b"RGB "));
     let img = DynamicImage::from_decoder(decoder)
         .map_err(|e| Reject::Broken(format!("the image can't be decoded: {e}")))?;
+    // Eight bits first, so the decoded buffer is freed before turning makes
+    // a copy.
     let mut img = eight_bit(img);
     img.apply_orientation(orientation);
-    let rgb = match resize(&img, size) {
+    Ok((img, icc))
+}
+
+fn jpeg_preview(img: &DynamicImage, size: (u32, u32), icc: Option<&[u8]>) -> Vec<u8> {
+    let rgb = match resize(img, size) {
         DynamicImage::ImageRgba8(b) => {
             let mut flat = image::RgbImage::new(b.width(), b.height());
             for (to, from) in flat.pixels_mut().zip(b.pixels()) {
@@ -185,8 +211,8 @@ pub fn preview(source: &[u8], size: (u32, u32)) -> Result<Vec<u8>, Reject> {
     for quality in PREVIEW_QUALITIES {
         out.clear();
         let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
-        if let Some(profile) = &icc {
-            let _ = image::ImageEncoder::set_icc_profile(&mut encoder, profile.clone());
+        if let Some(profile) = icc {
+            let _ = image::ImageEncoder::set_icc_profile(&mut encoder, profile.to_vec());
         }
         image::ImageEncoder::write_image(
             encoder,
@@ -195,12 +221,16 @@ pub fn preview(source: &[u8], size: (u32, u32)) -> Result<Vec<u8>, Reject> {
             rgb.height(),
             image::ExtendedColorType::Rgb8,
         )
-        .map_err(|e| Reject::Broken(format!("the preview can't be encoded: {e}")))?;
+        .expect("an RGB buffer of its own size encodes");
         if out.len() <= PREVIEW_BYTES {
-            break;
+            return out;
         }
     }
-    Ok(out)
+    tracing::warn!(
+        bytes = out.len(),
+        "a link preview is over its size at the lowest quality"
+    );
+    out
 }
 
 /// RGB or RGBA at eight bits a channel, which the resizer and the encoder
@@ -383,6 +413,8 @@ mod tests {
             (2048, 1365)
         );
         assert_eq!(dims(&p.thumb), (720, 480));
+        let preview = image::load_from_memory(&p.preview).unwrap();
+        assert_eq!((preview.width(), preview.height()), (1200, 800));
         assert_eq!(p.sha256, <[u8; 32]>::from(Sha256::digest(&p.original)));
     }
 
@@ -481,6 +513,8 @@ mod tests {
         );
         assert_eq!(p.kind, Kind::Gif);
         assert_eq!(dims(&p.thumb), (1440, 24));
+        let still = image::load_from_memory(&p.preview).unwrap();
+        assert_eq!((still.width(), still.height()), (1200, 20));
     }
 
     #[test]
