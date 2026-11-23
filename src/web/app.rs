@@ -19,7 +19,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 
 use crate::auth::session::Session;
-use crate::db::{AlbumEdit, Card, Image};
+use crate::db::{AlbumEdit, Card, Image, Status};
 use crate::error::{AppError, AppResult};
 use crate::media::{DISPLAY_MAX, fit};
 use crate::upload::CHUNK;
@@ -38,12 +38,18 @@ fn cut(s: &str, max: usize) -> String {
 struct Shell {
     login: String,
     max_upload: u64,
+    /// The limit for a video; `None` when the server takes none.
+    max_video: Option<u64>,
     chunk: u64,
 }
 
 impl Shell {
     fn max_label(&self) -> String {
         human(self.max_upload)
+    }
+
+    fn max_video_label(&self) -> String {
+        self.max_video.map(human).unwrap_or_default()
     }
 }
 
@@ -57,6 +63,11 @@ async fn shell(state: &AppState, session: &Session) -> Shell {
             .flatten()
             .unwrap_or_else(|| session.sub.clone()),
         max_upload: state.config.max_upload_bytes,
+        max_video: state
+            .uploads
+            .videos
+            .enabled()
+            .then(|| state.uploads.videos.max_bytes()),
         chunk: CHUNK,
     }
 }
@@ -153,14 +164,23 @@ struct Tile {
     animated: bool,
     captioned: bool,
     label: String,
+    /// A video's length.
+    length: Option<String>,
+    /// A video being made: thousandths done.
+    progress: Option<u16>,
+    /// Why a video could not be made.
+    failure: Option<String>,
 }
 
 impl Tile {
-    fn new(i: &Image) -> Self {
+    fn new(i: &Image, videos: &crate::video::Videos) -> Self {
         Self {
             id: i.id.clone(),
             thumb: format!("/t/{}.webp", i.id),
             animated: i.animated,
+            length: i.is_video().then(|| crate::video::clock(i.seconds())),
+            progress: (i.status == Status::Processing).then(|| videos.progress(&i.id).unwrap_or(0)),
+            failure: (i.status == Status::Failed).then(|| i.failure.clone()),
             captioned: !i.caption.is_empty(),
             label: if i.caption.is_empty() {
                 i.name.clone()
@@ -194,6 +214,14 @@ struct Viewer {
     height_full: u32,
     size: String,
     animated: bool,
+    /// A video, ready to play.
+    clip: Option<crate::web::clip::Clip>,
+    /// A video's length.
+    length: Option<String>,
+    /// A video being made: thousandths done.
+    progress: Option<u16>,
+    /// Why a video could not be made.
+    failure: Option<String>,
 }
 
 crate::i18n::translated!(
@@ -296,7 +324,10 @@ async fn album_parts(state: &AppState, album: &crate::db::Album) -> AppResult<(S
     let grid = render(&Grid {
         album: album.id.clone(),
         cover,
-        tiles: images.iter().map(Tile::new).collect(),
+        tiles: images
+            .iter()
+            .map(|i| Tile::new(i, &state.uploads.videos))
+            .collect(),
     })?;
     let bytes: u64 = images.iter().map(|i| i.bytes).sum();
     let summary = render(&Summary {
@@ -375,6 +406,7 @@ pub async fn delete_album(
         .await?
         .ok_or(AppError::NotFound)?;
     let count = images.len();
+    state.uploads.videos.cancel(&images);
     crate::store::discard(&state.store, &state.db, images).await;
     tracing::info!(album = %id, images = count, "album deleted");
     Ok(StatusCode::NO_CONTENT)
@@ -437,6 +469,7 @@ pub async fn delete_images(
 ) -> AppResult<Json<serde_json::Value>> {
     let deleted = state.db.delete_images(&session.sub, body.ids).await?;
     let count = deleted.len();
+    state.uploads.videos.cancel(&deleted);
     crate::store::discard(&state.store, &state.db, deleted).await;
     Ok(Json(serde_json::json!({ "deleted": count })))
 }
@@ -487,11 +520,19 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
         .next()
         .unwrap_or_default()
         .replace(['[', ']', '"', '<', '>'], "");
-    let (src, width, height) = if image.display {
+    let (src, width, height) = if image.display && !image.is_video() {
         let (w, h) = fit(image.width, image.height, DISPLAY_MAX);
         (format!("/d/{}.webp", image.id), w, h)
     } else {
         (file.clone(), image.width, image.height)
+    };
+    let html = if image.is_video() {
+        format!(
+            "<video src=\"{direct}\" poster=\"{public}/p/{}.jpg\" controls playsinline></video>",
+            image.id
+        )
+    } else {
+        format!("<img src=\"{direct}\" alt=\"{alt}\">")
     };
     let cover = album
         .cover
@@ -520,7 +561,7 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
             page,
             markdown: format!("![{alt}]({direct})"),
             bbcode: format!("[img]{direct}[/img]"),
-            html: format!("<img src=\"{direct}\" alt=\"{alt}\">"),
+            html,
             file: direct,
         },
         download: format!("{}.{}", image.id, image.kind.ext()),
@@ -530,6 +571,13 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
         height_full: image.height,
         size: human(image.bytes),
         animated: image.animated,
+        clip: (image.is_video() && image.ready()).then(|| crate::web::public::clip(&image)),
+        length: image
+            .is_video()
+            .then(|| crate::video::clock(image.seconds())),
+        progress: (image.status == Status::Processing)
+            .then(|| state.uploads.videos.progress(&image.id).unwrap_or(0)),
+        failure: (image.status == Status::Failed).then(|| image.failure.clone()),
         id: image.id,
     })
 }
@@ -542,7 +590,8 @@ pub struct StreamQuery {
 /// The page's live parts, redrawn after each change to the person's albums
 /// and sent when they changed. Changes come in bursts (an upload of three
 /// hundred images is three hundred), so a redraw waits a moment for the
-/// burst to settle.
+/// burst to settle. A video's progress on an album page is sent as its bar
+/// alone, rather than the grid redrawn for each step.
 pub async fn stream(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
@@ -550,6 +599,7 @@ pub async fn stream(
 ) -> Response {
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     let mut changes = state.db.changes();
+    let mut ticks = state.uploads.videos.ticks();
     let me: std::sync::Arc<str> = session.sub.as_str().into();
     let mut stopping = state.stopping.clone();
     let events = async_stream::stream! {
@@ -584,15 +634,22 @@ pub async fn stream(
                 Err(e) => tracing::warn!(error = %e, "drawing a live part failed"),
             }
             let woken = loop {
-                tokio::select! {
+                let tick = tokio::select! {
                     change = changes.recv() => match change {
                         Ok(owner) if owner == me => break true,
-                        Ok(_) => {}
+                        Ok(_) => continue,
                         // Missed some, which may have been theirs.
                         Err(RecvError::Lagged(_)) => break true,
                         Err(RecvError::Closed) => break false,
                     },
+                    tick = ticks.recv(), if q.album.is_some() => tick,
                     _ = stopping.wait_for(|s| *s) => break false,
+                };
+                if let Ok(tick) = tick && tick.owner == me {
+                    yield Ok(patch(&format!(
+                        "<progress id=\"vp-{}\" class=\"meter\" max=\"1000\" value=\"{}\"></progress>",
+                        tick.id, tick.done
+                    )));
                 }
             };
             if !woken {

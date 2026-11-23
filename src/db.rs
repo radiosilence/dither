@@ -26,7 +26,10 @@ use crate::sanitize::Kind;
 
 pub use rusqlite::Result;
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_video.sql"),
+];
 
 /// Idle connections kept: more than the service's usual concurrency, so the
 /// steady state never opens one.
@@ -250,11 +253,52 @@ pub struct Image {
     pub sha256: Vec<u8>,
     pub name: String,
     pub created_at: i64,
+    /// A video's length; `None` for a picture.
+    pub duration_ms: Option<u64>,
+    /// A video with sound.
+    pub audio: bool,
+    pub status: Status,
+    /// Why a video's processing failed, in words for its owner.
+    pub failure: String,
+}
+
+/// Whether an image's copies are there to serve. A picture is ready when its
+/// row is added; a video is processing until its copies are made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Ready,
+    Processing,
+    Failed,
+}
+
+impl Status {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "ready" => Status::Ready,
+            "processing" => Status::Processing,
+            "failed" => Status::Failed,
+            _ => return None,
+        })
+    }
 }
 
 impl Image {
+    pub fn is_video(&self) -> bool {
+        self.kind.is_video()
+    }
+
+    pub fn ready(&self) -> bool {
+        self.status == Status::Ready
+    }
+
+    /// How long a video runs, in seconds.
+    pub fn seconds(&self) -> f64 {
+        self.duration_ms.unwrap_or_default() as f64 / 1000.0
+    }
+
     fn from_row(r: &Row) -> Result<Self> {
         let kind: String = r.get("kind")?;
+        let status: String = r.get("state")?;
         Ok(Self {
             id: r.get("id")?,
             album: r.get("album")?,
@@ -275,6 +319,16 @@ impl Image {
             sha256: r.get("sha256")?,
             name: r.get("name")?,
             created_at: r.get("created_at")?,
+            duration_ms: r.get::<_, Option<i64>>("duration_ms")?.map(|d| d as u64),
+            audio: r.get("audio")?,
+            status: Status::parse(&status).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    format!("unknown state {status}").into(),
+                )
+            })?,
+            failure: r.get("failure")?,
         })
     }
 
@@ -340,6 +394,29 @@ pub struct NewImage {
     pub height: u32,
     pub bytes: u64,
     pub animated: bool,
+    pub display: bool,
+    pub sha256: Vec<u8>,
+}
+
+/// A video whose upload finished, as probed before its copies are made.
+#[derive(Debug, Clone)]
+pub struct NewVideo {
+    pub id: String,
+    pub width: u32,
+    pub height: u32,
+    pub duration_ms: u64,
+    pub audio: bool,
+    pub bytes: u64,
+}
+
+/// A video's copies, made: what its row records once it is ready.
+#[derive(Debug, Clone)]
+pub struct MadeVideo {
+    pub width: u32,
+    pub height: u32,
+    pub duration_ms: u64,
+    pub audio: bool,
+    pub bytes: u64,
     pub display: bool,
     pub sha256: Vec<u8>,
 }
@@ -439,7 +516,7 @@ impl Db {
                     "SELECT a.*, \
                        (SELECT COUNT(*) FROM images WHERE album = a.id) AS count, \
                        (SELECT COALESCE(SUM(bytes), 0) FROM images WHERE album = a.id) AS total, \
-                       COALESCE(a.cover, (SELECT id FROM images WHERE album = a.id ORDER BY position, created_at LIMIT 1)) AS cover_id \
+                       COALESCE(a.cover, (SELECT id FROM images WHERE album = a.id AND state = 'ready' ORDER BY position, created_at LIMIT 1)) AS cover_id \
                      FROM albums a WHERE a.owner = ?1 ORDER BY a.created_at DESC",
                 )?
                 .query_map([&owner], |r| {
@@ -565,7 +642,7 @@ impl Db {
         self.run_as(owner, move |c| {
             c.execute(
                 "UPDATE albums SET cover = ?1, updated_at = ?2 WHERE id = ?3 AND owner = ?4 \
-                 AND (?1 IS NULL OR EXISTS (SELECT 1 FROM images WHERE id = ?1 AND album = ?3))",
+                 AND (?1 IS NULL OR EXISTS (SELECT 1 FROM images WHERE id = ?1 AND album = ?3 AND state = 'ready'))",
                 params![image, now(), album, o],
             )
             .map(|n| n == 1)
@@ -815,6 +892,115 @@ impl Db {
         .await
     }
 
+    /// Add a video whose upload finished, as processing, where its upload
+    /// reserved. False when the upload is gone, is not `owner`'s, or ended
+    /// another way first. Its copies come later ([`finish_video`](Self::finish_video)).
+    pub async fn begin_video(&self, owner: &str, upload: &str, video: NewVideo) -> Result<bool> {
+        let (o, upload) = (owner.to_string(), upload.to_string());
+        self.write_as(owner, move |tx| {
+            let Some((album, position, name)) = tx
+                .query_row(
+                    "SELECT album, position, name FROM uploads \
+                     WHERE id = ?1 AND owner = ?2 AND image IS NULL AND error IS NULL",
+                    params![upload, o],
+                    |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+                })
+                .optional()?
+            else {
+                return Ok(false);
+            };
+            tx.execute(
+                "INSERT INTO images (id, album, position, kind, width, height, bytes, sha256, name, created_at, duration_ms, audio, state) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, X'', ?8, ?9, ?10, ?11, 'processing')",
+                params![
+                    video.id,
+                    album,
+                    position,
+                    Kind::Mp4.as_str(),
+                    video.width,
+                    video.height,
+                    video.bytes as i64,
+                    name,
+                    now(),
+                    video.duration_ms as i64,
+                    video.audio,
+                ],
+            )?;
+            tx.execute(
+                "UPDATE uploads SET image = ?1 WHERE id = ?2 AND owner = ?3",
+                params![video.id, upload, o],
+            )?;
+            tx.execute(
+                "UPDATE albums SET updated_at = ?1 WHERE id = ?2 AND owner = ?3",
+                params![now(), album, o],
+            )?;
+            Ok(true)
+        })
+        .await
+    }
+
+    /// Mark a processing video ready with what its copies came to, claiming
+    /// the copies [`add_stray`](Self::add_stray) recorded. False when it is
+    /// no longer processing: deleted while its copies were made, whose
+    /// copies are then the caller's to remove.
+    pub async fn finish_video(&self, owner: &str, id: &str, made: MadeVideo) -> Result<bool> {
+        let (o, id) = (owner.to_string(), id.to_string());
+        self.write_as(owner, move |tx| {
+            let n = tx.execute(
+                "UPDATE images SET state = 'ready', width = ?1, height = ?2, duration_ms = ?3, \
+                   audio = ?4, bytes = ?5, display = ?6, sha256 = ?7 \
+                 WHERE id = ?8 AND state = 'processing' \
+                   AND album IN (SELECT id FROM albums WHERE owner = ?9)",
+                params![
+                    made.width,
+                    made.height,
+                    made.duration_ms as i64,
+                    made.audio,
+                    made.bytes as i64,
+                    made.display,
+                    made.sha256,
+                    id,
+                    o
+                ],
+            )?;
+            if n == 0 {
+                return Ok(false);
+            }
+            tx.execute("DELETE FROM strays WHERE id = ?1", [&id])?;
+            Ok(true)
+        })
+        .await
+    }
+
+    /// Mark a processing video failed, saying why.
+    pub async fn fail_video(&self, owner: &str, id: &str, why: &str) -> Result<bool> {
+        let (o, id, why) = (owner.to_string(), id.to_string(), why.to_string());
+        self.run_as(owner, move |c| {
+            c.execute(
+                "UPDATE images SET state = 'failed', failure = ?1 WHERE id = ?2 AND state = 'processing' \
+                 AND album IN (SELECT id FROM albums WHERE owner = ?3)",
+                params![why, id, o],
+            )
+            .map(|n| n == 1)
+        })
+        .await
+    }
+
+    /// Videos still processing, oldest first, with their owners: the work a
+    /// restart resumes.
+    pub async fn processing(&self) -> Result<Vec<(Image, String)>> {
+        self.run(|c| {
+            c.prepare(
+                "SELECT i.*, a.owner AS album_owner FROM images i JOIN albums a ON a.id = i.album \
+                 WHERE i.state = 'processing' ORDER BY i.created_at",
+            )?
+            .query_map([], |r| Ok((Image::from_row(r)?, r.get("album_owner")?)))?
+            .collect()
+        })
+        .await
+    }
+
     /// End an upload that has not ended, recording why.
     pub async fn fail_upload(&self, owner: &str, id: &str, error: &str) -> Result<()> {
         let (owner, id, error) = (owner.to_string(), id.to_string(), error.to_string());
@@ -894,11 +1080,11 @@ impl Db {
         .await
     }
 
-    /// How many images an album holds.
+    /// How many images an album shows to anyone with its link.
     pub async fn count(&self, album: &str) -> Result<u64> {
         let album = album.to_string();
         self.run(move |c| {
-            c.prepare_cached("SELECT COUNT(*) FROM images WHERE album = ?1")?
+            c.prepare_cached("SELECT COUNT(*) FROM images WHERE album = ?1 AND state = 'ready'")?
                 .query_row([album], |r| r.get::<_, i64>(0))
                 .map(|n| n as u64)
         })

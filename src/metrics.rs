@@ -22,6 +22,9 @@ static UPLOADS: AtomicU64 = AtomicU64::new(0);
 static UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
 static REJECTED: AtomicU64 = AtomicU64::new(0);
 static PROCESS_MS: AtomicU64 = AtomicU64::new(0);
+static VIDEOS: AtomicU64 = AtomicU64::new(0);
+static VIDEO_FAILURES: AtomicU64 = AtomicU64::new(0);
+static VIDEO_MS: AtomicU64 = AtomicU64::new(0);
 static SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
 static SNAPSHOT_FAILURES: AtomicU64 = AtomicU64::new(0);
 static SNAPSHOT_AT: AtomicU64 = AtomicU64::new(0);
@@ -43,6 +46,12 @@ pub fn uploaded(bytes: u64, took: std::time::Duration) {
     UPLOADS.fetch_add(1, Relaxed);
     UPLOAD_BYTES.fetch_add(bytes, Relaxed);
     PROCESS_MS.fetch_add(took.as_millis() as u64, Relaxed);
+}
+
+/// A video made, or not, and how long it took.
+pub fn video(ok: bool, took: std::time::Duration) {
+    if ok { &VIDEOS } else { &VIDEO_FAILURES }.fetch_add(1, Relaxed);
+    VIDEO_MS.fetch_add(took.as_millis() as u64, Relaxed);
 }
 
 pub fn rejected() {
@@ -134,6 +143,24 @@ pub fn render(t: &Totals) -> String {
         "counter",
         "Time spent cleaning and resizing uploads.",
         &one(PROCESS_MS.load(Relaxed)),
+    );
+    metric(
+        "dither_videos_total",
+        "counter",
+        "Videos processed.",
+        &one(VIDEOS.load(Relaxed)),
+    );
+    metric(
+        "dither_video_failures_total",
+        "counter",
+        "Videos whose processing failed or was stopped.",
+        &one(VIDEO_FAILURES.load(Relaxed)),
+    );
+    metric(
+        "dither_video_milliseconds_total",
+        "counter",
+        "Time spent processing videos.",
+        &one(VIDEO_MS.load(Relaxed)),
     );
     metric(
         "dither_snapshots_total",

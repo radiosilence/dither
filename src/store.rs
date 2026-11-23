@@ -7,7 +7,9 @@
 //! never holds more than a few thousand entries.
 //!
 //! An image's copies are its original, a thumbnail, a display copy when it
-//! is large, and a link preview.
+//! is large, and a link preview. A video's display copy is the one browsers
+//! play, when the original is not; its thumbnail and preview are of a frame.
+//! Videos are written from files and read in ranges, never held whole.
 //!
 //! Reads go through an in-memory cache weighted by size. Thumbnails are what a
 //! grid asks for a hundred at a time; originals are cached up to
@@ -22,7 +24,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use object_store::path::Path;
-use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
+use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt, PutPayload};
 
 /// Objects larger than this are streamed rather than cached.
 pub const CACHE_ITEM_MAX: u64 = 8 << 20;
@@ -175,6 +177,72 @@ impl Store {
             self.cache.remove(key);
         }
         Ok(())
+    }
+
+    /// Store the file at `path` under `key`, streamed rather than read whole:
+    /// a video can be larger than the memory processing may take.
+    pub async fn put_file(&self, key: &Path, path: &FsPath) -> Result<()> {
+        use tokio::io::AsyncWriteExt as _;
+        self.cache.remove(key);
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("opening {}", path.display()))?;
+        let mut writer = object_store::buffered::BufWriter::new(self.inner.clone(), key.clone());
+        let copied = tokio::io::copy(&mut file, &mut writer).await;
+        if let Err(e) = copied {
+            let _ = writer.abort().await;
+            return Err(e).with_context(|| format!("storing {key}"));
+        }
+        writer
+            .shutdown()
+            .await
+            .with_context(|| format!("storing {key}"))
+    }
+
+    /// Bytes `start..end` of the object (`end` past its length reads to its
+    /// end), with its whole length; `None` when there is none.
+    pub async fn get_range(
+        &self,
+        key: &Path,
+        start: u64,
+        end: u64,
+    ) -> object_store::Result<Option<(Body, u64)>> {
+        if let Some(hit) = self.cache.get(key) {
+            crate::metrics::cache(true);
+            let len = hit.len() as u64;
+            let (s, e) = (start.min(len) as usize, end.min(len) as usize);
+            return Ok(Some((Body::Bytes(hit.slice(s..e)), len)));
+        }
+        let options = GetOptions {
+            range: Some(GetRange::Bounded(start..end)),
+            ..GetOptions::default()
+        };
+        let result = match self.inner.get_opts(key, options).await {
+            Ok(r) => r,
+            Err(object_store::Error::NotFound { .. }) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let total = result.meta.size;
+        let size = result.range.end - result.range.start;
+        Ok(Some((
+            Body::Stream {
+                size,
+                stream: result.into_stream(),
+            },
+            total,
+        )))
+    }
+
+    /// The object's length, or `None` when there is none.
+    pub async fn size(&self, key: &Path) -> object_store::Result<Option<u64>> {
+        if let Some(hit) = self.cache.get(key) {
+            return Ok(Some(hit.len() as u64));
+        }
+        match self.inner.head(key).await {
+            Ok(meta) => Ok(Some(meta.size)),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// The object, or `None` when there is none.
@@ -385,6 +453,46 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_is_stored_whole_and_read_back_in_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip");
+        let bytes: Vec<u8> = (0..(3 << 20)).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let store = Store::memory();
+        let k = key(Variant::Original, "abcdefghij");
+        store.put_file(&k, &path).await.unwrap();
+        assert_eq!(store.read(&k).await.unwrap().as_deref(), Some(&bytes[..]));
+        let read = |body: Body| async {
+            match body {
+                Body::Bytes(b) => b.to_vec(),
+                Body::Stream { stream, .. } => stream
+                    .map(|c| c.unwrap().to_vec())
+                    .collect::<Vec<_>>()
+                    .await
+                    .concat(),
+            }
+        };
+        let (body, total) = store.get_range(&k, 1000, 2000).await.unwrap().unwrap();
+        assert_eq!(total, bytes.len() as u64);
+        assert_eq!(read(body).await, &bytes[1000..2000]);
+        // A cached object is sliced from memory.
+        let t = key(Variant::Thumb, "abcdefghij");
+        store
+            .put(&t, Bytes::from_static(b"0123456789"))
+            .await
+            .unwrap();
+        let (body, total) = store.get_range(&t, 2, 5).await.unwrap().unwrap();
+        assert_eq!((read(body).await, total), (b"234".to_vec(), 10));
+        assert!(
+            store
+                .get_range(&key(Variant::Original, "nothing"), 0, 1)
+                .await
+                .unwrap()
+                .is_none()
         );
     }
 

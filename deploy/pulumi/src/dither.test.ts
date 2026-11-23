@@ -32,6 +32,14 @@ describe("environment", () => {
     expect(e.AWS_REGION).toBe("auto");
   });
 
+  it("takes videos by default, and can be told not to or given limits", () => {
+    expect(env(base).VIDEO).toBeUndefined();
+    expect(env({ ...base, video: false }).VIDEO).toBe("off");
+    const e = env({ ...base, maxVideoBytes: 2e9, maxVideoSeconds: 600 });
+    expect(e.MAX_VIDEO_BYTES).toBe("2000000000");
+    expect(e.MAX_VIDEO_SECONDS).toBe("600");
+  });
+
   it("links to the public domain when there is one", () => {
     expect(env(base).PUBLIC_URL).toBe("https://dither.example");
     expect(env({ ...base, publicHostname: "pics.example" }).PUBLIC_URL).toBe("https://pics.example");

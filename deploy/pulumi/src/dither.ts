@@ -77,6 +77,11 @@ export type DitherArgs = {
    */
   minFreeBytes?: number;
   maxUploadBytes?: number;
+  /** The largest video taken (1 GB by default); `video: false` takes none. */
+  maxVideoBytes?: number;
+  /** The longest video taken, in seconds (30 minutes by default). */
+  maxVideoSeconds?: number;
+  video?: boolean;
   limits?: { cpu: string; memory: string };
   requests?: { cpu: string; memory: string };
 };
@@ -99,6 +104,9 @@ export function environment(args: DitherArgs) {
       : []),
     ...(args.minFreeBytes === undefined ? [] : [{ name: "MIN_FREE_BYTES", value: String(args.minFreeBytes) }]),
     ...(args.maxUploadBytes ? [{ name: "MAX_UPLOAD_BYTES", value: String(args.maxUploadBytes) }] : []),
+    ...(args.video === false ? [{ name: "VIDEO", value: "off" }] : []),
+    ...(args.maxVideoBytes ? [{ name: "MAX_VIDEO_BYTES", value: String(args.maxVideoBytes) }] : []),
+    ...(args.maxVideoSeconds ? [{ name: "MAX_VIDEO_SECONDS", value: String(args.maxVideoSeconds) }] : []),
     { name: "OIDC_ISSUER", value: args.oidc.issuer },
     { name: "OIDC_CLIENT_ID", value: args.oidc.clientId },
     ...(args.oidc.backchannel ? [{ name: "OIDC_TOKEN_URL", value: `${args.oidc.backchannel.url}/oauth2/token` }] : []),
@@ -236,8 +244,10 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
                   periodSeconds: 30,
                 },
                 // Processing is what takes memory: the service holds it to
-                // a budget (1 GiB by default), which this limit allows beside
-                // the image cache.
+                // a budget (1 GiB by default, of which a video's ffmpeg is
+                // allowed 768 MiB), which this limit allows beside the image
+                // cache. A video's ffmpeg runs two threads at a lower
+                // priority, within the same CPU limit.
                 resources: {
                   limits: args.limits ?? { cpu: "2", memory: "1536Mi" },
                   requests: args.requests ?? { cpu: "10m", memory: "64Mi" },

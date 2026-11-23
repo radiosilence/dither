@@ -28,6 +28,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   IMAGE: ghcr.io/${{ github.repository }}
+  # The ffmpeg build the image ships (Dockerfile): the tests run against it.
+  FFMPEG_IMAGE: mwader/static-ffmpeg:9.0.2-1@sha256:f5d100184884eb3e82b0eb14bb5ebf98da99826ac824989720297fb9ef21c822
 
 # A pull request's newer push cancels its older run; on main, a newer push
 # cancels an older one that releases nothing. A run that may release is in a
@@ -237,7 +239,17 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: test
           cache-on-failure: true
+      - name: ffmpeg, as the image ships it
+        run: |
+          id=$(docker create "$FFMPEG_IMAGE")
+          sudo docker cp "$id:/ffmpeg" /usr/local/bin/ffmpeg
+          sudo docker cp "$id:/ffprobe" /usr/local/bin/ffprobe
+          docker rm "$id"
+          ffmpeg -hide_banner -version | head -1
+      # Video tests fail here rather than skip when ffmpeg is missing.
       - run: cargo test --workspace --locked
+        env:
+          DITHER_REQUIRE_FFMPEG: "1"
 
   lint:
     name: Lint

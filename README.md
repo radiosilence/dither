@@ -1,6 +1,6 @@
 # dither
 
-An image host: albums of images with captions, uploaded behind a sign-in and
+An image host: albums of images and videos with captions, uploaded behind a sign-in and
 shared by unlisted links that preview anywhere a link can. It has no feed, no
 accounts of its own, no ads and no tracking.
 
@@ -12,8 +12,9 @@ binary on each release, and a Pulumi component in `deploy/pulumi`
 
 An album is a page of its images stacked in order, each with its caption, at
 `/a/<id>`; each image has a page of its own at `/<id>` and is the file itself
-at `/<id>.jpg` (or `.png`, `.gif`, `.webp`). The pages are plain HTML and CSS
-with no script. They carry Open Graph and Twitter card tags, so a link posted
+at `/<id>.jpg` (or `.png`, `.gif`, `.webp`, `.mp4`). The pages are plain HTML
+and CSS; their only script is the video player's, which enhances a `<video>`
+that plays without it. They carry Open Graph and Twitter card tags, so a link posted
 to Reddit, WhatsApp, Discord, iMessage, Slack or X previews as the picture, and
 the direct file address works anywhere an image link does. The preview's
 picture is a JPEG at most 1200 pixels wide and 300 KB, made at upload:
@@ -49,6 +50,41 @@ JPEG, PNG (including APNG), GIF and WebP are accepted, up to 64 MB and 100
 megapixels by default. HEIC, AVIF, SVG (which can carry script), BMP and TIFF
 are refused with the reason. An iPhone converts HEIC to JPEG when uploading
 from Photos through the browser.
+
+### Videos
+
+MP4, MOV (as phones record), M4V and WebM or Matroska are accepted when the
+server has ffmpeg (the image ships a static build), up to 1 GB and 30 minutes
+by default. The original is remuxed into MP4 without re-encoding, keeping its
+first video and audio streams and nothing else: phones write where a video
+was taken into the container's metadata and into timed metadata tracks, as
+they do into a photo's EXIF, and none of it is kept. The rotation a phone
+records is part of the video track and survives.
+
+Browsers do not all play what phones record, so a video that is not already
+H.264, 8-bit, SDR, at most 1920 pixels long, at most 60 frames a second and
+under 12 Mbit/s gets a playback copy that is (x264 at CRF 23, stereo AAC),
+tone-mapped from HDR (PQ or HLG) to SDR. The original stays downloadable as
+recorded. A frame of the playback copy becomes the thumbnail and the link
+preview, and a page's `og:video` names the playback copy, for the sites that
+play one inline.
+
+Transcoding takes minutes, so finishing a video's upload only probes it
+(ffprobe) and adds it to the album as processing; one worker then makes each
+video's copies in turn, showing its progress on the album page, and marks it
+ready, or failed with the reason. Until it is ready a video is its owner's
+alone. A restart resumes whatever was processing, and deleting a video stops
+its ffmpeg.
+
+ffmpeg parses untrusted files, so it runs as a process of its own: told the
+container it reads rather than left to probe, limited to the file protocol
+and to the decoders phones and cameras need, at a lower priority than
+serving, with a time limit, holding a share of the processing budget
+(`VIDEO_MEMORY_BYTES`) while it works.
+
+Every file is served with byte ranges, which seeking needs and Safari requires
+before it plays a video at all; video is never compressed again on the way
+out.
 
 ## Storage
 
@@ -119,12 +155,16 @@ The same JSON API serves anything else that wants to upload:
 
 ```text
 POST   /api/albums                 {title?}                 → {id}
-POST   /api/albums/{id}/uploads    {files: [{name, size}]}  → {uploads: [{id}], chunk}
+POST   /api/albums/{id}/uploads    {files: [{name, size, type?}]} → {uploads: [{id}], chunk}
 PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 GET    /api/uploads/{id}                                    → {received, size, image?, error?}
-POST   /api/uploads/{id}/finish                             → {image: {id, page, file, thumb, …}} | {error}
+POST   /api/uploads/{id}/finish                             → {image: {id, page, file, thumb, processing, …}} | {error}
 DELETE /api/uploads/{id}
 ```
+
+A file's `type`, the browser's MIME type, holds a video to the video limit
+rather than the image one; the bytes decide what a file is when it finishes.
+A video finishes `processing`, and its copies follow.
 
 Every request needs a session and, if it writes, an `X-Dither` or
 `Datastar-Request` header. A chunk answered 408, 429 or a 5xx other than 507
@@ -206,6 +246,11 @@ startup.
 | `MAX_UPLOAD_BYTES`, `MAX_PIXELS` | 64 000 000, 100 000 000 | Per image. |
 | `PROCESS_MEMORY_BYTES` | 1 GiB | Memory processing takes at once, across all uploads. An image that needs more alone is refused. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |
+| `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
+| `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
+| `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
+| `VIDEO_THREADS` | 2 | Threads a transcode uses, of the CPU serving shares. |
+| `VIDEO_MEMORY_BYTES` | 768 MiB | What a video holds of `PROCESS_MEMORY_BYTES` while ffmpeg works on it. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 
 ## Development

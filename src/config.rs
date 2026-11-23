@@ -15,6 +15,31 @@ pub struct Oidc {
     pub token_url: String,
 }
 
+/// Whether videos are taken, and with what.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoMode {
+    /// When ffmpeg and ffprobe are found.
+    Auto,
+    /// Never.
+    Off,
+    /// Always: startup fails without them.
+    On,
+}
+
+pub struct Video {
+    pub mode: VideoMode,
+    pub ffmpeg: PathBuf,
+    pub ffprobe: PathBuf,
+    pub max_bytes: u64,
+    pub max_seconds: u64,
+    /// Threads a transcode uses: the pod's CPU limit is shared with serving.
+    pub threads: u32,
+    /// What a video's processing holds of `process_memory` while it runs:
+    /// ffmpeg's decoders and encoder are a process of their own, so this is
+    /// an allowance rather than a measure.
+    pub memory: u64,
+}
+
 pub struct Config {
     pub bind_addr: String,
     /// `/metrics`, on a port of its own so the scraper is let in without
@@ -43,6 +68,7 @@ pub struct Config {
     /// free, so a full image store never fills the disk the rest of the
     /// machine depends on. Unset, each disk keeps 15% of its size free.
     pub min_free_bytes: Option<u64>,
+    pub video: Video,
 }
 
 fn var(key: &str) -> Option<String> {
@@ -134,6 +160,20 @@ impl Config {
                         .map_err(|_| anyhow::anyhow!("MIN_FREE_BYTES must be a number"))
                 })
                 .transpose()?,
+            video: Video {
+                mode: match or("VIDEO", "auto").as_str() {
+                    "auto" => VideoMode::Auto,
+                    "off" => VideoMode::Off,
+                    "on" => VideoMode::On,
+                    other => bail!("VIDEO must be auto, on or off, not {other}"),
+                },
+                ffmpeg: PathBuf::from(or("FFMPEG", "ffmpeg")),
+                ffprobe: PathBuf::from(or("FFPROBE", "ffprobe")),
+                max_bytes: num("MAX_VIDEO_BYTES", 1_000_000_000)?,
+                max_seconds: num("MAX_VIDEO_SECONDS", 1800)?,
+                threads: num::<u32>("VIDEO_THREADS", 2)?.max(1),
+                memory: num("VIDEO_MEMORY_BYTES", 768 << 20)?,
+            },
         })
     }
 
@@ -175,6 +215,15 @@ impl Config {
             process_memory: 1 << 30,
             cache_bytes: 16 << 20,
             min_free_bytes: Some(0),
+            video: Video {
+                mode: VideoMode::Auto,
+                ffmpeg: PathBuf::from("ffmpeg"),
+                ffprobe: PathBuf::from("ffprobe"),
+                max_bytes: 64 << 20,
+                max_seconds: 600,
+                threads: 2,
+                memory: 256 << 20,
+            },
         }
     }
 }

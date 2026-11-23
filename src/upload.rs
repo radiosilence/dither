@@ -18,6 +18,10 @@
 //! Processing runs in a task of its own that the request only waits on, so a
 //! client that disconnects mid-way does not stop it, and asking again joins
 //! the run already going or reads how it ended.
+//!
+//! A video is only probed here: its row is added as processing and its file
+//! handed to the video worker (`video`), since making its copies takes
+//! longer than a request should wait.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,6 +36,7 @@ use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore, watch};
 use crate::db::{Db, NewImage, Upload};
 use crate::media;
 use crate::store::{self, Store, Variant};
+use crate::video::{self, Problem, Videos};
 
 /// The share of a disk uploads leave free when no floor is set.
 const DEFAULT_FREE_SHARE: f64 = 0.15;
@@ -90,6 +95,7 @@ pub struct Uploads {
     min_free: Option<u64>,
     locks: Locks,
     running: parking_lot::Mutex<HashMap<String, watch::Receiver<Option<Outcome>>>>,
+    pub videos: Arc<Videos>,
 }
 
 /// An upload's lock, held until this drops. A lock lives in the map only
@@ -120,16 +126,27 @@ impl Uploads {
         process_memory: u64,
         max_pixels: u64,
         min_free: Option<u64>,
+        video: video::Settings,
     ) -> std::io::Result<Self> {
         let dir = state_dir.join("incoming");
         std::fs::create_dir_all(&dir)?;
         // Whole MiB, and no more than one acquire can ask for.
         let mib = (process_memory / MIB).clamp(1, u64::from(u32::MAX));
+        let budget = Arc::new(Semaphore::new(mib as usize));
+        let videos = Arc::new(Videos::new(
+            db.clone(),
+            store.clone(),
+            state_dir,
+            budget.clone(),
+            mib as u32,
+            video,
+        )?);
         Ok(Self {
             db,
             store,
             dir,
-            budget: Arc::new(Semaphore::new(mib as usize)),
+            videos,
+            budget,
             budget_bytes: mib * MIB,
             max_pixels,
             min_free,
@@ -373,6 +390,11 @@ impl Uploads {
         if read.await.is_err() || (head.len() as u64) < upload.size.min(HEAD) {
             return self.recount(&upload).await;
         }
+        if self.videos.enabled()
+            && let Some(container) = crate::sanitize::sniff_video(&head)
+        {
+            return self.video(upload, container, &path).await;
+        }
         let cost = match media::cost(&head, upload.size, self.max_pixels) {
             Ok(cost) => cost,
             // A header longer than the first bytes: size it from the whole file.
@@ -470,27 +492,74 @@ impl Uploads {
             }
             Ok(false) => {
                 store::discard(&self.store, &self.db, vec![id]).await;
-                let why = match self.db.upload(&upload.id).await {
-                    // Still open: the sweep took the copies' record first,
-                    // which only an hour between storing and recording
-                    // allows. Finishing again works.
-                    Ok(Some(u)) if u.image.is_none() && u.error.is_none() => {
-                        return Outcome::Failed("the image could not be saved; try again".into());
-                    }
-                    Ok(Some(u)) => u.error.unwrap_or_else(|| "it ended another way".into()),
-                    Ok(None) => "its album was deleted while it uploaded".into(),
-                    Err(_) => {
-                        return Outcome::Failed("the image could not be saved; try again".into());
-                    }
-                };
-                // Cancelled while it was processed, or its album deleted.
-                let _ = tokio::fs::remove_file(&path).await;
-                Outcome::Rejected(why)
+                self.ended(&upload, &path).await
             }
             Err(e) => {
                 tracing::error!(upload = %upload.id, error = %e, "recording an upload failed");
                 store::discard(&self.store, &self.db, vec![id]).await;
                 Outcome::Failed("the image could not be saved; try again".into())
+            }
+        }
+    }
+
+    /// What to say of an upload whose image could not be added because the
+    /// upload ended another way first (cancelled, or its album deleted), or
+    /// is still open (the sweep took its copies' record first, which only an
+    /// hour between storing and recording allows: finishing again works).
+    async fn ended(&self, upload: &Upload, path: &Path) -> Outcome {
+        let why = match self.db.upload(&upload.id).await {
+            Ok(Some(u)) if u.image.is_none() && u.error.is_none() => {
+                return Outcome::Failed("the image could not be saved; try again".into());
+            }
+            Ok(Some(u)) => u.error.unwrap_or_else(|| "it ended another way".into()),
+            Ok(None) => "its album was deleted while it uploaded".into(),
+            Err(_) => {
+                return Outcome::Failed("the image could not be saved; try again".into());
+            }
+        };
+        let _ = tokio::fs::remove_file(path).await;
+        Outcome::Rejected(why)
+    }
+
+    /// Add a video as processing and hand its file to the video worker.
+    async fn video(
+        &self,
+        upload: Upload,
+        container: crate::sanitize::Container,
+        path: &Path,
+    ) -> Outcome {
+        // The remuxed original and the playback copy are made beside the
+        // upload before it goes.
+        if !self.room_for(upload.size.saturating_mul(2)) {
+            return Outcome::Failed(
+                "the disk is nearly full, so nothing more can be stored".into(),
+            );
+        }
+        let video = match self.videos.check(container, path, upload.size).await {
+            Ok(v) => v,
+            Err(Problem::Rejected(why)) => return self.reject(&upload, why).await,
+            Err(Problem::Failed(why)) => return Outcome::Failed(why),
+            Err(Problem::Stopped) => return Outcome::Failed("try again".into()),
+        };
+        let id = video.id.clone();
+        if let Err(e) = self.videos.take(path, &id).await {
+            tracing::error!(upload = %upload.id, error = %e, "moving a video upload failed");
+            return Outcome::Failed("the video could not be saved; try again".into());
+        }
+        match self.db.begin_video(&upload.owner, &upload.id, video).await {
+            Ok(true) => {
+                tracing::info!(video = %id, bytes = upload.size, "video queued");
+                self.videos.enqueue(id.clone());
+                Outcome::Done(id)
+            }
+            Ok(false) => {
+                self.videos.give_back(&id, path).await;
+                self.ended(&upload, path).await
+            }
+            Err(e) => {
+                tracing::error!(upload = %upload.id, error = %e, "recording a video failed");
+                self.videos.give_back(&id, path).await;
+                Outcome::Failed("the video could not be saved; try again".into())
             }
         }
     }
@@ -570,6 +639,7 @@ impl Uploads {
             }
             Err(e) => tracing::warn!(error = %e, "sweeping stored copies failed"),
         }
+        self.videos.sweep().await;
     }
 }
 
@@ -599,6 +669,7 @@ mod tests {
                 1 << 30,
                 50_000_000,
                 Some(0),
+                video::Settings::off(),
             )
             .unwrap(),
         );
@@ -769,6 +840,7 @@ mod tests {
                 8 << 20,
                 50_000_000,
                 Some(0),
+                video::Settings::off(),
             )
             .unwrap(),
         );

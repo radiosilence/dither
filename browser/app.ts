@@ -23,10 +23,16 @@ const body = document.body;
 const lang = document.documentElement.lang || "en-GB";
 
 const MAX = Number(body.dataset["maxUpload"]) || 64_000_000;
+/** The limit for a video, when the server takes them. */
+const MAX_VIDEO = Number(body.dataset["maxVideo"]) || 0;
 const CHUNK = Number(body.dataset["chunk"]) || 4 * 1024 * 1024;
 const PARALLEL = 3;
 const RETRIES = 6;
 const TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+const VIDEO_TYPES = new Set(["video/mp4", "video/quicktime", "video/webm", "video/x-matroska", "video/x-m4v"]);
+/** Whether a file is a video, by what the browser says or, when it says nothing, by its name. */
+const isVideo = (file: File) =>
+  VIDEO_TYPES.has(file.type) || (!file.type && /\.(mp4|mov|m4v|webm|mkv)$/i.test(file.name));
 
 // ── Copy ─────────────────────────────────────────────────────────────────
 
@@ -205,7 +211,9 @@ document.addEventListener("keydown", (ev) => {
     "touchstart",
     (ev) => {
       const touch = ev.touches[0];
-      if ((ev.target as Element).closest(".stage") && ev.touches.length === 1 && touch) {
+      // A swipe on the player's controls is a scrub, not a move to the next image.
+      const target = ev.target as Element;
+      if (target.closest(".stage") && !target.closest("[data-player-controls]") && ev.touches.length === 1 && touch) {
         start = { x: touch.clientX, y: touch.clientY };
       }
     },
@@ -292,6 +300,16 @@ document.addEventListener(
 {
   const grid = $("#grid");
   if (grid) new MutationObserver(paintSelection).observe(grid, { childList: true, subtree: true });
+  // A video's bar in the viewer follows its tile's, which the live stream moves.
+  if (grid)
+    new MutationObserver((records) => {
+      for (const r of records) {
+        const bar = r.target;
+        if (!(bar instanceof HTMLProgressElement) || !bar.id.startsWith("vp-")) continue;
+        const shown = $<HTMLProgressElement>(`#viewer [data-progress-of="${bar.id.slice(3)}"]`);
+        if (shown) shown.value = bar.value;
+      }
+    }).observe(grid, { attributes: true, attributeFilter: ["value"], subtree: true });
 }
 
 document.addEventListener("click", async (ev) => {
@@ -675,15 +693,17 @@ async function add(list: FileList | File[]) {
       state: "queued",
       error: "",
     };
+    const video = MAX_VIDEO > 0 && isVideo(file);
+    const max = video ? MAX_VIDEO : MAX;
     if (/\.(heic|heif)$/i.test(item.name) || /hei[cf]/.test(file.type)) {
       item.state = "failed";
       item.error = say("heic");
-    } else if (file.type && !TYPES.has(file.type)) {
+    } else if (file.type && !TYPES.has(file.type) && !video) {
       item.state = "failed";
-      item.error = say("not an image");
-    } else if (file.size > MAX) {
+      item.error = MAX_VIDEO > 0 ? say("not media") : say("not an image");
+    } else if (file.size > max) {
       item.state = "failed";
-      item.error = say("too big", { size: human(file.size), max: human(MAX) });
+      item.error = say("too big", { size: human(file.size), max: human(max) });
     } else if (file.size === 0) {
       item.state = "failed";
       item.error = say("empty");
@@ -705,7 +725,7 @@ async function add(list: FileList | File[]) {
   try {
     const album = await target(running);
     const res = await api("POST", `/api/albums/${album}/uploads`, {
-      files: go.map((i) => ({ name: i.name, size: i.size })),
+      files: go.map((i) => ({ name: i.name, size: i.size, type: i.file.type })),
     });
     const answer = await json<{ uploads: { id: string }[]; error: string }>(res);
     if (!res.ok || !answer.uploads) throw new Failure(answer.error || say("refused", { status: res.status }), false);
@@ -1090,7 +1110,9 @@ $<HTMLInputElement>("#pick")?.addEventListener("change", (ev) => {
 }
 
 addEventListener("paste", (ev) => {
-  const files = [...(ev.clipboardData?.files ?? [])].filter((f) => f.type.startsWith("image/"));
+  const files = [...(ev.clipboardData?.files ?? [])].filter(
+    (f) => f.type.startsWith("image/") || (MAX_VIDEO > 0 && isVideo(f)),
+  );
   if (!files.length || !$("[data-dropzone]")) return;
   ev.preventDefault();
   void add(files);

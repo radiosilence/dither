@@ -1,0 +1,1 @@
+{% macro clip(c) %}<div class="player" data-player><video src="{{ c.src }}" poster="{{ c.poster }}" width="{{ c.width }}" height="{{ c.height }}" preload="metadata" playsinline controls{% if c.looping %} muted loop{% endif %}></video></div>{% endmacro %}

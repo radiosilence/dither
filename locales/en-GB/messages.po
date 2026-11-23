@@ -121,6 +121,13 @@ msgstr ""
 
 #: templates/app/library.html
 msgid ""
+"JPEG, PNG, GIF or WebP up to %{max} each, and videos up to %{video}. Where a "
+"photo or video was taken and what took it are removed before anything is "
+"stored."
+msgstr ""
+
+#: templates/app/library.html
+msgid ""
 "JPEG, PNG, GIF or WebP, up to %{max} each. Where a photo was taken and what "
 "took it are removed before anything is stored."
 msgstr ""
@@ -139,6 +146,10 @@ msgstr ""
 msgid "Nothing here yet."
 msgstr ""
 
+#: templates/app/viewer.html
+msgid "Processing this video. It can be shared once it's done."
+msgstr ""
+
 #: templates/app/deleted.html
 msgid "This album has been deleted."
 msgstr ""
@@ -147,8 +158,16 @@ msgstr ""
 msgid "This link doesn't lead to anything, or no longer does."
 msgstr ""
 
+#: templates/app/viewer.html
+msgid "This video couldn't be processed: %{why}"
+msgstr ""
+
 #: templates/app/picker.html
 msgid "a new album"
+msgstr ""
+
+#: templates/public/layout.html
+msgid "a video"
 msgstr ""
 
 #: templates/app/album.html
@@ -201,6 +220,10 @@ msgstr ""
 
 #: templates/app/viewer.html
 msgid "copy the link to the image's page"
+msgstr ""
+
+#: templates/app/grid.html
+msgid "couldn't process"
 msgstr ""
 
 #: templates/app/album.html
@@ -265,6 +288,10 @@ msgstr ""
 
 #: templates/app/layout.html
 msgid "not a JPEG, PNG, GIF or WebP"
+msgstr ""
+
+#: templates/app/layout.html
+msgid "not a JPEG, PNG, GIF, WebP or video"
 msgstr ""
 
 #: templates/public/missing.html
@@ -369,9 +396,18 @@ msgstr ""
 msgid "uploads"
 msgstr ""
 
+#: templates/app/grid.html
+msgid "video"
+msgstr ""
+
 #: templates/app/layout.html
 msgctxt "A copy button, after copying"
 msgid "copied"
+msgstr ""
+
+#: templates/app/grid.html
+msgctxt "A video's state"
+msgid "processing"
 msgstr ""
 
 #: templates/app/album.html templates/app/layout.html templates/app/viewer.html

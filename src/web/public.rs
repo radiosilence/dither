@@ -1,7 +1,8 @@
 //! What anyone with a link sees: an album, an image's page, and the image
 //! files themselves.
 //!
-//! The pages are plain HTML and CSS, no script, with the Open Graph and
+//! The pages are plain HTML and CSS, and script only for the video player,
+//! which enhances a `<video>` that plays without it; with the Open Graph and
 //! Twitter card tags link previews are built from (Reddit, WhatsApp, Discord,
 //! iMessage, Slack and the rest), and `noindex`, since an unlisted album should be
 //! found by its link and not by a search engine. `robots.txt` allows every
@@ -19,6 +20,10 @@
 //! an image uploaded before previews existed, the first time one is asked for.
 //! An animated picture small enough is its own preview, so it plays where
 //! previews do.
+//!
+//! A video's page names its playback copy as `og:video` and a frame as its
+//! picture. Every file is served with byte ranges, which seeking a video
+//! needs and Safari requires before it plays one at all.
 
 use askama::Template;
 use askama_gettext::Translate as _;
@@ -33,11 +38,13 @@ use crate::media::{DISPLAY_MAX, fit, preview_size};
 use crate::metrics::{self, Served};
 use crate::store::{self, Variant};
 use crate::web::Helpers as _;
+use crate::web::clip::Clip;
 use crate::web::{AppState, human, on_public_host};
 
-/// Public pages: no script at all, images and styles from here only.
-const CSP_PUBLIC: &str = "default-src 'none'; img-src 'self'; style-src 'self'; font-src 'self'; \
-     form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
+/// Public pages: images, video, styles and the player's script from here
+/// only, and nothing inline.
+const CSP_PUBLIC: &str = "default-src 'none'; img-src 'self'; media-src 'self'; script-src 'self'; \
+     style-src 'self'; font-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
 /// Image files: nothing at all, in a sandbox, should a browser ever render
 /// one as a document.
 const CSP_FILE: &str = "default-src 'none'; sandbox";
@@ -63,6 +70,38 @@ pub struct Pic {
     pub caption: String,
     /// Portrait: drawn narrower in an album, so it fits a screen.
     pub tall: bool,
+    /// A video, drawn by the player rather than as a picture.
+    pub clip: Option<Clip>,
+}
+
+/// Short silent videos play on a loop, as a GIF would.
+const LOOP_MAX_SECONDS: f64 = 30.0;
+
+/// A video as the player draws it.
+pub fn clip(i: &Image) -> Clip {
+    let file = format!("/{}.{}", i.id, i.kind.ext());
+    let (width, height) = if i.display {
+        fit(i.width, i.height, crate::video::PLAY_MAX)
+    } else {
+        (i.width, i.height)
+    };
+    let seconds = i.seconds();
+    Clip {
+        id: i.id.clone(),
+        src: if i.display {
+            format!("/d/{}.mp4", i.id)
+        } else {
+            file.clone()
+        },
+        poster: format!("/p/{}.jpg", i.id),
+        file,
+        width,
+        height,
+        seconds,
+        audio: i.audio,
+        looping: !i.audio && seconds <= LOOP_MAX_SECONDS,
+        title: i.caption.lines().next().unwrap_or(&i.name).to_string(),
+    }
 }
 
 impl Pic {
@@ -85,8 +124,16 @@ impl Pic {
             height: i.height,
             caption: i.caption.clone(),
             tall: u64::from(i.height) * 20 > u64::from(i.width) * 23,
+            clip: i.is_video().then(|| clip(i)),
         }
     }
+}
+
+/// What a video's preview plays.
+pub struct OgVideo {
+    pub url: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 pub struct OgImage {
@@ -107,10 +154,22 @@ pub struct Og {
     pub description: String,
     pub url: String,
     pub image: Option<OgImage>,
+    pub video: Option<OgVideo>,
+}
+
+fn og_video(public_url: &str, i: &Image) -> Option<OgVideo> {
+    i.is_video().then(|| {
+        let c = clip(i);
+        OgVideo {
+            url: format!("{public_url}{}", c.src),
+            width: c.width,
+            height: c.height,
+        }
+    })
 }
 
 fn og_image(public_url: &str, i: &Image) -> OgImage {
-    if i.animated && i.bytes <= OG_ANIMATED_MAX {
+    if !i.is_video() && i.animated && i.bytes <= OG_ANIMATED_MAX {
         return OgImage {
             url: format!("{public_url}/{}.{}", i.id, i.kind.ext()),
             mime: i.kind.mime(),
@@ -249,6 +308,8 @@ pub async fn album(
     let Ok(images) = state.db.images(&id).await else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    // Videos still being made, or that failed, are their owner's business.
+    let images: Vec<Image> = images.into_iter().filter(Image::ready).collect();
     let public = &state.config.public_url;
     let cover = album
         .cover
@@ -270,6 +331,7 @@ pub async fn album(
         description,
         url: format!("{public}/a/{id}"),
         image: cover.map(|c| og_image(public, c)),
+        video: cover.and_then(|c| og_video(public, c)),
     };
     let html = AlbumPage {
         og,
@@ -309,7 +371,7 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     let Ok(Some((image, album))) = state.db.image(id).await else {
         return not_found().await;
     };
-    if !visible(state, headers, &album).await {
+    if !image.ready() || !visible(state, headers, &album).await {
         return not_found().await;
     }
     let siblings = state.db.count(&album.id).await.unwrap_or(1);
@@ -328,9 +390,15 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
         },
         url: format!("{public}/{id}"),
         image: Some(og_image(public, &image)),
+        video: og_video(public, &image),
+    };
+    let length = if image.is_video() {
+        format!(" · {}", crate::video::clock(image.seconds()))
+    } else {
+        String::new()
     };
     let meta = format!(
-        "{}×{} · {} · {}",
+        "{}×{}{length} · {} · {}",
         image.width,
         image.height,
         human(image.bytes),
@@ -374,9 +442,11 @@ pub async fn display(
     Path(file): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    match file.strip_suffix(".webp") {
-        Some(id) => self::file(&state, &headers, id, Variant::Display, "webp").await,
-        None => not_found().await,
+    match file.rsplit_once('.') {
+        Some((id, ext @ ("webp" | "mp4"))) => {
+            self::file(&state, &headers, id, Variant::Display, ext).await
+        }
+        _ => not_found().await,
     }
 }
 
@@ -397,6 +467,10 @@ pub async fn preview(
 /// is served all the same, and one made while its image was being deleted is
 /// deleted again, so none outlives it.
 async fn make_preview(state: &AppState, image: &Image) -> anyhow::Result<Option<bytes::Bytes>> {
+    // A video's is made with its other copies, from a frame.
+    if image.is_video() {
+        return Ok(None);
+    }
     let key = store::key(Variant::Preview, &image.id);
     let source = if image.display {
         Variant::Display
@@ -440,7 +514,12 @@ async fn file(
     let Ok(Some((image, album))) = state.db.image(id).await else {
         return not_found().await;
     };
-    if !visible(state, headers, &album).await {
+    if !image.ready() || !visible(state, headers, &album).await {
+        return not_found().await;
+    }
+    // A video's display copy is what plays, an image's a smaller picture.
+    let display = if image.is_video() { "mp4" } else { "webp" };
+    if variant == Variant::Display && ext != display {
         return not_found().await;
     }
     // A picture without a display copy is its own.
@@ -459,6 +538,7 @@ async fn file(
             (image.kind.mime(), Served::Original, 'o')
         }
         Variant::Thumb => ("image/webp", Served::Thumb, 't'),
+        Variant::Display if image.is_video() => ("video/mp4", Served::Display, 'd'),
         Variant::Display => ("image/webp", Served::Display, 'd'),
         Variant::Preview => ("image/jpeg", Served::Preview, 'p'),
     };
@@ -494,6 +574,7 @@ async fn file(
         HeaderValue::from_static("*"),
     );
     h.insert("x-robots-tag", HeaderValue::from_static("noindex"));
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     if headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
@@ -502,7 +583,30 @@ async fn file(
         metrics::not_modified();
         return (StatusCode::NOT_MODIFIED, h).into_response();
     }
-    let found = match state.store.get(&store::key(variant, id)).await {
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+    let filename = format!(
+        "{id}.{}",
+        match variant {
+            Variant::Original => image.kind.ext(),
+            Variant::Preview => "jpg",
+            Variant::Thumb => "webp",
+            Variant::Display => display,
+        }
+    );
+    h.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("inline; filename=\"{filename}\""))
+            .expect("an id and an extension"),
+    );
+    let key = store::key(variant, id);
+    // A preview may still have to be made, so it is always sent whole.
+    let wanted = (variant != Variant::Preview)
+        .then(|| Wanted::from(headers, &etag, &modified))
+        .flatten();
+    if let Some(wanted) = wanted {
+        return partial(state, &key, wanted, served, h).await;
+    }
+    let found = match state.store.get(&key).await {
         Ok(None) if variant == Variant::Preview => make_preview(state, &image)
             .await
             .map(|made| made.map(store::Body::Bytes)),
@@ -523,20 +627,6 @@ async fn file(
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
-    let filename = format!(
-        "{id}.{}",
-        match variant {
-            Variant::Original => image.kind.ext(),
-            Variant::Preview => "jpg",
-            Variant::Thumb | Variant::Display => "webp",
-        }
-    );
-    h.insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!("inline; filename=\"{filename}\""))
-            .expect("an id and an extension"),
-    );
     match body {
         store::Body::Bytes(bytes) => {
             metrics::served(served, bytes.len() as u64);
@@ -551,9 +641,131 @@ async fn file(
     }
 }
 
+/// The one range of bytes a request asks for. Several ranges in one request
+/// are answered with the whole file, which the standard allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wanted {
+    /// `bytes=a-b`, inclusive.
+    Between(u64, u64),
+    /// `bytes=a-`.
+    From(u64),
+    /// `bytes=-n`: the last `n`.
+    Last(u64),
+}
+
+impl Wanted {
+    /// The range `headers` ask for, unless an `If-Range` names something
+    /// other than this file as it is (`etag`, or its `modified` date).
+    fn from(headers: &HeaderMap, etag: &str, modified: &str) -> Option<Self> {
+        if let Some(condition) = headers.get(header::IF_RANGE) {
+            let condition = condition.to_str().ok()?.trim();
+            if condition != etag && condition != modified {
+                return None;
+            }
+        }
+        Self::parse(headers.get(header::RANGE)?.to_str().ok()?)
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        let spec = value.trim().strip_prefix("bytes=")?.trim();
+        if spec.contains(',') {
+            return None;
+        }
+        let (a, b) = spec.split_once('-')?;
+        let (a, b) = (a.trim(), b.trim());
+        match (a.is_empty(), b.is_empty()) {
+            (false, false) => {
+                let (a, b) = (a.parse().ok()?, b.parse().ok()?);
+                (a <= b).then_some(Wanted::Between(a, b))
+            }
+            (false, true) => Some(Wanted::From(a.parse().ok()?)),
+            (true, false) => Some(Wanted::Last(b.parse().ok()?)),
+            (true, true) => None,
+        }
+    }
+
+    /// Bytes `start..end` of a file of `size`, or `None` when none of them
+    /// are in it.
+    fn within(self, size: u64) -> Option<(u64, u64)> {
+        let (start, end) = match self {
+            Wanted::Between(a, b) => (a, b.saturating_add(1).min(size)),
+            Wanted::From(a) => (a, size),
+            Wanted::Last(n) => (size.saturating_sub(n), size),
+        };
+        (start < end).then_some((start, end))
+    }
+}
+
+/// Part of a file, as a range request asked: 206 with the part, or 416 when
+/// the range is outside the file.
+async fn partial(
+    state: &AppState,
+    key: &object_store::path::Path,
+    wanted: Wanted,
+    served: Served,
+    mut h: HeaderMap,
+) -> Response {
+    let size = match state.store.size(key).await {
+        Ok(Some(size)) => size,
+        Ok(None) => {
+            tracing::error!(%key, "an image's file is missing from the store");
+            return not_found().await;
+        }
+        Err(e) => {
+            tracing::error!(%key, error = %e, "reading the store failed");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+    let Some((start, end)) = wanted.within(size) else {
+        h.insert(
+            header::CONTENT_RANGE,
+            HeaderValue::from_str(&format!("bytes */{size}")).expect("digits"),
+        );
+        return (StatusCode::RANGE_NOT_SATISFIABLE, h).into_response();
+    };
+    let body = match state.store.get_range(key, start, end).await {
+        Ok(Some((body, _))) => body,
+        Ok(None) => return not_found().await,
+        Err(e) => {
+            tracing::error!(%key, error = %e, "reading the store failed");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+    h.insert(
+        header::CONTENT_RANGE,
+        HeaderValue::from_str(&format!("bytes {start}-{}/{size}", end - 1)).expect("digits"),
+    );
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(end - start));
+    metrics::served(served, end - start);
+    let body = match body {
+        store::Body::Bytes(bytes) => HttpBody::from(bytes),
+        store::Body::Stream { stream, .. } => {
+            HttpBody::from_stream(stream.map(|r| r.map_err(std::io::Error::other)))
+        }
+    };
+    (StatusCode::PARTIAL_CONTENT, h, body).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranges_parse_and_fall_within_the_file() {
+        assert_eq!(Wanted::parse("bytes=0-99"), Some(Wanted::Between(0, 99)));
+        assert_eq!(Wanted::parse("bytes=100-"), Some(Wanted::From(100)));
+        assert_eq!(Wanted::parse("bytes=-500"), Some(Wanted::Last(500)));
+        assert_eq!(Wanted::parse("bytes=0-1,5-6"), None);
+        assert_eq!(Wanted::parse("bytes=9-3"), None);
+        assert_eq!(Wanted::parse("items=0-1"), None);
+        assert_eq!(Wanted::parse("bytes=-"), None);
+        assert_eq!(Wanted::Between(0, 99).within(50), Some((0, 50)));
+        assert_eq!(Wanted::From(10).within(50), Some((10, 50)));
+        assert_eq!(Wanted::From(50).within(50), None);
+        assert_eq!(Wanted::Last(500).within(50), Some((0, 50)));
+        assert_eq!(Wanted::Last(0).within(50), None);
+        assert_eq!(Wanted::Between(49, 1000).within(50), Some((49, 50)));
+    }
 
     #[test]
     fn a_summary_is_the_first_line_cut_at_a_word() {

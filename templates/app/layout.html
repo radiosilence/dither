@@ -4,7 +4,7 @@
 <script type="module" src="{{ app_js_url() }}"></script>
 {% endblock %}
 {% block body %}
-<body class="app" data-max-upload="{{ shell.max_upload }}" data-chunk="{{ shell.chunk }}">
+<body class="app" data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">
 <header class="topbar">
   <a href="/" class="wordmark" aria-label="{{ __("dither: your albums") }}">dither</a>
   <span class="flex-1"></span>
@@ -28,7 +28,7 @@
     </div>
   </form>
 </dialog>
-<input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp" hidden>
+<input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp{% if shell.max_video.is_some() %},video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-m4v,.mp4,.mov,.m4v,.webm,.mkv{% endif %}" hidden>
 {# What the browser's script says, keyed by name. Placeholders it fills itself are left as written. A line with a
    count comes once per plural form of the language, each rendered at a count in that form, which the script reads
    to file it; `%{n}` is the count it fills in. #}
@@ -57,6 +57,7 @@
   <span data-k="pasted image">{{ __("pasted image") }}</span>
   <span data-k="heic">{{ __("HEIC isn't supported yet: export it as JPEG") }}</span>
   <span data-k="not an image">{{ __("not a JPEG, PNG, GIF or WebP") }}</span>
+  <span data-k="not media">{{ __("not a JPEG, PNG, GIF, WebP or video") }}</span>
   <span data-k="too big">{{ __("%{size} is over the %{max} limit") }}</span>
   <span data-k="empty">{{ __("the file is empty") }}</span>
   <span data-k="refused">{{ __("refused (%{status})") }}</span>

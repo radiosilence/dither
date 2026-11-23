@@ -14,6 +14,7 @@ mod sanitize;
 mod snapshot;
 mod store;
 mod upload;
+mod video;
 mod web;
 
 use std::sync::Arc;
@@ -77,7 +78,15 @@ async fn serve() -> anyhow::Result<()> {
         config.process_memory,
         config.max_pixels,
         config.min_free_bytes,
+        video::Settings {
+            tools: video::Tools::find(&config.video).await?,
+            max_bytes: config.video.max_bytes,
+            max_seconds: config.video.max_seconds,
+            max_pixels: config.max_pixels,
+            memory: config.video.memory,
+        },
     )?);
+    uploads.videos.start();
 
     let (snapshot_stop, snapshot_rx) = watch::channel(false);
     let snapshots = tokio::spawn(snapshot::run(db.clone(), store.clone(), snapshot_rx));

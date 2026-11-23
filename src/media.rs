@@ -59,7 +59,10 @@ pub enum Reject {
 }
 
 fn decoder(bytes: &[u8], kind: Kind) -> Result<impl ImageDecoder + '_, Reject> {
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), kind.image_format());
+    let format = kind
+        .image_format()
+        .ok_or(Reject::Unsupported("a video is not an image"))?;
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
     // A 100-megapixel picture at 16 bits a channel, and a little over.
     limits.max_alloc = Some(1 << 30);

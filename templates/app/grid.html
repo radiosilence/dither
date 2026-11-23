@@ -2,8 +2,14 @@
 {% for t in tiles %}
   <button type="button" class="tile" id="i-{{ t.id }}" data-id="{{ t.id }}" aria-label="{{ t.label }}"
     data-on:click="dither.show('viewer'); @get('/images/{{ t.id }}/view')">
+    {% if let Some(done) = t.progress %}
+    <span class="tile-wait"><span>{{ __p("A video's state", "processing") }}</span><progress id="vp-{{ t.id }}" class="meter" max="1000" value="{{ done }}"></progress></span>
+    {% else if let Some(why) = t.failure.as_ref() %}
+    <span class="tile-wait bad" title="{{ why }}">{{ icon("warning", 18.0)|safe }}<span>{{ __("couldn't process") }}</span></span>
+    {% else %}
     <img src="{{ t.thumb }}" alt="" loading="lazy" decoding="async" draggable="false">
-    <span class="marks">{% if t.id == cover %}<span class="mark">{{ __p("Mark on the album's cover image", "cover") }}</span>{% endif %}{% if t.animated %}<span class="mark">{{ __p("Mark on an animated image", "gif") }}</span>{% endif %}{% if t.captioned %}<span class="mark" title="{{ __("has a caption") }}">¶</span>{% endif %}</span>
+    {% endif %}
+    <span class="marks">{% if t.id == cover %}<span class="mark">{{ __p("Mark on the album's cover image", "cover") }}</span>{% endif %}{% if t.animated %}<span class="mark">{{ __p("Mark on an animated image", "gif") }}</span>{% endif %}{% if let Some(length) = t.length.as_ref() %}<span class="mark" title="{{ __("video") }}">{{ length }}</span>{% endif %}{% if t.captioned %}<span class="mark" title="{{ __("has a caption") }}">¶</span>{% endif %}</span>
     <span class="tick">{{ icon("check", 13.0)|safe }}</span>
   </button>
 {% endfor %}

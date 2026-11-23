@@ -437,6 +437,15 @@
     @apply z-20 cursor-grabbing opacity-90 outline-2 outline-brand;
   }
 
+  /* A video still being made, or one that could not be, in place of its picture. */
+  .tile-wait {
+    @apply pointer-events-none absolute inset-0 grid content-center justify-items-center gap-2 px-3 text-fine text-muted lowercase;
+  }
+
+  .stage-wait {
+    @apply absolute inset-0 m-auto grid h-fit max-w-[420px] content-center justify-items-center gap-3 px-6 text-center text-muted;
+  }
+
   /* ── The viewer ────────────────────────────────────────────────────── */
 
   .viewer {

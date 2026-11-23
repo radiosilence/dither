@@ -3,10 +3,17 @@
 //!
 //! ```text
 //! POST   /api/albums                 {title?}            → {id}
-//! POST   /api/albums/{id}/uploads    {files: [{name, size}]} → {uploads: [{id}], chunk}
+//! POST   /api/albums/{id}/uploads    {files: [{name, size, type?}]} → {uploads: [{id}], chunk}
 //! PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 //! GET    /api/uploads/{id}                               → {received, size, image?, error?}
-//! POST   /api/uploads/{id}/finish                        → {image: {...}} | {error}
+//! POST   /api/uploads/{id}/finish                        → {image: {..., processing}} | {error}
+//! ```
+//!
+//! A file's `type` is the MIME type its browser gives: a video's is held to
+//! the video limit rather than the image one. The bytes decide what it is
+//! when it finishes, and a video finishes as processing: its copies follow.
+//!
+//! ```text
 //! DELETE /api/uploads/{id}
 //! ```
 
@@ -56,6 +63,22 @@ pub async fn create_album(
 pub struct File {
     name: String,
     size: u64,
+    #[serde(default, rename = "type")]
+    mime: String,
+}
+
+impl File {
+    /// Whether the browser says it is a video, or its name does when the
+    /// browser says nothing.
+    fn video(&self) -> bool {
+        let ext = self
+            .name
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase());
+        self.mime.starts_with("video/")
+            || (self.mime.is_empty()
+                && matches!(ext.as_deref(), Some("mp4" | "mov" | "m4v" | "webm" | "mkv")))
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -75,15 +98,22 @@ pub async fn begin(
             format!("send between 1 and {BATCH_MAX} files at a time"),
         );
     }
-    let max = state.config.max_upload_bytes;
-    if let Some(f) = batch.files.iter().find(|f| f.size == 0 || f.size > max) {
+    let videos = &state.uploads.videos;
+    let max = |f: &File| {
+        if videos.enabled() && f.video() {
+            videos.max_bytes()
+        } else {
+            state.config.max_upload_bytes
+        }
+    };
+    if let Some(f) = batch.files.iter().find(|f| f.size == 0 || f.size > max(f)) {
         return error(
             StatusCode::PAYLOAD_TOO_LARGE,
             format!(
                 "{} is {}; the limit is {}",
                 f.name,
                 crate::web::human(f.size),
-                crate::web::human(max)
+                crate::web::human(max(f))
             ),
         );
     }
@@ -236,6 +266,7 @@ pub async fn finish(
                     "width": i.width,
                     "height": i.height,
                     "bytes": i.bytes,
+                    "processing": !i.ready(),
                 }}))
                 .into_response()
             }
