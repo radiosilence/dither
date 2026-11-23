@@ -946,8 +946,9 @@ impl Db {
         .await
     }
 
-    /// Give job `id` back, for any worker to take after `after`.
-    pub async fn release(&self, worker: &str, id: &str, after: i64) -> Result<()> {
+    /// Give job `id` back, for any worker to take after `after`. False when
+    /// `worker` did not hold it.
+    pub async fn release(&self, worker: &str, id: &str, after: i64) -> Result<bool> {
         let (worker, id) = (worker.to_string(), id.to_string());
         self.run_quiet(move |c| {
             c.execute(
@@ -955,7 +956,29 @@ impl Db {
                  WHERE id = ?2 AND claimed_by = ?3 AND state = 'processing'",
                 params![after, id, worker],
             )
-            .map(drop)
+            .map(|n| n == 1)
+        })
+        .await
+    }
+
+    /// Record the original `worker` stored for job `id`: its length and
+    /// SHA-256, which the row keeps once the job is made. False when `worker`
+    /// does not hold the job.
+    pub async fn record_original(
+        &self,
+        worker: &str,
+        id: &str,
+        bytes: u64,
+        sha256: [u8; 32],
+    ) -> Result<bool> {
+        let (worker, id) = (worker.to_string(), id.to_string());
+        self.run_quiet(move |c| {
+            c.execute(
+                "UPDATE images SET bytes = ?1, sha256 = ?2 \
+                 WHERE id = ?3 AND claimed_by = ?4 AND state = 'processing'",
+                params![bytes as i64, sha256.to_vec(), id, worker],
+            )
+            .map(|n| n == 1)
         })
         .await
     }

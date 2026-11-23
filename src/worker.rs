@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use tokio::sync::{Notify, Semaphore, watch};
+use tokio::sync::{Semaphore, watch};
 
 use crate::config::Config;
 use crate::db::Made;
@@ -59,8 +59,8 @@ pub struct Worker {
     budget_mib: u32,
     pictures: Arc<Semaphore>,
     videos: Arc<Semaphore>,
-    /// A slot came free.
-    room: Notify,
+    /// Whether it makes videos: it has ffmpeg, and slots for them.
+    makes_videos: bool,
 }
 
 /// A job being made: whether to stop, and how far along it is.
@@ -95,27 +95,38 @@ pub async fn run(config: &Config) -> anyhow::Result<()> {
     let worker = Arc::new(Worker {
         http: reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
+            // Longer than a claim is held waiting, so only a connection gone
+            // quiet mid-transfer trips it.
+            .read_timeout(jobs::POLL + Duration::from_secs(30))
+            .tcp_keepalive(Duration::from_secs(30))
             .build()?,
         queue: config.queue_url.trim_end_matches('/').to_string(),
         token: config.worker_token.clone(),
-        tools,
         state_dir: config.state_dir.clone(),
         name: crate::id::new(),
         budget: Arc::new(Semaphore::new(mib as usize)),
         budget_mib: mib,
         pictures: Arc::new(Semaphore::new(config.workers.pictures)),
         videos: Arc::new(Semaphore::new(config.workers.videos)),
-        room: Notify::new(),
+        makes_videos: tools.is_some() && config.workers.videos > 0,
+        tools,
     });
     tracing::info!(
         worker = %worker.name,
         queue = %worker.queue,
         pictures = config.workers.pictures,
-        videos = if worker.tools.is_some() { config.workers.videos } else { 0 },
+        videos = if worker.makes_videos { config.workers.videos } else { 0 },
         "working"
     );
+    let videos = async {
+        if worker.makes_videos {
+            worker.clone().claim_forever(true).await;
+        }
+        std::future::pending::<()>().await;
+    };
     tokio::select! {
-        () = worker.clone().claim_forever() => unreachable!("claims until stopped"),
+        () = worker.clone().claim_forever(false) => unreachable!("claims until stopped"),
+        () = videos => unreachable!("claims until stopped"),
         () = crate::signal() => {}
     }
     worker.let_go().await;
@@ -147,36 +158,27 @@ impl Worker {
         }
     }
 
-    /// Ask for jobs while there is room for them, and make each.
-    async fn claim_forever(self: Arc<Self>) {
-        let makes_videos = self.tools.is_some();
+    /// Ask for jobs of one kind, `video` or pictures, whenever there is a
+    /// slot for one, and make each.
+    async fn claim_forever(self: Arc<Self>, video: bool) {
+        let slots = if video { &self.videos } else { &self.pictures };
+        let want = Want {
+            pictures: !video,
+            videos: video,
+            makes_videos: self.makes_videos,
+        };
         let mut unreachable = false;
         loop {
-            let want = Want {
-                pictures: self.pictures.available_permits() > 0,
-                videos: makes_videos && self.videos.available_permits() > 0,
-                makes_videos,
+            let Ok(slot) = slots.clone().acquire_owned().await else {
+                return;
             };
-            if !want.pictures && !want.videos {
-                self.room.notified().await;
-                continue;
-            }
             match self.ask(want).await {
                 Ok(Some(job)) => {
                     unreachable = false;
-                    let slots = if job.video {
-                        &self.videos
-                    } else {
-                        &self.pictures
-                    };
-                    let Ok(slot) = slots.clone().acquire_owned().await else {
-                        return;
-                    };
                     let this = self.clone();
                     tokio::spawn(async move {
-                        this.clone().make(job).await;
+                        this.make(job).await;
                         drop(slot);
-                        this.room.notify_one();
                     });
                 }
                 Ok(None) => unreachable = false,
@@ -223,12 +225,7 @@ impl Worker {
 
     /// Send job `id`'s copy of `variant`.
     async fn put(&self, id: &str, variant: Variant, body: reqwest::Body) -> Result<(), Problem> {
-        let name = match variant {
-            Variant::Original => "original",
-            Variant::Thumb => "thumb",
-            Variant::Display => "display",
-            Variant::Preview => "preview",
-        };
+        let name = variant.name();
         let response = self
             .request(reqwest::Method::PUT, &format!("/work/{id}/files/{name}"))
             .body(body)
@@ -358,6 +355,12 @@ impl Worker {
                 .await;
             let mut response = match response {
                 Ok(r) if r.status() == reqwest::StatusCode::GONE => return Err(Problem::Stopped),
+                Ok(r) if r.status() == reqwest::StatusCode::NOT_FOUND => {
+                    return Err(Problem::Rejected(
+                        jobs::FAILED,
+                        "its upload was lost before it was made".into(),
+                    ));
+                }
                 Ok(r) if r.status().is_success() => r,
                 Ok(r) => {
                     last = format!("the queue answered {}", r.status());

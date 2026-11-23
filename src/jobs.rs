@@ -113,6 +113,14 @@ pub struct Tick {
     pub done: u16,
 }
 
+/// The last word of a job's progress: how far along, when it came, and
+/// whose job it is.
+struct Report {
+    done: u16,
+    at: Instant,
+    owner: Arc<str>,
+}
+
 /// The web process's side of the queue.
 pub struct Hub {
     db: Db,
@@ -120,8 +128,8 @@ pub struct Hub {
     state_dir: PathBuf,
     max_pixels: u64,
     max_seconds: u64,
-    /// The last word of each job's progress, and when it came.
-    progress: parking_lot::Mutex<HashMap<String, (u16, Instant)>>,
+    /// The last word of each job's progress.
+    progress: parking_lot::Mutex<HashMap<String, Report>>,
     ticks: broadcast::Sender<Tick>,
     /// Each job as it ends: its id, and whether it was made.
     ended: broadcast::Sender<(String, bool)>,
@@ -129,8 +137,6 @@ pub struct Hub {
     waiting: Notify,
     /// Each worker heard from, when, and whether it makes videos.
     workers: parking_lot::Mutex<HashMap<String, (Instant, bool)>>,
-    /// Each job's original as stored: its length and SHA-256.
-    originals: parking_lot::Mutex<HashMap<String, (u64, [u8; 32])>>,
 }
 
 /// The words the API gives for a failure key, which the pages word through
@@ -180,7 +186,6 @@ impl Hub {
             ended: broadcast::channel(1024).0,
             waiting: Notify::new(),
             workers: Default::default(),
-            originals: Default::default(),
         })
     }
 
@@ -307,11 +312,17 @@ impl Hub {
 
     /// Job `id` of `owner`'s is being made, from nothing so far.
     fn started(&self, owner: &str, id: &str) {
-        self.progress
-            .lock()
-            .insert(id.to_string(), (0, Instant::now()));
+        let owner: Arc<str> = owner.into();
+        self.progress.lock().insert(
+            id.to_string(),
+            Report {
+                done: 0,
+                at: Instant::now(),
+                owner: owner.clone(),
+            },
+        );
         let _ = self.ticks.send(Tick {
-            owner: owner.into(),
+            owner,
             id: id.to_string(),
             done: 0,
         });
@@ -327,19 +338,32 @@ impl Hub {
             return Ok(false);
         }
         if let Some(done) = done {
-            let owner = match self.db.image(id).await? {
-                Some((_, album)) => album.owner,
-                None => return Ok(false),
+            // Whose it is was noted when it was claimed, unless the web
+            // process has started again since.
+            let known = self.progress.lock().get(id).map(|r| r.owner.clone());
+            let owner = match known {
+                Some(owner) => owner,
+                None => match self.db.image(id).await? {
+                    Some((_, album)) => album.owner.into(),
+                    None => return Ok(false),
+                },
             };
             {
                 let mut progress = self.progress.lock();
                 // What no word has come of for a while (a worker stopped
                 // mid-job) goes.
-                progress.retain(|_, (_, at)| at.elapsed() < STALE);
-                progress.insert(id.to_string(), (done, Instant::now()));
+                progress.retain(|_, r| r.at.elapsed() < STALE);
+                progress.insert(
+                    id.to_string(),
+                    Report {
+                        done,
+                        at: Instant::now(),
+                        owner: owner.clone(),
+                    },
+                );
             }
             let _ = self.ticks.send(Tick {
-                owner: owner.into(),
+                owner,
                 id: id.to_string(),
                 done,
             });
@@ -348,8 +372,8 @@ impl Hub {
     }
 
     /// Job `id`'s copy of `variant`, from worker `name`: stored, and for its
-    /// original, its length and SHA-256 kept for when it is made. False when
-    /// the job is not the worker's.
+    /// original, its length and SHA-256 recorded on its row for when it is
+    /// made. False when the job is not the worker's.
     pub async fn put<E>(
         &self,
         name: &str,
@@ -371,7 +395,8 @@ impl Hub {
             .put_stream(&store::key(variant, id), body)
             .await?;
         if variant == store::Variant::Original {
-            self.originals.lock().insert(id.to_string(), fingerprint);
+            let (bytes, sha256) = fingerprint;
+            return Ok(self.db.record_original(name, id, bytes, sha256).await?);
         }
         Ok(true)
     }
@@ -394,17 +419,18 @@ impl Hub {
         };
         let owner = album.owner;
         let video = image.is_video();
-        let original = self.originals.lock().remove(id);
-        let outcome = match (outcome, original) {
-            (Outcome::Made { mut made }, Some((bytes, sha256))) => {
-                made.bytes = bytes;
-                made.sha256 = sha256.to_vec();
-                Outcome::Made { made }
-            }
-            (Outcome::Made { .. }, None) => Outcome::Failed {
+        // The original's length and SHA-256 are what was stored, recorded
+        // on the row as it arrived, not what the worker says.
+        let outcome = match outcome {
+            Outcome::Made { .. } if image.sha256.is_empty() => Outcome::Failed {
                 why: "made, but its original never arrived".into(),
             },
-            (outcome, _) => outcome,
+            Outcome::Made { mut made } => {
+                made.bytes = image.bytes;
+                made.sha256 = image.sha256.clone();
+                Outcome::Made { made }
+            }
+            outcome => outcome,
         };
         let (recorded, made, key) = match outcome {
             Outcome::Made { made } => {
@@ -456,7 +482,9 @@ impl Hub {
         // a job it holds.
         match self.db.image(id).await? {
             None => self.gone(id, false).await,
-            Some(_) => self.db.release(name, id, 0).await?,
+            Some(_) => {
+                self.db.release(name, id, 0).await?;
+            }
         }
         self.wake();
         Ok(())
@@ -472,9 +500,11 @@ impl Hub {
         attempts: u32,
     ) -> crate::db::Result<()> {
         let wait = Duration::from_secs(30) * attempts.max(1);
-        self.db
-            .release(name, id, now() + wait.as_millis() as i64)
-            .await?;
+        let after = now() + wait.as_millis() as i64;
+        // Not this worker's to put back: another holds it, or it ended.
+        if !self.db.release(name, id, after).await? {
+            return Ok(());
+        }
         self.progress.lock().remove(id);
         let _ = self.ticks.send(Tick {
             owner: owner.into(),
@@ -487,7 +517,6 @@ impl Hub {
     /// Job `id` has ended, or its image is gone: its upload goes, and its
     /// copies with it unless they were `kept`.
     async fn gone(&self, id: &str, kept: bool) {
-        self.originals.lock().remove(id);
         let _ = tokio::fs::remove_file(source(&self.state_dir, id)).await;
         if !kept {
             store::discard(&self.store, &self.db, vec![id.to_string()]).await;
@@ -508,7 +537,6 @@ impl Hub {
     pub async fn forget(&self, ids: &[String]) {
         for id in ids {
             self.progress.lock().remove(id);
-            self.originals.lock().remove(id);
             let _ = tokio::fs::remove_file(source(&self.state_dir, id)).await;
         }
     }
@@ -518,8 +546,8 @@ impl Hub {
         self.progress
             .lock()
             .get(id)
-            .filter(|(_, at)| at.elapsed() < STALE)
-            .map(|(done, _)| *done)
+            .filter(|r| r.at.elapsed() < STALE)
+            .map(|r| r.done)
     }
 
     pub fn ticks(&self) -> broadcast::Receiver<Tick> {

@@ -6,7 +6,7 @@
 //! ```text
 //! POST /work/claim                 {pictures, videos, makes_videos} → Job | 204 after a wait
 //! POST /work/{id}/renew            {done?}            → 204 | 410 when it is no longer the worker's
-//! GET  /work/{id}/source           Range: bytes=n-    → the upload, from n
+//! GET  /work/{id}/source           Range: bytes=n-    → the upload, from n | 410 | 404 when it is lost
 //! PUT  /work/{id}/files/{variant}  the bytes          → 204 | 410
 //! POST /work/{id}/end              {outcome, ms}      → 204
 //! POST /work/release               (stopping)         → 204
@@ -139,10 +139,12 @@ async fn source(
         Err(e) => return failed(e),
     }
     let path = crate::jobs::source(work.hub.state_dir(), &id);
+    // The job is the worker's, but its upload is gone: 404, which the
+    // worker takes as the job's end rather than as losing it.
     let mut file = match tokio::fs::File::open(&path).await {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return StatusCode::GONE.into_response();
+            return StatusCode::NOT_FOUND.into_response();
         }
         Err(e) => return failed(e),
     };
@@ -199,12 +201,8 @@ async fn file(
     if !crate::id::valid(&id) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let variant = match variant.as_str() {
-        "original" => Variant::Original,
-        "thumb" => Variant::Thumb,
-        "display" => Variant::Display,
-        "preview" => Variant::Preview,
-        _ => return StatusCode::NOT_FOUND.into_response(),
+    let Some(variant) = Variant::named(&variant) else {
+        return StatusCode::NOT_FOUND.into_response();
     };
     match work
         .hub

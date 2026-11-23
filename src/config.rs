@@ -202,7 +202,7 @@ impl Config {
                 threads: num::<u32>("VIDEO_THREADS", 2)?.max(1),
             },
             workers: Workers {
-                pictures: num::<usize>("PICTURE_WORKERS", 4)?.max(1),
+                pictures: num("PICTURE_WORKERS", 4)?,
                 videos: num("VIDEO_WORKERS", 1)?,
             },
             worker_addr,

@@ -40,6 +40,27 @@ pub enum Variant {
 }
 
 impl Variant {
+    /// What the worker API calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Variant::Original => "original",
+            Variant::Thumb => "thumb",
+            Variant::Display => "display",
+            Variant::Preview => "preview",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Self> {
+        [
+            Variant::Original,
+            Variant::Thumb,
+            Variant::Display,
+            Variant::Preview,
+        ]
+        .into_iter()
+        .find(|v| v.name() == name)
+    }
+
     fn prefix(self) -> &'static str {
         match self {
             Variant::Original => "o",
