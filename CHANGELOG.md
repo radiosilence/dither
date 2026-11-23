@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+
+- **Anonymous view and bandwidth counts.** An owner sees, in the viewer and on an album's page, the views, visitors and bytes its public pages and files were served over the last 30 days and in all, the link previews that fetched it and the sites that linked to it. Visitors are counted by a hash with a salt held only in memory and replaced daily; no address, user agent or hash is stored.
+
 ## 0.8.0
 
 ### Added
