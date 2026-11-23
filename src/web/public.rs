@@ -88,6 +88,7 @@ pub fn clip(i: &Image) -> Clip {
     };
     let seconds = i.seconds();
     Clip {
+        id: i.id.clone(),
         src: if i.display {
             format!("/d/{}.mp4", i.id)
         } else {

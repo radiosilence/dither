@@ -679,8 +679,9 @@
     @apply shrink-0 px-1 whitespace-nowrap tabular-nums;
   }
 
+  /* On a phone the scrubber needs the room more. */
   .player-speed {
-    @apply w-12 tabular-nums;
+    @apply w-12 tabular-nums max-[479px]:hidden;
   }
 
   /* The scrubber and the volume: a hairline, the buffered part thicker in the rule's colour and what has played in the
@@ -724,6 +725,10 @@
 
   .pic .player video {
     @apply max-h-[80dvh];
+  }
+
+  .pic.tall .player {
+    @apply max-w-[min(100%,620px)];
   }
 
   .single .player video {

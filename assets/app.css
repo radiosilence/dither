@@ -1848,6 +1848,12 @@
     font-variant-numeric: var(--tw-ordinal, ) var(--tw-slashed-zero, ) var(--tw-numeric-figure, ) var(--tw-numeric-spacing, ) var(--tw-numeric-fraction, );
   }
 
+  @media not all and (min-width: 479px) {
+    .player-speed {
+      display: none;
+    }
+  }
+
   .player-seek, .player-volume {
     height: calc(var(--spacing) * 10);
     cursor: pointer;
@@ -1920,6 +1926,10 @@
 
   .pic .player video {
     max-height: 80dvh;
+  }
+
+  .pic.tall .player {
+    max-width: min(100%, 620px);
   }
 
   .single .player video {
