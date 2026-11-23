@@ -119,12 +119,12 @@ impl Disk {
                 let Ok(meta) = entry.metadata() else {
                     continue;
                 };
-                let hidden = entry.file_name().to_string_lossy().starts_with('.');
+                let dotfile = entry.file_name().to_string_lossy().starts_with('.');
                 if meta.is_dir() {
-                    if !hidden {
+                    if !dotfile {
                         pending.push(path);
                     }
-                } else if hidden || !disk.admits(meta.len()) {
+                } else if dotfile || !disk.admits(meta.len()) {
                     let _ = std::fs::remove_file(&path);
                 } else if let Ok(key) = path.strip_prefix(dir) {
                     let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
