@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0
+
+### Changed
+
+- **Workers read and write the bucket directly, and the bucket is the only store.** A finished upload goes to the bucket; a worker fetches it, and puts what it makes, at URLs the web process signs for that job alone, so a worker beside the bucket sends nothing through the web process and still holds none of its keys. The local-directory store is gone: `STORAGE` is an `s3://` bucket, or `memory:///` for development (`just dev` runs on one, with a fresh state directory each time). The Pulumi component requires `bucket`, and `createDitherWorker` takes the bucket's pods as `store` for its egress policy.
+
 ## 0.9.0
 
 ### Added
