@@ -77,7 +77,7 @@ async fn serve() -> anyhow::Result<()> {
     let mut store = Store::open(&config.storage, config.cache_bytes)?;
     if store.dir().is_none() && config.disk_cache_bytes > 0 {
         let dir = config.state_dir.join("cache");
-        let disk = disk::Disk::open(&dir, config.disk_cache_bytes)
+        let disk = disk::Disk::open(&dir, config.disk_cache_bytes, config.min_free_bytes)
             .with_context(|| format!("opening the disk cache in {}", dir.display()))?;
         store = store.with_disk(disk);
     }

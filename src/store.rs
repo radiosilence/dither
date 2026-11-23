@@ -182,17 +182,60 @@ impl Store {
         self.disk.as_ref()?.get(key.as_ref())
     }
 
+    /// Run `f` on the disk cache, on the blocking threads: it touches the
+    /// filesystem.
+    async fn on_cache<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&crate::disk::Disk) -> T + Send + 'static,
+    ) -> Option<T> {
+        let disk = self.disk.clone()?;
+        tokio::task::spawn_blocking(move || f(&disk)).await.ok()
+    }
+
+    /// `key` read from the disk cache as `body` would make of it; a file
+    /// that has gone is forgotten, and the caller reads from the store.
+    async fn read_kept<T>(
+        &self,
+        key: &Path,
+        body: impl AsyncFnOnce(&FsPath, u64) -> std::io::Result<T>,
+    ) -> Option<T> {
+        let (path, size) = self.on_disk(key)?;
+        match body(&path, size).await {
+            Ok(read) => {
+                crate::metrics::cache(true);
+                Some(read)
+            }
+            Err(e) => {
+                tracing::warn!(%key, error = %e, "a copy kept on disk could not be read");
+                let gone = key.to_string();
+                self.on_cache(move |disk| disk.forget(&gone)).await;
+                None
+            }
+        }
+    }
+
     /// Fetch `key`, `size` bytes, into the disk cache in the background,
     /// unless it is too large or already on its way.
     fn fill(&self, key: &Path, size: u64) {
         let Some(disk) = self.disk.clone() else {
             return;
         };
-        if !disk.admits(size) || !disk.start(key.as_ref()) {
+        if !disk.admits(size) {
             return;
+        }
+        let Some(generation) = disk.start(key.as_ref()) else {
+            return;
+        };
+        /// Ends the fetch however the task does, a panic included.
+        struct Fetching(Arc<crate::disk::Disk>, String);
+        impl Drop for Fetching {
+            fn drop(&mut self) {
+                self.0.done(&self.1);
+            }
         }
         let (inner, key) = (self.inner.clone(), key.clone());
         tokio::spawn(async move {
+            let _fetching = Fetching(disk.clone(), key.to_string());
             let aside = disk.aside();
             let written = async {
                 use tokio::io::AsyncWriteExt as _;
@@ -204,13 +247,19 @@ impl Store {
                     len += chunk.len() as u64;
                     file.write_all(&chunk).await?;
                 }
+                file.flush().await?;
                 file.sync_all().await?;
                 Ok::<_, anyhow::Error>(len)
             }
             .await;
             match written {
                 Ok(len) => {
-                    if let Err(e) = disk.keep(key.as_ref(), &aside, len) {
+                    let (disk, at) = (disk.clone(), key.to_string());
+                    let kept = tokio::task::spawn_blocking(move || {
+                        disk.keep(&at, &aside, len, Some(generation))
+                    })
+                    .await;
+                    if let Ok(Err(e)) = kept {
                         tracing::warn!(%key, error = %e, "keeping a copy on disk failed");
                     }
                 }
@@ -219,7 +268,6 @@ impl Store {
                     tracing::warn!(%key, error = %e, "fetching a copy to keep on disk failed");
                 }
             }
-            disk.done(key.as_ref());
         });
     }
 
@@ -272,9 +320,8 @@ impl Store {
         use sha2::Digest as _;
         use tokio::io::AsyncWriteExt as _;
         self.cache.remove(key);
-        if let Some(disk) = &self.disk {
-            disk.forget(key.as_ref());
-        }
+        let gone = key.to_string();
+        self.on_cache(move |disk| disk.forget(&gone)).await;
         let mut writer = object_store::buffered::BufWriter::new(self.inner.clone(), key.clone());
         let mut hash = sha2::Sha256::new();
         let mut len = 0u64;
@@ -314,14 +361,29 @@ impl Store {
             }
             return Err(e).with_context(|| format!("storing {key}"));
         }
-        writer
-            .shutdown()
-            .await
-            .with_context(|| format!("storing {key}"))?;
-        if let (Some(disk), Some((aside, file))) = (&self.disk, copy) {
+        if let Err(e) = writer.shutdown().await {
+            if let Some((aside, _)) = copy {
+                let _ = tokio::fs::remove_file(aside).await;
+            }
+            return Err(e).with_context(|| format!("storing {key}"));
+        }
+        if let Some((aside, mut file)) = copy {
+            let synced = async {
+                file.flush().await?;
+                file.sync_all().await
+            }
+            .await;
             drop(file);
-            if let Err(e) = disk.keep(key.as_ref(), &aside, len) {
-                tracing::warn!(%key, error = %e, "keeping a copy on disk failed");
+            if synced.is_err() {
+                let _ = tokio::fs::remove_file(&aside).await;
+            } else {
+                let at = key.to_string();
+                let kept = self
+                    .on_cache(move |disk| disk.keep(&at, &aside, len, None))
+                    .await;
+                if let Some(Err(e)) = kept {
+                    tracing::warn!(%key, error = %e, "keeping a copy on disk failed");
+                }
             }
         }
         Ok((len, hash.finalize().into()))
@@ -347,16 +409,20 @@ impl Store {
                 None => Part::Outside { total },
             }));
         }
-        if let Some((path, total)) = self.on_disk(key) {
-            crate::metrics::cache(true);
-            return Ok(Some(match bounds(&range, total) {
-                Some(r) => Part::Within {
-                    body: file_range(&path, r.clone()).await?,
-                    range: r,
-                    total,
-                },
-                None => Part::Outside { total },
-            }));
+        let kept = self
+            .read_kept(key, async |path, total| {
+                Ok(match bounds(&range, total) {
+                    Some(r) => Part::Within {
+                        body: file_range(path, r.clone()).await?,
+                        range: r,
+                        total,
+                    },
+                    None => Part::Outside { total },
+                })
+            })
+            .await;
+        if let Some(part) = kept {
+            return Ok(Some(part));
         }
         let options = GetOptions {
             range: Some(range.clone()),
@@ -393,14 +459,21 @@ impl Store {
             crate::metrics::cache(true);
             return Ok(Some(Body::Bytes(hit)));
         }
-        if let Some((path, size)) = self.on_disk(key) {
-            crate::metrics::cache(true);
-            if size <= CACHE_ITEM_MAX {
-                let bytes = Bytes::from(tokio::fs::read(&path).await.map_err(io_error)?);
-                self.cache.insert(key.clone(), bytes.clone());
-                return Ok(Some(Body::Bytes(bytes)));
-            }
-            return Ok(Some(file_range(&path, 0..size).await?));
+        let kept = self
+            .read_kept(key, async |path, size| {
+                if size <= CACHE_ITEM_MAX {
+                    let bytes = Bytes::from(tokio::fs::read(path).await?);
+                    if bytes.len() as u64 != size {
+                        return Err(std::io::Error::other("its length changed"));
+                    }
+                    self.cache.insert(key.clone(), bytes.clone());
+                    return Ok(Body::Bytes(bytes));
+                }
+                file_range(path, 0..size).await
+            })
+            .await;
+        if let Some(body) = kept {
+            return Ok(Some(body));
         }
         crate::metrics::cache(false);
         let result = match self.inner.get(key).await {
@@ -434,9 +507,8 @@ impl Store {
     /// Gone, whether or not it was there.
     pub async fn delete(&self, key: &Path) -> object_store::Result<()> {
         self.cache.remove(key);
-        if let Some(disk) = &self.disk {
-            disk.forget(key.as_ref());
-        }
+        let gone = key.to_string();
+        self.on_cache(move |disk| disk.forget(&gone)).await;
         match self.inner.delete(key).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(e),
@@ -445,16 +517,15 @@ impl Store {
 
     /// Move what is stored at `from` to `to`, replacing it.
     pub async fn rename(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+        // What was at `to` is gone from both caches first, so no read in
+        // between brings it back.
         self.cache.remove(to);
-        let moved = self.inner.rename(from, to).await;
-        if let Some(disk) = &self.disk {
-            if moved.is_ok() {
-                disk.rename(from.as_ref(), to.as_ref());
-            } else {
-                disk.forget(to.as_ref());
-            }
-        }
-        moved
+        let replaced = to.to_string();
+        self.on_cache(move |disk| disk.forget(&replaced)).await;
+        self.inner.rename(from, to).await?;
+        let (from, to) = (from.to_string(), to.to_string());
+        self.on_cache(move |disk| disk.rename(&from, &to)).await;
+        Ok(())
     }
 
     /// Every variant of image `id`. True when all are gone.
@@ -553,12 +624,10 @@ fn io_error(e: std::io::Error) -> object_store::Error {
 }
 
 /// `range` of the file at `path`, streamed.
-async fn file_range(path: &FsPath, range: std::ops::Range<u64>) -> object_store::Result<Body> {
+async fn file_range(path: &FsPath, range: std::ops::Range<u64>) -> std::io::Result<Body> {
     use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
-    let mut file = tokio::fs::File::open(path).await.map_err(io_error)?;
-    file.seek(std::io::SeekFrom::Start(range.start))
-        .await
-        .map_err(io_error)?;
+    let mut file = tokio::fs::File::open(path).await?;
+    file.seek(std::io::SeekFrom::Start(range.start)).await?;
     let size = range.end - range.start;
     let stream = futures_util::stream::unfold((file, size), |(mut file, left)| async move {
         if left == 0 {
@@ -706,7 +775,7 @@ mod tests {
             .put(&k, PutPayload::from(bytes.clone()))
             .await
             .unwrap();
-        let disk = crate::disk::Disk::open(dir.path(), 4 << 20).unwrap();
+        let disk = crate::disk::Disk::open(dir.path(), 4 << 20, Some(0)).unwrap();
         let store = Store::with(Arc::new(inner), None, 0, "test".into()).with_disk(disk);
         // A miss is served from the store and fetched to disk behind it.
         let first = store
