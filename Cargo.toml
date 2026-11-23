@@ -44,6 +44,8 @@ libc = "0.2.191"
 landlock = "0.4.8"
 
 [dev-dependencies]
+# A store that counts its reads, for the single-flight test.
+async-trait = "0.1"
 # Extracts the templates' messages for the catalogue test.
 askama_parser = "0.16"
 http-body-util = "0.1.5"

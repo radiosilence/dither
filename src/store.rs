@@ -17,7 +17,9 @@
 //! Reads go through an in-memory cache weighted by size. Thumbnails are what a
 //! grid asks for a hundred at a time; originals are cached up to
 //! [`CACHE_ITEM_MAX`] and streamed past it, so one popular large GIF cannot
-//! take the memory every reader shares. A store on another machine can also
+//! take the memory every reader shares. Requests for an object not in memory
+//! wait for the first to fetch it rather than each fetching it, so a link
+//! shared widely costs the store one read. A store on another machine can also
 //! have a cache on this one's disk ([`crate::disk`]): what was read or
 //! written recently, kept whole, which spares the round trip and serves
 //! while the store is unreachable.
@@ -104,6 +106,57 @@ pub struct Store {
     signer: Option<(Arc<dyn object_store::signer::Signer>, String)>,
     /// What the store is, for logs, with no credential in it.
     label: String,
+    /// Keys being read into memory, each by one request, with what came of
+    /// it for the requests waiting.
+    reading: Arc<parking_lot::Mutex<std::collections::HashMap<Path, Reading>>>,
+}
+
+type Reading = tokio::sync::watch::Receiver<Option<Fetched>>;
+
+/// What the one read of a key not in memory came to, for the requests that
+/// waited on it.
+#[derive(Clone)]
+enum Fetched {
+    Kept(Bytes),
+    Missing,
+    /// Too large to keep: each waiter reads it for itself.
+    Large,
+    Failed(Arc<str>),
+}
+
+/// The request reading a key for the rest. The key is free again when it
+/// is dropped, finished or not, unless a write freed it first.
+struct Leading<'a> {
+    reading: &'a parking_lot::Mutex<std::collections::HashMap<Path, Reading>>,
+    key: Path,
+    tell: tokio::sync::watch::Sender<Option<Fetched>>,
+}
+
+impl Leading<'_> {
+    fn tell(&self, fetched: Fetched) {
+        self.tell.send_replace(Some(fetched));
+    }
+
+    /// Whether no write to the key has happened since this read began: a
+    /// write frees the key, so what this read found is not kept.
+    fn current(&self) -> bool {
+        self.reading
+            .lock()
+            .get(&self.key)
+            .is_some_and(|r| r.same_channel(&self.tell.subscribe()))
+    }
+}
+
+impl Drop for Leading<'_> {
+    fn drop(&mut self) {
+        let mut reading = self.reading.lock();
+        if reading
+            .get(&self.key)
+            .is_some_and(|r| r.same_channel(&self.tell.subscribe()))
+        {
+            reading.remove(&self.key);
+        }
+    }
 }
 
 /// What a read returns: whole bytes, or a stream for an object too large to
@@ -168,6 +221,7 @@ impl Store {
             fetches: Arc::new(tokio::sync::Semaphore::new(4)),
             signer: None,
             label,
+            reading: Arc::default(),
         }
     }
 
@@ -326,6 +380,7 @@ impl Store {
         // original just stored is not, and a batch of them would push those
         // out.
         let original = key.prefix_matches(&Path::from(Variant::Original.prefix()));
+        self.reading.lock().remove(key);
         if !original && (bytes.len() as u64) <= CACHE_ITEM_MAX {
             self.cache.insert(key.clone(), bytes);
         } else {
@@ -347,7 +402,7 @@ impl Store {
     {
         use sha2::Digest as _;
         use tokio::io::AsyncWriteExt as _;
-        self.cache.remove(key);
+        self.forget(key);
         let gone = key.to_string();
         self.on_cache(move |disk| disk.forget(&gone)).await;
         let mut writer = object_store::buffered::BufWriter::new(self.inner.clone(), key.clone());
@@ -456,6 +511,10 @@ impl Store {
         if let Some(part) = kept {
             return Ok(Some(part));
         }
+        // A worker's read of an upload is no reader missing the cache.
+        if cacheable(key) {
+            crate::metrics::cache(false);
+        }
         let options = GetOptions {
             range: Some(range.clone()),
             ..GetOptions::default()
@@ -488,7 +547,21 @@ impl Store {
         }
     }
 
+    /// `key` is being written: gone from memory, and free for a new read
+    /// rather than one begun before the write.
+    fn forget(&self, key: &Path) {
+        self.reading.lock().remove(key);
+        self.cache.remove(key);
+    }
+
     /// The object, or `None` when there is none.
+    ///
+    /// Of the requests for a key in neither cache, one reads the store and
+    /// the rest wait for it, then share its outcome: the object, its absence
+    /// or the error. If that request goes away first, a waiter reads in its
+    /// place. An object too large to keep is read by each waiter once the
+    /// first finds it so. A write to the key frees it, so a request after the
+    /// write reads afresh.
     pub async fn get(&self, key: &Path) -> object_store::Result<Option<Body>> {
         if let Some(hit) = self.cache.get(key) {
             crate::metrics::cache(true);
@@ -510,22 +583,97 @@ impl Store {
         if let Some(body) = kept {
             return Ok(Some(body));
         }
-        crate::metrics::cache(false);
+        loop {
+            let waiting = {
+                let mut reading = self.reading.lock();
+                match reading.get(key) {
+                    Some(waiting) => Err(waiting.clone()),
+                    None => {
+                        let (tell, waiting) = tokio::sync::watch::channel(None);
+                        reading.insert(key.clone(), waiting);
+                        Ok(Leading {
+                            reading: &self.reading,
+                            key: key.clone(),
+                            tell,
+                        })
+                    }
+                }
+            };
+            let mut waiting = match waiting {
+                Ok(leading) => return self.fetch(key, Some(leading)).await,
+                Err(waiting) => waiting,
+            };
+            // `None` when the request reading it went away: one of those
+            // waiting takes its place.
+            let fetched = waiting
+                .wait_for(Option::is_some)
+                .await
+                .ok()
+                .and_then(|f| f.clone());
+            return match fetched {
+                Some(Fetched::Kept(bytes)) => {
+                    crate::metrics::cache(true);
+                    Ok(Some(Body::Bytes(bytes)))
+                }
+                Some(Fetched::Missing) => Ok(None),
+                Some(Fetched::Failed(e)) => Err(object_store::Error::Generic {
+                    store: "dither",
+                    source: e.to_string().into(),
+                }),
+                Some(Fetched::Large) => self.fetch(key, None).await,
+                None => continue,
+            };
+        }
+    }
+
+    /// `key` read from the store, kept in memory when it is small enough,
+    /// and told to the requests waiting on `leading`.
+    async fn fetch(
+        &self,
+        key: &Path,
+        leading: Option<Leading<'_>>,
+    ) -> object_store::Result<Option<Body>> {
+        let tell = |fetched| {
+            if let Some(leading) = &leading {
+                leading.tell(fetched);
+            }
+        };
+        if cacheable(key) {
+            crate::metrics::cache(false);
+        }
         let fetching = self.claim(key);
         let result = match self.inner.get(key).await {
             Ok(r) => r,
-            Err(object_store::Error::NotFound { .. }) => return Ok(None),
-            Err(e) => return Err(e),
+            Err(object_store::Error::NotFound { .. }) => {
+                tell(Fetched::Missing);
+                return Ok(None);
+            }
+            Err(e) => {
+                tell(Fetched::Failed(e.to_string().into()));
+                return Err(e);
+            }
         };
         let size = result.meta.size;
         if size <= CACHE_ITEM_MAX {
-            let bytes = result.bytes().await?;
-            self.cache.insert(key.clone(), bytes.clone());
+            let bytes = match result.bytes().await {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    tell(Fetched::Failed(e.to_string().into()));
+                    return Err(e);
+                }
+            };
+            // What a write overtook is served to those who asked before it,
+            // and not kept for those after.
+            if leading.as_ref().is_none_or(Leading::current) {
+                self.cache.insert(key.clone(), bytes.clone());
+            }
+            tell(Fetched::Kept(bytes.clone()));
             if let Some(fetching) = fetching {
                 self.fill(fetching, key, size, Some(bytes.clone()));
             }
             Ok(Some(Body::Bytes(bytes)))
         } else {
+            tell(Fetched::Large);
             if let Some(fetching) = fetching {
                 self.fill(fetching, key, size, None);
             }
@@ -547,7 +695,7 @@ impl Store {
 
     /// Gone, whether or not it was there.
     pub async fn delete(&self, key: &Path) -> object_store::Result<()> {
-        self.cache.remove(key);
+        self.forget(key);
         let gone = key.to_string();
         self.on_cache({
             let gone = gone.clone();
@@ -567,7 +715,7 @@ impl Store {
     pub async fn rename(&self, from: &Path, to: &Path) -> object_store::Result<()> {
         // What was at `to` is gone from both caches first, so no read in
         // between brings it back.
-        self.cache.remove(to);
+        self.forget(to);
         let replaced = to.to_string();
         self.on_cache(move |disk| disk.forget(&replaced)).await;
         self.inner.rename(from, to).await?;
@@ -920,6 +1068,216 @@ mod tests {
         assert!(store.get(&k).await.unwrap().is_none());
         // Deleting what is not there is not an error.
         store.delete(&k).await.unwrap();
+    }
+
+    /// A store in memory that counts its reads and takes a while over each,
+    /// as a bucket across a network does.
+    #[derive(Debug)]
+    struct Counting {
+        inner: object_store::memory::InMemory,
+        gets: std::sync::atomic::AtomicUsize,
+        down: std::sync::atomic::AtomicBool,
+    }
+
+    impl Counting {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                inner: object_store::memory::InMemory::new(),
+                gets: 0.into(),
+                down: false.into(),
+            })
+        }
+
+        fn gets(&self) -> usize {
+            self.gets.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl std::fmt::Display for Counting {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("counting")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for Counting {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // What is there when asked, answered a while later.
+            let answer = if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(object_store::Error::Generic {
+                    store: "counting",
+                    source: "unreachable".into(),
+                })
+            } else {
+                self.inner.get_opts(location, options).await
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            answer
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, object_store::Result<Path>>,
+        ) -> BoxStream<'static, object_store::Result<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&Path>,
+        ) -> BoxStream<'static, object_store::Result<object_store::ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn readers_of_an_object_not_in_memory_share_one_read() {
+        let counting = Counting::new();
+        let store = Store::with(counting.clone(), 1 << 20, "counting".into());
+        let k = key(Variant::Thumb, "abcdefghij");
+        counting
+            .inner
+            .put(&k, Bytes::from_static(b"webp").into())
+            .await
+            .unwrap();
+        let reads = futures_util::future::join_all((0..50).map(|_| store.get(&k))).await;
+        for read in reads {
+            let Some(Body::Bytes(b)) = read.unwrap() else {
+                panic!("expected bytes");
+            };
+            assert_eq!(&b[..], b"webp");
+        }
+        assert_eq!(counting.gets(), 1);
+        assert!(store.reading.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn readers_share_an_objects_absence_and_a_failure_without_keeping_either() {
+        let counting = Counting::new();
+        let store = Store::with(counting.clone(), 1 << 20, "counting".into());
+        let gone = key(Variant::Thumb, "klmnopqrst");
+        let reads = futures_util::future::join_all((0..20).map(|_| store.get(&gone))).await;
+        assert!(reads.iter().all(|r| matches!(r, Ok(None))));
+        assert_eq!(counting.gets(), 1);
+        // Asked again later, it is read again.
+        assert!(store.get(&gone).await.unwrap().is_none());
+        assert_eq!(counting.gets(), 2);
+
+        counting
+            .down
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let reads = futures_util::future::join_all((0..20).map(|_| store.get(&gone))).await;
+        assert!(reads.iter().all(Result::is_err));
+        assert_eq!(counting.gets(), 3);
+        // Together, rather than one after another.
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn a_waiter_reads_in_place_of_a_reader_that_went_away() {
+        let counting = Counting::new();
+        let store = Store::with(counting.clone(), 1 << 20, "counting".into());
+        let k = key(Variant::Thumb, "abcdefghij");
+        counting
+            .inner
+            .put(&k, Bytes::from_static(b"webp").into())
+            .await
+            .unwrap();
+        let gone = tokio::time::timeout(std::time::Duration::from_millis(10), store.get(&k));
+        let waiting = futures_util::future::join_all((0..20).map(|_| store.get(&k)));
+        let (gone, waiting) = tokio::join!(gone, waiting);
+        assert!(gone.is_err());
+        assert!(
+            waiting
+                .iter()
+                .all(|r| matches!(r, Ok(Some(Body::Bytes(b))) if &b[..] == b"webp"))
+        );
+        assert_eq!(counting.gets(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_read_after_a_write_does_not_wait_on_one_from_before_it() {
+        let counting = Counting::new();
+        let store = Store::with(counting.clone(), 1 << 20, "counting".into());
+        let k = key(Variant::Thumb, "abcdefghij");
+        let aside = Path::from("work/abcdefghij/w1/thumb");
+        store
+            .put(&aside, Bytes::from_static(b"webp"))
+            .await
+            .unwrap();
+        // A worker's copy moves into place while a read of the key is out.
+        let before = store.get(&k);
+        let after = async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            store.rename(&aside, &k).await.unwrap();
+            store.get(&k).await
+        };
+        let (before, after) = tokio::join!(before, after);
+        // The read begun before the write found nothing, and keeps nothing.
+        assert!(before.unwrap().is_none());
+        let Some(Body::Bytes(b)) = after.unwrap() else {
+            panic!("expected bytes");
+        };
+        assert_eq!(&b[..], b"webp");
+        let Some(Body::Bytes(b)) = store.get(&k).await.unwrap() else {
+            panic!("expected bytes");
+        };
+        assert_eq!(&b[..], b"webp");
+    }
+
+    #[tokio::test]
+    async fn readers_of_an_object_too_large_to_keep_each_read_it_at_once() {
+        let counting = Counting::new();
+        let store = Store::with(counting.clone(), 64 << 20, "counting".into());
+        let k = key(Variant::Original, "abcdefghij");
+        let big = vec![7u8; (CACHE_ITEM_MAX + 1) as usize];
+        counting.inner.put(&k, big.into()).await.unwrap();
+        let started = std::time::Instant::now();
+        let reads = futures_util::future::join_all((0..10).map(|_| store.get(&k))).await;
+        assert!(reads.iter().all(
+            |r| matches!(r, Ok(Some(Body::Stream { size, .. })) if *size == CACHE_ITEM_MAX + 1)
+        ));
+        assert_eq!(counting.gets(), 10);
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
     }
 
     #[tokio::test]
