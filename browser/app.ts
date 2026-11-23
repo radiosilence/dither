@@ -29,9 +29,19 @@ const CHUNK = Number(body.dataset["chunk"]) || 4 * 1024 * 1024;
 const PARALLEL = 3;
 const RETRIES = 6;
 const TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
-/** Whether a file is a video, by what the browser says or, when it says nothing, by its name: as the server judges at the start, and its bytes decide at the end. */
+/** The video types the server takes (`api::VIDEO_TYPES`). */
+const VIDEO_TYPES = new Set([
+  "video/mp4",
+  "video/quicktime",
+  "video/x-m4v",
+  "video/3gpp",
+  "video/3gpp2",
+  "video/webm",
+  "video/x-matroska",
+]);
+/** Whether a file is a video the server takes, by what the browser says or, when it says nothing, by its name: as the server judges at the start, and its bytes decide at the end. */
 const isVideo = (file: File) =>
-  file.type.startsWith("video/") || (!file.type && /\.(mp4|mov|m4v|3gp|webm|mkv)$/i.test(file.name));
+  VIDEO_TYPES.has(file.type) || (!file.type && /\.(mp4|mov|m4v|3gp|webm|mkv)$/i.test(file.name));
 
 // ── Copy ─────────────────────────────────────────────────────────────────
 

@@ -63,8 +63,7 @@ async fn shell(state: &AppState, session: &Session) -> Shell {
             .flatten()
             .unwrap_or_else(|| session.sub.clone()),
         max_upload: state.config.max_upload_bytes,
-        max_video: (state.config.video.mode != crate::config::VideoMode::Off)
-            .then_some(state.config.video.max_bytes),
+        max_video: state.config.max_video_bytes(),
         chunk: CHUNK,
     }
 }

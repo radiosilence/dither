@@ -67,15 +67,27 @@ pub struct File {
     mime: String,
 }
 
+/// The video types dither takes, as browsers name them: the containers
+/// `sanitize::sniff_video` knows.
+pub const VIDEO_TYPES: [&str; 7] = [
+    "video/mp4",
+    "video/quicktime",
+    "video/x-m4v",
+    "video/3gpp",
+    "video/3gpp2",
+    "video/webm",
+    "video/x-matroska",
+];
+
 impl File {
-    /// Whether the browser says it is a video, or its name does when the
-    /// browser says nothing.
+    /// Whether the browser says it is a video dither takes, or its name does
+    /// when the browser says nothing.
     fn video(&self) -> bool {
         let ext = self
             .name
             .rsplit_once('.')
             .map(|(_, e)| e.to_ascii_lowercase());
-        self.mime.starts_with("video/")
+        VIDEO_TYPES.contains(&self.mime.as_str())
             || (self.mime.is_empty()
                 && matches!(
                     ext.as_deref(),
@@ -101,13 +113,25 @@ pub async fn begin(
             format!("send between 1 and {BATCH_MAX} files at a time"),
         );
     }
-    let videos = state.config.video.mode != crate::config::VideoMode::Off;
-    let max = |f: &File| {
-        if videos && f.video() {
-            state.config.video.max_bytes
-        } else {
-            state.config.max_upload_bytes
-        }
+    // A video in a container dither does not take is told so now, not after
+    // it has all arrived.
+    if let Some(f) = batch
+        .files
+        .iter()
+        .find(|f| f.mime.starts_with("video/") && !f.video())
+    {
+        return error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            format!(
+                "{}: MP4, MOV and WebM videos are taken, not {}",
+                f.name, f.mime
+            ),
+        );
+    }
+    let videos = state.config.max_video_bytes();
+    let max = |f: &File| match videos {
+        Some(max) if f.video() => max,
+        _ => state.config.max_upload_bytes,
     };
     if let Some(f) = batch.files.iter().find(|f| f.size == 0 || f.size > max(f)) {
         return error(

@@ -988,6 +988,23 @@ async fn an_image_declared_a_video_is_still_held_to_the_image_limit() {
 }
 
 #[tokio::test]
+async fn a_video_dither_does_not_take_is_refused_before_it_is_sent() {
+    let app = app().await;
+    let album = app.post("/api/albums", json!({})).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let begun = app
+        .post(
+            &format!("/api/albums/{album}/uploads"),
+            json!({ "files": [{ "name": "camcorder.mts", "size": 500_000_000u64, "type": "video/mp2t" }] }),
+        )
+        .await;
+    assert_eq!(begun.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(begun.json()["error"].as_str().unwrap().contains("MP4"));
+}
+
+#[tokio::test]
 async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
     if crate::video::tests::tools().await.is_none() {
         return;

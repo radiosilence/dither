@@ -362,6 +362,8 @@ function enhance(root: HTMLElement) {
   // Handled here, the keys go no further: the viewer's arrows move between
   // images only when focus is not in a player.
   root.addEventListener("keydown", (ev) => {
+    // Space and Enter on one of its buttons press that button.
+    if ((ev.key === " " || ev.key === "Enter") && (ev.target as Element).closest("button, a")) return;
     if (key(p, ev, true)) ev.stopPropagation();
   });
   root.addEventListener("focusin", () => wake(p));

@@ -176,11 +176,11 @@ impl Worker {
         }
     }
 
-    /// Give back every claim, for the next worker to take up at once.
+    /// Give back every claim, for the next worker to take up at once: those
+    /// being made, and one a claim stopped part way still made.
     async fn let_go(&self) {
-        let ids: Vec<String> = self.running.lock().keys().cloned().collect();
-        for id in ids {
-            let _ = self.db.release(&self.name, &id, 0, true).await;
+        if let Err(e) = self.db.release_all(&self.name).await {
+            tracing::warn!(error = %e, "giving back claims failed; their leases will lapse");
         }
     }
 
@@ -294,6 +294,8 @@ impl Worker {
             ms: started.elapsed().as_millis() as u64,
             bytes,
         };
+        // Whether the copies are kept, should this worker record the end.
+        let keep = outcome.is_ok();
         let recorded = match outcome {
             Ok(made) => {
                 let bytes = made.bytes;
@@ -334,7 +336,7 @@ impl Worker {
             // Ended here: the upload goes, and a failure's copies with it.
             Ok(true) => {
                 let _ = tokio::fs::remove_file(self.source(&id)).await;
-                if !matches!(self.db.image(&id).await, Ok(Some((image, _))) if image.ready()) {
+                if !keep {
                     store::discard(&self.store, &self.db, vec![id.clone()]).await;
                 }
             }
@@ -495,12 +497,18 @@ impl Worker {
     /// A video: probed, remuxed without metadata, given a playback copy when
     /// browsers would not play it, and a frame for its pictures.
     async fn video(&self, job: &Claimed, stop: watch::Receiver<bool>) -> Result<Made, Problem> {
+        // ffmpeg failing on a file it probed, or running past a limit
+        // generous to the slowest machine, is the file's doing: retrying
+        // would hold the video slot for hours to the same end. Not starting
+        // at all is this side's.
         let failed = |what: &'static str| {
             move |e: String| {
                 if e == "stopped" {
                     Problem::Stopped
-                } else {
+                } else if e.starts_with("starting ") {
                     Problem::Failed(format!("{what}: {e}"))
+                } else {
+                    Problem::Rejected(jobs::FAILED_UNREADABLE, format!("{what}: {e}"))
                 }
             }
         };
@@ -531,7 +539,7 @@ impl Worker {
         }
         let (width, height) = probe.shown();
         let pixels = u64::from(width) * u64::from(height);
-        if pixels == 0 || pixels > self.max_pixels {
+        if pixels == 0 || pixels > video::MAX_PIXELS.min(self.max_pixels) {
             return Err(Problem::Rejected(
                 jobs::FAILED_TOO_LARGE,
                 format!("{width}×{height}"),

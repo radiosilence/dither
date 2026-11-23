@@ -197,6 +197,11 @@ impl Config {
         })
     }
 
+    /// The largest video taken; `None` when none are.
+    pub fn max_video_bytes(&self) -> Option<u64> {
+        (self.video.mode != VideoMode::Off).then_some(self.video.max_bytes)
+    }
+
     pub fn redirect_uri(&self) -> String {
         format!("{}/auth/callback", self.app_url)
     }

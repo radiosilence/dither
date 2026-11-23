@@ -944,6 +944,21 @@ impl Db {
         .await
     }
 
+    /// Give back every job `worker` holds, refunding their attempts: a worker
+    /// stopping.
+    pub async fn release_all(&self, worker: &str) -> Result<()> {
+        let worker = worker.to_string();
+        self.run_quiet(move |c| {
+            c.execute(
+                "UPDATE images SET lease_until = 0, claimed_by = NULL, attempts = MAX(0, attempts - 1) \
+                 WHERE claimed_by = ?1 AND state = 'processing'",
+                [worker],
+            )
+            .map(drop)
+        })
+        .await
+    }
+
     /// Mark job `id`, which `worker` holds, ready with what its copies came
     /// to, claiming the copies [`add_stray`](Self::add_stray) recorded.
     /// False when `worker` no longer holds it: deleted while its copies were

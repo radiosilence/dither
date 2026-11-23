@@ -44,6 +44,11 @@ const CRF: &str = "23";
 /// Decoders ffmpeg may open: what phones, cameras and screen recorders write.
 const DECODERS: &str = "h264,hevc,vp8,vp9,av1,libdav1d,prores,mpeg4,aac,mp3,mp3float,opus,libopus,\
      vorbis,flac,alac,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_f32le,ac3,eac3";
+/// The most pixels a video's frame may have: 8K. ffmpeg's memory is outside
+/// the processing budget, and a frame larger than this would need more than
+/// a worker has to decode with its references.
+pub const MAX_PIXELS: u64 = 8192 * 4320;
+
 /// Whether ffmpeg may decode `codec` here.
 pub fn decodable(codec: &str) -> bool {
     DECODERS.split(',').any(|d| d == codec)

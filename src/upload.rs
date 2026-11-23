@@ -23,7 +23,7 @@
 //! the run already going or reads how it ended.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -139,8 +139,7 @@ impl Uploads {
             budget_bytes: config.process_memory,
             max_pixels: config.max_pixels,
             max_image_bytes: config.max_upload_bytes,
-            max_video_bytes: (config.video.mode != crate::config::VideoMode::Off)
-                .then_some(config.video.max_bytes),
+            max_video_bytes: config.max_video_bytes(),
             min_free: config.min_free_bytes,
             locks: Default::default(),
             running: Default::default(),
@@ -413,12 +412,12 @@ impl Uploads {
                 );
                 return self.reject(&upload, why).await;
             }
-            let cost = match media::cost_of(&path, upload.size, self.max_pixels).await {
+            // A header that runs past the first bytes is the worker's to size
+            // from the whole file: the web process reads no more than this.
+            let cost = match media::cost(&head, upload.size, self.max_pixels) {
                 Ok(cost) => cost,
-                Err(media::Unsized::Refused(reject)) => {
-                    return self.reject(&upload, reject.to_string()).await;
-                }
-                Err(media::Unsized::Unread(_)) => return self.recount(&upload).await,
+                Err(media::Reject::Broken(_)) if (head.len() as u64) < upload.size => 0,
+                Err(reject) => return self.reject(&upload, reject.to_string()).await,
             };
             if cost > self.budget_bytes {
                 let why = format!(
@@ -467,9 +466,14 @@ impl Uploads {
                 self.jobs.wake();
                 Outcome::Done(id)
             }
+            // Ended another way first: cancelled, or its album deleted.
             Ok(false) => {
-                put_back().await;
-                self.ended(&upload, &path).await
+                let _ = tokio::fs::remove_file(&queued).await;
+                let why = match self.db.upload(&upload.id).await {
+                    Ok(Some(u)) => u.error.unwrap_or_else(|| "it ended another way".into()),
+                    _ => "its album was deleted while it uploaded".into(),
+                };
+                Outcome::Rejected(why)
             }
             Err(e) => {
                 tracing::error!(upload = %upload.id, error = %e, "recording an upload failed");
@@ -477,24 +481,6 @@ impl Uploads {
                 Outcome::Failed("the upload could not be saved; try again".into())
             }
         }
-    }
-
-    /// What to say of an upload whose image could not be added because the
-    /// upload ended another way first (cancelled, or its album deleted), or
-    /// is still open (finishing again works).
-    async fn ended(&self, upload: &Upload, path: &Path) -> Outcome {
-        let why = match self.db.upload(&upload.id).await {
-            Ok(Some(u)) if u.image.is_none() && u.error.is_none() => {
-                return Outcome::Failed("the image could not be saved; try again".into());
-            }
-            Ok(Some(u)) => u.error.unwrap_or_else(|| "it ended another way".into()),
-            Ok(None) => "its album was deleted while it uploaded".into(),
-            Err(_) => {
-                return Outcome::Failed("the image could not be saved; try again".into());
-            }
-        };
-        let _ = tokio::fs::remove_file(path).await;
-        Outcome::Rejected(why)
     }
 
     /// Wait, up to `limit`, for processing in progress to finish.
