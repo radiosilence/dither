@@ -934,7 +934,7 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
         .unwrap();
     assert_eq!(probe.video.codec, "h264");
     assert_eq!(probe.shown(), (360, 640));
-    // A display address names it too, for links made before.
+    // A display address names it too.
     let play = app.get(&format!("/d/{id}.mp4")).await;
     assert_eq!(play.status, StatusCode::OK);
     assert_eq!(play.body, whole.body);

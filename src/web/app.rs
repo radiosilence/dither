@@ -294,9 +294,10 @@ async fn owned(state: &AppState, session: &Session, id: &str) -> AppResult<crate
 /// `/albums/<id>`: the album's editor for its owner. Its address is what a
 /// browser's bar shows, so it is what people copy: anyone else is sent to the
 /// page its link shares, unless the album is private. Someone not signed in
-/// whose browser has held a session, likely its owner, goes to sign-in, as
-/// does anyone for a private or missing album, which says nothing of whether
-/// it exists.
+/// whose browser has held a session, likely its owner, goes to sign-in. A
+/// private or missing album is not found for someone signed in, and sends
+/// anyone else to sign-in, which says nothing of whether it exists. The
+/// app's own requests are answered with a status, never redirected.
 pub async fn album(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -324,6 +325,7 @@ pub async fn album(
             Html(editor(&state, &session, album).await?).into_response()
         }
         (None, _) if app_request => StatusCode::UNAUTHORIZED.into_response(),
+        (Some(_), _) if app_request => return Err(AppError::NotFound),
         (None, _) if lapsed && page_load => sign_in(),
         (_, Some(album)) if !album.private => {
             Redirect::to(&format!("{}/a/{}", state.config.public_url, album.id)).into_response()

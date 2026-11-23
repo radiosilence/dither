@@ -33,28 +33,31 @@ use tokio::sync::watch;
 
 use crate::sanitize::Container;
 
-/// The longer side of the playback copies videos made by dither 0.4 were
-/// given beside their originals, which their pages still name.
+/// The longer side of a video's display copy, which a video stored with one
+/// plays from.
 pub const PLAY_MAX: u32 = 1920;
 /// The longest side H.264 is kept at: beyond 4K, browsers' decoders give up.
 pub const FULL_MAX: u32 = 4096;
-/// The most 16×16 macroblocks in a frame of H.264 level 5.2 (4096×2304),
-/// beyond which hardware decoders refuse a video: a 4:3 or square frame
-/// reaches it before its longer side reaches [`FULL_MAX`].
-const MAX_MACROBLOCKS: u64 = 36_864;
+/// H.264 level 5.2's limits, beyond which hardware decoders refuse a video:
+/// 16×16 macroblocks in a frame (4096×2304), which a 4:3 or square frame
+/// reaches before its longer side reaches [`FULL_MAX`], and in a second
+/// (4096×2160 at 60 frames).
+const MAX_MACROBLOCKS: f64 = 36_864.0;
+const MAX_MACROBLOCK_RATE: f64 = 2_073_600.0;
 
-fn macroblocks(w: f64, h: f64) -> u64 {
-    ((w / 16.0).ceil() * (h / 16.0).ceil()) as u64
+fn macroblocks(w: f64, h: f64) -> f64 {
+    (w / 16.0).ceil() * (h / 16.0).ceil()
 }
 
-/// What a video `w`×`h` is scaled by when converted: 1 when it fits within
-/// [`FULL_MAX`] and level 5.2's frame, otherwise as large as fits both.
-pub fn shrink(w: u32, h: u32) -> f64 {
+/// What a video `w`×`h` at `fps` is scaled by when converted: 1 when it
+/// fits within [`FULL_MAX`] and level 5.2, otherwise as large as fits.
+pub fn shrink(w: u32, h: u32, fps: f64) -> f64 {
     let (w, h) = (f64::from(w.max(1)), f64::from(h.max(1)));
+    let frame = MAX_MACROBLOCKS.min(MAX_MACROBLOCK_RATE / fps.clamp(1.0, 60.0));
     let mut f = (f64::from(FULL_MAX) / w.max(h))
-        .min((MAX_MACROBLOCKS as f64 * 256.0 / (w * h)).sqrt())
+        .min((frame * 256.0 / (w * h)).sqrt())
         .min(1.0);
-    while f < 1.0 && macroblocks(w * f, h * f) > MAX_MACROBLOCKS {
+    while macroblocks(w * f, h * f) > frame {
         f *= 0.995;
     }
     f
@@ -443,7 +446,9 @@ impl Tools {
             ""
         };
         let (w, h) = probe.shown();
-        let f = shrink(w, h);
+        // The frame rate is the file's word, held to what is made.
+        let fps = probe.video.fps.clamp(1.0, 60.0);
+        let f = shrink(w, h, fps);
         let mut chain = vec![format!(
             "scale=w='trunc(iw*{f:.6}/2)*2':h='trunc(ih*{f:.6}/2)*2'{matrix}"
         )];
@@ -500,13 +505,15 @@ impl Tools {
         args.extend(probe.length());
         args.extend(clean_output().iter().map(Into::into));
         args.push(file(to));
-        // Generous: two CPUs convert 1080p30 at around real time, and 4K60
-        // is up to nine times the pixels a second. Both the size and the
-        // frame rate are what is made, not what the file claims.
-        let fps = probe.video.fps.clamp(1.0, 60.0);
+        // Generous: twenty times the length for 1080p30 on two threads, as
+        // tone mapping in floating point and decoding a fast frame rate run
+        // well below real time; more for the pixels a second made (4K60 is
+        // up to nine times as many) and for fewer threads.
         let made = f64::from(w) * f64::from(h) * f * f;
-        let load = (made * fps / (1920.0 * 1080.0 * 30.0)).max(1.0);
-        let limit = Duration::from_secs(600) + Duration::from_secs_f64(probe.duration * 8.0 * load);
+        let load = (made * fps / (1920.0 * 1080.0 * 30.0)).max(1.0)
+            * (2.0 / f64::from(self.threads.max(1))).max(1.0);
+        let limit =
+            Duration::from_secs(600) + Duration::from_secs_f64(probe.duration * 20.0 * load);
         let mut each = |line: &str| {
             if let Some(us) = line
                 .strip_prefix("out_time_us=")
@@ -774,7 +781,8 @@ impl Probe {
         v.codec == "h264"
             && matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p")
             && !self.hdr()
-            && shrink(w, h) >= 1.0
+            && v.fps <= 61.0
+            && shrink(w, h, v.fps) >= 1.0
             && v.fps <= 61.0
             && self
                 .audio
@@ -1194,24 +1202,31 @@ pub mod tests {
 
     #[test]
     fn a_conversion_fits_level_5_2() {
-        assert_eq!(shrink(1920, 1080), 1.0);
-        assert_eq!(shrink(3840, 2160), 1.0);
-        assert_eq!(shrink(4096, 2160), 1.0);
-        assert_eq!(shrink(2160, 3840), 1.0, "4K, upright");
-        for (w, h) in [(7680, 4320), (4000, 3000), (4096, 4096), (8192, 1080)] {
-            let f = shrink(w, h);
+        assert_eq!(shrink(1920, 1080, 60.0), 1.0);
+        assert_eq!(shrink(3840, 2160, 60.0), 1.0);
+        assert_eq!(shrink(4096, 2160, 60.0), 1.0);
+        assert_eq!(shrink(2160, 3840, 30.0), 1.0, "4K, upright");
+        assert_eq!(shrink(4096, 2304, 30.0), 1.0);
+        for (w, h, fps) in [
+            (7680, 4320, 30.0),
+            (4000, 3000, 30.0),
+            (4000, 3000, 60.0),
+            (4096, 2304, 60.0),
+            (4096, 4096, 30.0),
+            (8192, 1080, 30.0),
+        ] {
+            let f = shrink(w, h, fps);
+            assert!(f < 1.0, "{w}×{h}@{fps}");
             let (tw, th) = (
                 (f64::from(w) * f / 2.0).trunc() * 2.0,
                 (f64::from(h) * f / 2.0).trunc() * 2.0,
             );
+            let frame = MAX_MACROBLOCKS.min(MAX_MACROBLOCK_RATE / fps);
             assert!(tw.max(th) <= f64::from(FULL_MAX), "{w}×{h} → {tw}×{th}");
+            assert!(macroblocks(tw, th) <= frame, "{w}×{h}@{fps} → {tw}×{th}");
             assert!(
-                macroblocks(tw, th) <= MAX_MACROBLOCKS,
-                "{w}×{h} → {tw}×{th}"
-            );
-            assert!(
-                macroblocks(tw, th) > MAX_MACROBLOCKS * 9 / 10 || tw.max(th) > 3900.0,
-                "{w}×{h} → {tw}×{th} is needlessly small"
+                macroblocks(tw, th) > frame * 0.9 || tw.max(th) > 3900.0,
+                "{w}×{h}@{fps} → {tw}×{th} is needlessly small"
             );
         }
         assert_eq!(

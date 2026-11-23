@@ -509,7 +509,7 @@ impl Worker {
             move |e: String| {
                 if e == "stopped" {
                     Problem::Stopped
-                } else if e.starts_with(video::LOCAL) {
+                } else if e.starts_with(video::LOCAL) || e.contains("No space left on device") {
                     Problem::Failed(format!("{what}: {e}"))
                 } else {
                     Problem::Rejected(jobs::FAILED_UNREADABLE, format!("{what}: {e}"))
