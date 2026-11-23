@@ -8,7 +8,7 @@
     {% if !pic.caption.is_empty() %}<figcaption class="prose">{{ pic.caption }}</figcaption>{% endif %}
   </figure>
   <p class="mx-auto max-w-[1000px] px-[22px] text-meta text-muted">
-    {{ meta }} · <a href="{{ pic.file }}">original</a>{% if let Some(link) = album.as_ref() %} · <a href="{{ link.href }}">{{ link.label }}</a>{% endif %}
+    {{ meta }} · <a href="{{ pic.file }}">{{ __("original") }}</a>{% if let Some(link) = album.as_ref() %} · <a href="{{ link.href }}">{% if !link.title.is_empty() %}{{ link.title }} · {% endif %}{{ __n("%{count} image", "%{count} images", *link.count) }}</a>{% endif %}
   </p>
 </main>
 {% endblock %}

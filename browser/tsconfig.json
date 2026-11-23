@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "es2024",
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": [],
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true
+  },
+  "include": ["*.ts"]
+}

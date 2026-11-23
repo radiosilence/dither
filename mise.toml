@@ -11,3 +11,5 @@ node = "24"
 aube = "2.8.5"
 # Compiles styles/ into the committed assets/app.css (`just css`).
 "github:tailwindlabs/tailwindcss" = "4.3.3"
+# Typechecks browser/; build.rs strips its types.
+"github:microsoft/typescript-go" = { version = "7.0.2", version_prefix = "typescript/v" }

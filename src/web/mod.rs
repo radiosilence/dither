@@ -195,6 +195,17 @@ pub trait Helpers {
     fn icon(&self, name: &str, px: f32) -> String {
         crate::icon::named(name, px)
     }
+
+    /// The page's language, for `<html lang>`.
+    fn lang(&self) -> &'static str {
+        crate::i18n::LOCALE
+    }
+
+    /// A count from each plural form of the page's language, for the copy
+    /// the browser's script reads.
+    fn plural_samples(&self) -> impl Iterator<Item = u64> {
+        crate::i18n::plural_samples().iter().copied()
+    }
 }
 
 impl<T: askama::Template> Helpers for T {}
@@ -232,11 +243,6 @@ pub fn human(bytes: u64) -> String {
         _ if v >= 100.0 => format!("{v:.0} {}", UNITS[u]),
         _ => format!("{v:.1} {}", UNITS[u]),
     }
-}
-
-/// `n thing` or `n things`.
-pub fn count(n: u64, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 #[cfg(test)]

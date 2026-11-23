@@ -5,6 +5,7 @@ mod auth;
 mod config;
 mod db;
 mod error;
+mod i18n;
 mod icon;
 mod id;
 mod media;

@@ -1,21 +1,22 @@
+{% import "app/macros.html" as m %}
 <div id="mover-body" class="grid gap-4">
-  <h2 class="mt-0">move to</h2>
+  <h2 class="mt-0">{{ __("move to") }}</h2>
   <div class="picker">
     <label class="choice">
       <input type="radio" name="to" value="" checked>
       <span class="thumb">{{ icon("plus", 15.0)|safe }}</span>
-      <span class="grow">a new album <input type="text" name="title" placeholder="untitled" aria-label="new album's title" maxlength="300" class="mt-1 block w-full"></span>
+      <span class="grow">{{ __("a new album") }} <input type="text" name="title" placeholder="{{ __("untitled") }}" aria-label="{{ __("the new album's title") }}" maxlength="300" class="mt-1 block w-full"></span>
     </label>
     {% for a in albums %}
     <label class="choice">
       <input type="radio" name="to" value="{{ a.id }}">
       <span class="thumb">{% if let Some(src) = a.cover.as_ref() %}<img src="{{ src }}" alt="" loading="lazy">{% endif %}</span>
-      <span class="grow"><span class="block truncate normal-case{% if a.title.is_empty() %} text-muted{% endif %}">{% if a.title.is_empty() %}untitled{% else %}{{ a.title }}{% endif %}</span><span class="block text-fine text-muted normal-case">{{ a.meta }}</span></span>
+      <span class="grow"><span class="block truncate normal-case{% if a.title.is_empty() %} text-muted{% endif %}">{% if a.title.is_empty() %}{{ __("untitled") }}{% else %}{{ a.title }}{% endif %}</span><span class="block text-fine text-muted normal-case">{% call m::images(a.count, a.size) %}{% endcall %}</span></span>
     </label>
     {% endfor %}
   </div>
   <div class="flex justify-end gap-3">
-    <button class="standard" data-close>cancel</button>
-    <button class="primary" data-move-confirm>move</button>
+    <button class="standard" data-close>{{ __p("Button: dismiss a dialog", "cancel") }}</button>
+    <button class="primary" data-move-confirm>{{ __p("Button: move images to another album", "move") }}</button>
   </div>
 </div>

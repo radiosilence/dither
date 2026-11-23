@@ -15,7 +15,7 @@ check:
     cargo test --locked
     cd deploy/pulumi && aube install --frozen-lockfile && aube run check && aube run build
     just css-fresh
-    node --check assets/app.js
+    just js
     python3 -m unittest scripts/test_changelog.py
     python3 scripts/changelog.py --lint
     just versions
@@ -54,6 +54,14 @@ css-fresh: theme
     tailwindcss --optimize --input styles/app.css --output "$css"
     cmp -s "$css" assets/app.css || { echo 'assets/app.css is stale: run `just css`'; exit 1; }
     cmp -s node_modules/@radiosilence/theme/geist-mono.woff2 assets/geist-mono.woff2 || { echo 'assets/geist-mono.woff2 is stale: run `just css`'; exit 1; }
+
+# Typecheck the browser's script. Cargo strips its types as it builds (build.rs); this checks them.
+js:
+    tsc -p browser
+
+# Rewrite the message catalogues from the templates, keeping translations. A test fails while they are stale.
+i18n:
+    UPDATE_CATALOGUES=1 cargo test --quiet the_catalogues_are_up_to_date
 
 # Fail unless the crate, the Pulumi package and the image it deploys share one version.
 versions:

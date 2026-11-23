@@ -14,6 +14,7 @@
 //! change under an address, so they are cached for a year.
 
 use askama::Template;
+use askama_gettext::Translate as _;
 use axum::body::Body as HttpBody;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -87,7 +88,11 @@ pub struct OgImage {
 
 /// What a link preview is built from.
 pub struct Og {
+    /// What a person called it: an album's title, an image's caption. Empty
+    /// when they called it nothing, and the template words a fallback.
     pub title: String,
+    /// An album's image count, for that fallback; `None` for an image.
+    pub album_count: Option<u64>,
     pub description: String,
     pub url: String,
     pub image: Option<OgImage>,
@@ -135,13 +140,14 @@ struct AlbumPage {
     og: Og,
     title: String,
     description: String,
-    count: String,
+    count: u64,
     pics: Vec<Pic>,
 }
 
 pub struct AlbumLink {
     pub href: String,
-    pub label: String,
+    pub title: String,
+    pub count: u64,
 }
 
 #[derive(Template)]
@@ -161,6 +167,8 @@ struct Missing;
 #[derive(Template)]
 #[template(path = "public/landing.html")]
 struct Landing;
+
+crate::i18n::translated!(AlbumPage, ImagePage, Missing, Landing);
 
 fn page(html: String, private: bool) -> Response {
     let cache = if private {
@@ -237,13 +245,6 @@ pub async fn album(
         .as_ref()
         .and_then(|c| images.iter().find(|i| &i.id == c))
         .or(images.first());
-    let n = images.len() as u64;
-    let count = crate::web::count(n, "image", "images");
-    let title = if album.title.is_empty() {
-        count.clone()
-    } else {
-        album.title.clone()
-    };
     let description = if album.description.is_empty() {
         images
             .iter()
@@ -254,7 +255,8 @@ pub async fn album(
         summary(&album.description, 200)
     };
     let og = Og {
-        title,
+        title: album.title.clone(),
+        album_count: Some(images.len() as u64),
         description,
         url: format!("{public}/a/{id}"),
         image: cover.map(|c| og_image(public, c)),
@@ -263,7 +265,7 @@ pub async fn album(
         og,
         title: album.title.clone(),
         description: album.description.clone(),
-        count,
+        count: images.len() as u64,
         pics: images.iter().map(Pic::new).collect(),
     }
     .render();
@@ -304,14 +306,11 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     let public = &state.config.public_url;
     let og = Og {
         title: if image.caption.is_empty() {
-            if album.title.is_empty() {
-                "an image".into()
-            } else {
-                album.title.clone()
-            }
+            album.title.clone()
         } else {
             summary(&image.caption, 90)
         },
+        album_count: None,
         description: if image.caption.is_empty() {
             String::new()
         } else {
@@ -327,20 +326,10 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
         human(image.bytes),
         image.kind.ext()
     );
-    let album_link = (siblings > 1).then(|| {
-        let label = if album.title.is_empty() {
-            crate::web::count(siblings, "image", "images")
-        } else {
-            format!(
-                "{} · {}",
-                album.title,
-                crate::web::count(siblings, "image", "images")
-            )
-        };
-        AlbumLink {
-            href: format!("/a/{}#{id}", album.id),
-            label,
-        }
+    let album_link = (siblings > 1).then(|| AlbumLink {
+        href: format!("/a/{}#{id}", album.id),
+        title: album.title.clone(),
+        count: siblings,
     });
     let html = ImagePage {
         og,

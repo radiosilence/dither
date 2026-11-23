@@ -3,11 +3,11 @@
   <button type="button" class="tile" id="i-{{ t.id }}" data-id="{{ t.id }}" aria-label="{{ t.label }}"
     data-on:click="dither.show('viewer'); @get('/images/{{ t.id }}/view')">
     <img src="{{ t.thumb }}" alt="" loading="lazy" decoding="async" draggable="false">
-    <span class="marks">{% if t.id == cover %}<span class="mark">cover</span>{% endif %}{% if t.animated %}<span class="mark">gif</span>{% endif %}{% if t.captioned %}<span class="mark">¶</span>{% endif %}</span>
+    <span class="marks">{% if t.id == cover %}<span class="mark">{{ __p("Mark on the album's cover image", "cover") }}</span>{% endif %}{% if t.animated %}<span class="mark">{{ __p("Mark on an animated image", "gif") }}</span>{% endif %}{% if t.captioned %}<span class="mark" title="{{ __("has a caption") }}">¶</span>{% endif %}</span>
     <span class="tick">{{ icon("check", 13.0)|safe }}</span>
   </button>
 {% endfor %}
 {% if tiles.is_empty() %}
-  <p class="col-span-full py-16 text-center text-muted">Nothing here yet.</p>
+  <p class="col-span-full py-16 text-center text-muted">{{ __("Nothing here yet.") }}</p>
 {% endif %}
 </div>

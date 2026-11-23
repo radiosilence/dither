@@ -12,7 +12,8 @@ use axum::response::{IntoResponse, Response};
 
 const APP_CSS: &str = include_str!("../../assets/app.css");
 const DATASTAR_JS: &str = include_str!("../../assets/datastar.js");
-const APP_JS: &str = include_str!("../../assets/app.js");
+/// browser/app.ts with its types stripped by build.rs.
+const APP_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/app.js"));
 /// The typeface @radiosilence/theme sets; app.css names it by a URL relative
 /// to itself.
 const GEIST_MONO: &[u8] = include_bytes!("../../assets/geist-mono.woff2");
