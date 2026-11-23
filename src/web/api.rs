@@ -119,8 +119,7 @@ pub async fn begin(
     if let Some(f) = batch
         .files
         .iter()
-        .find(|f| f.mime.starts_with("video/") || f.video())
-        .filter(|f| videos.is_none() || !f.video())
+        .find(|f| (f.mime.starts_with("video/") || f.video()) && (videos.is_none() || !f.video()))
     {
         let why = if videos.is_none() {
             format!("{}: this server doesn't take videos", f.name)

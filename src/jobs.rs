@@ -92,6 +92,9 @@ pub enum FromWorker {
         video: bool,
         ms: u64,
         bytes: u64,
+        /// Why it was not made: a `FAILED_*` key.
+        #[serde(default)]
+        failure: String,
     },
 }
 
@@ -117,6 +120,8 @@ pub struct Hub {
     /// Whether the worker last heard from can make videos; until one is,
     /// the configuration is taken at its word.
     videos: std::sync::atomic::AtomicU8,
+    /// Workers connected now.
+    workers: std::sync::atomic::AtomicUsize,
 }
 
 /// The words the API gives for a failure key, which the pages word through
@@ -142,7 +147,13 @@ impl Hub {
             orders: broadcast::channel(256).0,
             ended: broadcast::channel(1024).0,
             videos: std::sync::atomic::AtomicU8::new(0),
+            workers: std::sync::atomic::AtomicUsize::new(0),
         })
+    }
+
+    /// Whether any worker is connected to take jobs now.
+    pub fn working(&self) -> bool {
+        self.workers.load(std::sync::atomic::Ordering::Relaxed) > 0
     }
 
     /// Whether videos can be made: unknown until a worker says, and then
@@ -202,7 +213,14 @@ impl Hub {
     }
 
     async fn serve(&self, stream: UnixStream) {
+        use std::sync::atomic::Ordering::Relaxed;
         tracing::info!("a worker connected");
+        self.workers.fetch_add(1, Relaxed);
+        self.serve_one(stream).await;
+        self.workers.fetch_sub(1, Relaxed);
+    }
+
+    async fn serve_one(&self, stream: UnixStream) {
         let (read, mut write) = stream.into_split();
         let mut orders = self.orders.subscribe();
         // One may have been waiting since before it connected.
@@ -268,9 +286,18 @@ impl Hub {
                 video,
                 ms,
                 bytes,
+                failure,
             } => {
                 self.progress.lock().remove(&id);
-                crate::metrics::processed(made, video, std::time::Duration::from_millis(ms), bytes);
+                // A refusal is the file's; a failure on this side is not.
+                let refused = !made && failure != FAILED;
+                crate::metrics::processed(
+                    made,
+                    refused,
+                    video,
+                    std::time::Duration::from_millis(ms),
+                    bytes,
+                );
                 self.db.announce(&owner);
                 let _ = self.ended.send((id, made));
             }

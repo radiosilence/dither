@@ -109,6 +109,18 @@ pub fn cost(head: &[u8], size: u64, max_pixels: u64) -> Result<u64, Reject> {
 /// takes ends well within it.
 pub const HEAD: u64 = 4 << 20;
 
+/// The first `n` bytes of the file at `path`, or all of a shorter one.
+pub async fn read_head(path: &std::path::Path, n: u64) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt as _;
+    let mut head = Vec::new();
+    tokio::fs::File::open(path)
+        .await?
+        .take(n)
+        .read_to_end(&mut head)
+        .await?;
+    Ok(head)
+}
+
 /// Why a file could not be sized.
 #[derive(Debug)]
 pub enum Unsized {
@@ -122,15 +134,7 @@ pub enum Unsized {
 /// bytes, so a file waiting for the budget is not held in memory, or from
 /// the whole file when its header runs past them.
 pub async fn cost_of(path: &std::path::Path, size: u64, max_pixels: u64) -> Result<u64, Unsized> {
-    use tokio::io::AsyncReadExt as _;
-    let mut head = Vec::new();
-    tokio::fs::File::open(path)
-        .await
-        .map_err(Unsized::Unread)?
-        .take(HEAD)
-        .read_to_end(&mut head)
-        .await
-        .map_err(Unsized::Unread)?;
+    let head = read_head(path, HEAD).await.map_err(Unsized::Unread)?;
     if (head.len() as u64) < size.min(HEAD) {
         return Err(Unsized::Unread(std::io::ErrorKind::UnexpectedEof.into()));
     }

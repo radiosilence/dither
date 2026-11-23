@@ -314,8 +314,11 @@ document.addEventListener(
   if (grid)
     new MutationObserver(() => {
       const waiting = $<HTMLElement>("#viewer[open] [data-progress-of]")?.dataset["progressOf"];
-      const tile = waiting ? $<HTMLElement>(`#i-${waiting}`) : null;
-      if (tile && !tile.querySelector("progress") && !body.classList.contains("selecting")) tile.click();
+      if (!waiting) return;
+      const tile = $<HTMLElement>(`#i-${waiting}`);
+      // Refused once made, it left the album: so does the viewer.
+      if (!tile) $<HTMLDialogElement>("#viewer")?.close();
+      else if (!tile.querySelector("progress") && !body.classList.contains("selecting")) tile.click();
     }).observe(grid, { childList: true, subtree: true });
   // A video's bar in the viewer follows its tile's, which the live stream moves.
   if (grid)

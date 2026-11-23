@@ -49,6 +49,11 @@ const DECODERS: &str = "h264,hevc,vp8,vp9,av1,libdav1d,prores,mpeg4,aac,mp3,mp3f
 /// a worker has to decode with its references.
 pub const MAX_PIXELS: u64 = 8192 * 4320;
 
+/// How an error from a run begins when the trouble was on this side: it
+/// would not start, or its output could not be read. Anything else is
+/// ffmpeg's word on the file.
+pub const LOCAL: &str = "here: ";
+
 /// Whether ffmpeg may decode `codec` here.
 pub fn decodable(codec: &str) -> bool {
     DECODERS.split(',').any(|d| d == codec)
@@ -146,16 +151,18 @@ impl Tools {
     }
 
     /// Run `program` and return what it wrote, or why it failed. With
-    /// `progress`, its standard output is ffmpeg's `-progress` report, read
-    /// as it comes and passed on as seconds of output made. Stopped at
-    /// `limit`, or when `stop` turns true.
+    /// `each`, its standard output is read a line at a time as it comes and
+    /// handed over, and nothing is returned. What it writes past what is
+    /// kept is read and dropped, so it never blocks on a full pipe. Stopped
+    /// at `limit`, or when `stop` turns true. Trouble on this side (it would
+    /// not start, its output could not be read) says so: [`LOCAL`].
     async fn run(
         &self,
         program: &Path,
         args: Vec<OsString>,
         limit: Duration,
         mut stop: watch::Receiver<bool>,
-        mut progress: Option<&mut (dyn FnMut(f64) + Send)>,
+        mut each: Option<&mut (dyn FnMut(&str) + Send)>,
     ) -> Result<Vec<u8>, String> {
         let mut cmd = command(program);
         cmd.args(&args)
@@ -175,7 +182,7 @@ impl Tools {
         }
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("starting {}: {e}", program.display()))?;
+            .map_err(|e| format!("{LOCAL}starting {}: {e}", program.display()))?;
         let mut stdout = child.stdout.take().expect("piped");
         let mut stderr = child.stderr.take().expect("piped");
         let errors = tokio::spawn(async move {
@@ -187,16 +194,12 @@ impl Tools {
         });
         let work = async {
             let mut out = Vec::new();
-            match progress.as_deref_mut() {
-                Some(report) => {
+            let unread = |e: std::io::Error| format!("{LOCAL}reading its output: {e}");
+            match each.as_deref_mut() {
+                Some(each) => {
                     let mut lines = tokio::io::BufReader::new(&mut stdout).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        if let Some(us) = line
-                            .strip_prefix("out_time_us=")
-                            .and_then(|v| v.trim().parse::<i64>().ok())
-                        {
-                            report(us.max(0) as f64 / 1e6);
-                        }
+                    while let Some(line) = lines.next_line().await.map_err(unread)? {
+                        each(&line);
                     }
                 }
                 // A poster frame or ffprobe's JSON: small, and capped.
@@ -205,14 +208,17 @@ impl Tools {
                         .take(64 << 20)
                         .read_to_end(&mut out)
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(unread)?;
+                    tokio::io::copy(&mut stdout, &mut tokio::io::sink())
+                        .await
+                        .map_err(unread)?;
                 }
             }
             child
                 .wait()
                 .await
                 .map(|status| (status, out))
-                .map_err(|e| e.to_string())
+                .map_err(|e| format!("{LOCAL}waiting for it: {e}"))
         };
         // A sender dropped without asking for a stop never will.
         let stopped = async {
@@ -298,23 +304,23 @@ impl Tools {
             .map(Into::into),
         );
         args.push(file(path));
-        let out = self
-            .run(
-                &self.ffprobe,
-                args,
-                Duration::from_secs(300),
-                watch::channel(false).1,
-                None,
-            )
-            .await?;
-        Ok(String::from_utf8_lossy(&out)
-            .lines()
-            .filter_map(|l| {
-                let mut parts = l.split(',').map(|v| v.trim().parse::<f64>().ok());
-                let pts = parts.next().flatten()?;
-                Some(pts + parts.next().flatten().unwrap_or(0.0))
-            })
-            .fold(0.0, f64::max))
+        // One line a packet: read as they come, not held.
+        let mut end = 0.0_f64;
+        let mut each = |line: &str| {
+            let mut parts = line.split(',').map(|v| v.trim().parse::<f64>().ok());
+            if let Some(pts) = parts.next().flatten() {
+                end = end.max(pts + parts.next().flatten().unwrap_or(0.0));
+            }
+        };
+        self.run(
+            &self.ffprobe,
+            args,
+            Duration::from_secs(300),
+            watch::channel(false).1,
+            Some(&mut each),
+        )
+        .await?;
+        Ok(end)
     }
 
     /// What every ffmpeg run starts with: no questions, errors only, and its
@@ -469,7 +475,15 @@ impl Tools {
         // Generous: a slow machine transcoding 4K HEVC runs well below real
         // time.
         let limit = Duration::from_secs(600) + Duration::from_secs_f64(probe.duration * 20.0);
-        self.run(&self.ffmpeg, args, limit, stop.clone(), Some(progress))
+        let mut each = |line: &str| {
+            if let Some(us) = line
+                .strip_prefix("out_time_us=")
+                .and_then(|v| v.trim().parse::<i64>().ok())
+            {
+                progress(us.max(0) as f64 / 1e6);
+            }
+        };
+        self.run(&self.ffmpeg, args, limit, stop.clone(), Some(&mut each))
             .await
             .map(drop)
     }

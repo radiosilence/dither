@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use bytes::Bytes;
-use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio::sync::{Notify, Semaphore, mpsc, watch};
 
 use crate::config::Config;
@@ -267,14 +267,22 @@ impl Worker {
                 let this = self.clone();
                 let id = id.clone();
                 tokio::spawn(async move {
+                    let mut renewed = Instant::now();
                     loop {
                         tokio::time::sleep(RENEW).await;
                         let until = now() + LEASE.as_millis() as i64;
-                        if let Ok(false) = this.db.renew(&this.name, &id, until).await {
-                            let _ = stop.send(true);
-                            return;
+                        match this.db.renew(&this.name, &id, until).await {
+                            Ok(true) => renewed = Instant::now(),
+                            Ok(false) => break,
+                            // Unrenewed for a lease's length, it may be
+                            // another's by now.
+                            Err(_) if renewed.elapsed() >= LEASE => break,
+                            Err(e) => {
+                                tracing::warn!(job = %id, error = %e, "renewing a lease failed")
+                            }
                         }
                     }
+                    let _ = stop.send(true);
                 })
             };
             self.progress(&owner, &id, 0);
@@ -289,13 +297,14 @@ impl Worker {
         };
         self.said.lock().remove(&id);
         let _ = tokio::fs::remove_dir_all(self.work(&id)).await;
-        let ended = |made: bool, bytes: u64| FromWorker::Ended {
+        let ended = |made: bool, bytes: u64, why: &str| FromWorker::Ended {
             owner: owner.clone(),
             id: id.clone(),
             made,
             video,
             ms: started.elapsed().as_millis() as u64,
             bytes,
+            failure: why.to_string(),
         };
         // Whether the copies are kept, should this worker record the end.
         let keep = outcome.is_ok();
@@ -305,7 +314,7 @@ impl Worker {
                 let finished = self.db.finish_job(&owner, &self.name, &id, made).await;
                 if let Ok(true) = finished {
                     tracing::info!(job = %id, video, ms = started.elapsed().as_millis() as u64, "made");
-                    self.say(ended(true, bytes));
+                    self.say(ended(true, bytes, ""));
                 }
                 finished
             }
@@ -330,7 +339,7 @@ impl Worker {
                 };
                 let failed = self.db.fail_job(&owner, &self.name, &id, why).await;
                 if let Ok(true) = failed {
-                    self.say(ended(false, 0));
+                    self.say(ended(false, 0, why));
                 }
                 failed
             }
@@ -346,12 +355,18 @@ impl Worker {
             // Not this worker's to record. Deleted: everything goes. Taken by
             // another worker after this one's lease lapsed: everything stays,
             // the copies included, which are that worker's now.
-            Ok(false) => {
-                if let Ok(None) = self.db.image(&id).await {
+            Ok(false) => match self.db.image(&id).await {
+                Ok(None) => {
                     let _ = tokio::fs::remove_file(self.source(&id)).await;
                     store::discard(&self.store, &self.db, vec![id.clone()]).await;
                 }
-            }
+                // Stopped while still this worker's (its lease could not be
+                // renewed): given back, since a worker does not take up a
+                // job it holds.
+                _ => {
+                    let _ = self.db.release(&self.name, &id, 0).await;
+                }
+            },
             Err(e) => {
                 tracing::error!(job = %id, error = %e, "recording how a job ended failed");
                 self.later(&job).await;
@@ -413,17 +428,7 @@ impl Worker {
         let path = self.source(id);
         match limit {
             None => tokio::fs::read(&path).await.map_err(lost),
-            Some(n) => {
-                let mut head = Vec::new();
-                tokio::fs::File::open(&path)
-                    .await
-                    .map_err(lost)?
-                    .take(n)
-                    .read_to_end(&mut head)
-                    .await
-                    .map_err(lost)?;
-                Ok(head)
-            }
+            Some(n) => crate::media::read_head(&path, n).await.map_err(lost),
         }
     }
 
@@ -504,7 +509,7 @@ impl Worker {
             move |e: String| {
                 if e == "stopped" {
                     Problem::Stopped
-                } else if e.starts_with("starting ") {
+                } else if e.starts_with(video::LOCAL) {
                     Problem::Failed(format!("{what}: {e}"))
                 } else {
                     Problem::Rejected(jobs::FAILED_UNREADABLE, format!("{what}: {e}"))
@@ -523,8 +528,8 @@ impl Worker {
             Problem::Rejected(jobs::FAILED_UNREADABLE, "not a video after all".into())
         })?;
         let probe = tools.probe(container, &source).await.map_err(|e| {
-            // Out of time, or ffprobe would not start: this side's trouble.
-            if e.starts_with("timed out") || e.starts_with("starting ") {
+            // Out of time, or trouble running ffprobe: this side's.
+            if e.starts_with("timed out") || e.starts_with(video::LOCAL) {
                 Problem::Failed(format!("probing: {e}"))
             } else {
                 Problem::Rejected(jobs::FAILED_UNREADABLE, e)

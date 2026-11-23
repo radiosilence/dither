@@ -374,18 +374,10 @@ impl Uploads {
         let path = self.file(&upload.id);
         // What can be judged from the first bytes is judged before the
         // sender is told it worked.
-        let mut head = Vec::new();
-        let read = async {
-            use tokio::io::AsyncReadExt as _;
-            tokio::fs::File::open(&path)
-                .await?
-                .take(HEAD)
-                .read_to_end(&mut head)
-                .await
+        let head = match media::read_head(&path, HEAD).await {
+            Ok(head) if (head.len() as u64) >= upload.size.min(HEAD) => head,
+            _ => return self.recount(&upload).await,
         };
-        if read.await.is_err() || (head.len() as u64) < upload.size.min(HEAD) {
-            return self.recount(&upload).await;
-        }
         // Whole, as the database counts it: a tail that never reached the
         // disk is sent again rather than queued short.
         match tokio::fs::metadata(&path).await {
@@ -474,7 +466,7 @@ impl Uploads {
                 self.jobs.wake();
                 // A picture takes seconds: its sender hears how it went, as
                 // they would were it made here. A video is processing.
-                if !video {
+                if !video && self.jobs.working() {
                     return self.picture_ended(&upload, id, ends).await;
                 }
                 Outcome::Done(id)
@@ -519,7 +511,6 @@ impl Uploads {
         if let Err(e) = self.db.refuse_upload(&upload.owner, &upload.id, &why).await {
             tracing::warn!(upload = %upload.id, error = %e, "recording a refused upload failed");
         }
-        crate::metrics::rejected();
         Outcome::Rejected(why)
     }
 

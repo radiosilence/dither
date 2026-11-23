@@ -44,7 +44,9 @@ pub fn cache(hit: bool) {
 
 /// A job a worker ended: made or not, a video or a picture, how long it
 /// took, and its original's size when made.
-pub fn processed(made: bool, video: bool, took: std::time::Duration, bytes: u64) {
+/// A refusal is the file's doing; a picture that failed on this side counts
+/// in neither.
+pub fn processed(made: bool, refused: bool, video: bool, took: std::time::Duration, bytes: u64) {
     let ms = took.as_millis() as u64;
     match (made, video) {
         (true, false) => {
@@ -53,7 +55,9 @@ pub fn processed(made: bool, video: bool, took: std::time::Duration, bytes: u64)
             PROCESS_MS.fetch_add(ms, Relaxed);
         }
         (false, false) => {
-            REJECTED.fetch_add(1, Relaxed);
+            if refused {
+                REJECTED.fetch_add(1, Relaxed);
+            }
         }
         (made, true) => {
             if made { &VIDEOS } else { &VIDEO_FAILURES }.fetch_add(1, Relaxed);

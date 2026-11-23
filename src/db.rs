@@ -888,6 +888,7 @@ impl Db {
                     "UPDATE images SET lease_until = ?1, claimed_by = ?2, attempts = attempts + 1 \
                      WHERE id = (SELECT id FROM images WHERE state = 'processing' \
                        AND (lease_until IS NULL OR lease_until < ?3) AND (kind = 'mp4') = ?4 \
+                       AND claimed_by IS NOT ?2 \
                        ORDER BY created_at LIMIT 1) \
                      RETURNING *",
                     params![until, worker, now(), video],
