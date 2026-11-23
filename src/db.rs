@@ -405,7 +405,7 @@ pub struct NewJob {
 }
 
 /// What a worker made of a job: what its row records once it is ready.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Made {
     pub width: u32,
     pub height: u32,
@@ -896,9 +896,18 @@ impl Db {
     }
 
     /// Claim the oldest job no worker holds, of videos or of images, for
-    /// `worker` until `until`. Quiet: a claim changes nothing anyone sees.
-    pub async fn claim(&self, worker: &str, video: bool, until: i64) -> Result<Option<Claimed>> {
+    /// `worker` until `until`, other than those it is `making`: one it held
+    /// and lost track of (its end never heard) it takes up again once the
+    /// lease lapses. Quiet: a claim changes nothing anyone sees.
+    pub async fn claim(
+        &self,
+        worker: &str,
+        video: bool,
+        until: i64,
+        making: &[String],
+    ) -> Result<Option<Claimed>> {
         let worker = worker.to_string();
+        let making = serde_json::to_string(making).expect("serialisable");
         self.run_quiet(move |c| {
             let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let image = tx
@@ -906,15 +915,21 @@ impl Db {
                     "UPDATE images SET lease_until = ?1, claimed_by = ?2, attempts = attempts + 1 \
                      WHERE id = (SELECT id FROM images WHERE state = 'processing' \
                        AND (lease_until IS NULL OR lease_until < ?3) AND (kind = 'mp4') = ?4 \
-                       AND claimed_by IS NOT ?2 \
+                       AND id NOT IN (SELECT value FROM json_each(?5)) \
                        ORDER BY created_at LIMIT 1) \
                      RETURNING *",
-                    params![until, worker, now(), video],
+                    params![until, worker, now(), video, making],
                     Image::from_row,
                 )
                 .optional()?;
             let claimed = match image {
                 Some(image) => {
+                    // Copies a worker stores for it are found and removed
+                    // should the job go before it is made.
+                    tx.execute(
+                        "INSERT OR REPLACE INTO strays (id, since) VALUES (?1, ?2)",
+                        params![image.id, now()],
+                    )?;
                     let owner = tx.query_row(
                         "SELECT owner FROM albums WHERE id = ?1",
                         [&image.album],
@@ -946,8 +961,9 @@ impl Db {
         .await
     }
 
-    /// Give job `id` back, for any worker to take after `after`.
-    pub async fn release(&self, worker: &str, id: &str, after: i64) -> Result<()> {
+    /// Give job `id` back, for any worker to take after `after`. False when
+    /// `worker` did not hold it.
+    pub async fn release(&self, worker: &str, id: &str, after: i64) -> Result<bool> {
         let (worker, id) = (worker.to_string(), id.to_string());
         self.run_quiet(move |c| {
             c.execute(
@@ -955,7 +971,29 @@ impl Db {
                  WHERE id = ?2 AND claimed_by = ?3 AND state = 'processing'",
                 params![after, id, worker],
             )
-            .map(drop)
+            .map(|n| n == 1)
+        })
+        .await
+    }
+
+    /// Record the original `worker` stored for job `id`: its length and
+    /// SHA-256, which the row keeps once the job is made. False when `worker`
+    /// does not hold the job.
+    pub async fn record_original(
+        &self,
+        worker: &str,
+        id: &str,
+        bytes: u64,
+        sha256: [u8; 32],
+    ) -> Result<bool> {
+        let (worker, id) = (worker.to_string(), id.to_string());
+        self.run_quiet(move |c| {
+            c.execute(
+                "UPDATE images SET bytes = ?1, sha256 = ?2 \
+                 WHERE id = ?3 AND claimed_by = ?4 AND state = 'processing'",
+                params![bytes as i64, sha256.to_vec(), id, worker],
+            )
+            .map(|n| n == 1)
         })
         .await
     }
@@ -1035,14 +1073,6 @@ impl Db {
             .map(|n| n == 1)
         })
         .await
-    }
-
-    /// Tell what watches this database that `owner`'s albums changed in
-    /// another process (a worker's): their pages redraw, and the snapshotter
-    /// takes a copy.
-    pub fn announce(&self, owner: &str) {
-        self.0.writes.send_modify(|n| *n += 1);
-        let _ = self.0.changes.send(owner.into());
     }
 
     /// Record that a finished upload's image was refused once made: the
@@ -1244,7 +1274,11 @@ pub mod tests {
             sha256: vec![1; 32],
             ..Made::default()
         };
-        let claimed = db.claim("w", false, now() + 60_000).await.unwrap().unwrap();
+        let claimed = db
+            .claim("w", false, now() + 60_000, &[])
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(claimed.image.id, image);
         db.finish_job(owner, "w", image, made).await.unwrap()
     }
@@ -1589,16 +1623,21 @@ pub mod tests {
         let db = Db::temp().await;
         let (picture, video) = queued(&db).await;
         let later = now() + 60_000;
-        let claimed = db.claim("w1", false, later).await.unwrap().unwrap();
+        let claimed = db.claim("w1", false, later, &[]).await.unwrap().unwrap();
         assert_eq!(
             (claimed.image.id.as_str(), claimed.owner.as_str()),
             (picture.as_str(), "ann")
         );
         assert_eq!(claimed.image.status, Status::Processing);
         // Pictures and videos are claimed apart, and a held one is not offered.
-        assert!(db.claim("w2", false, later).await.unwrap().is_none());
+        assert!(db.claim("w2", false, later, &[]).await.unwrap().is_none());
         assert_eq!(
-            db.claim("w2", true, later).await.unwrap().unwrap().image.id,
+            db.claim("w2", true, later, &[])
+                .await
+                .unwrap()
+                .unwrap()
+                .image
+                .id,
             video
         );
         assert!(db.renew("w1", &picture, later).await.unwrap());
@@ -1608,7 +1647,7 @@ pub mod tests {
         );
         // A lapsed lease is anyone's.
         assert!(db.renew("w1", &picture, now() - 1).await.unwrap());
-        let again = db.claim("w3", false, later).await.unwrap().unwrap();
+        let again = db.claim("w3", false, later, &[]).await.unwrap().unwrap();
         assert_eq!(
             (again.image.id.as_str(), again.image.status),
             (picture.as_str(), Status::Processing)
@@ -1619,11 +1658,29 @@ pub mod tests {
         );
         // Put back to wait a while, then taken up again.
         db.release("w3", &picture, now() + 60_000).await.unwrap();
-        assert!(db.claim("w4", false, later).await.unwrap().is_none());
+        assert!(db.claim("w4", false, later, &[]).await.unwrap().is_none());
         db.release("w3", &picture, 0).await.unwrap();
         assert!(
-            db.claim("w4", false, later).await.unwrap().is_none(),
+            db.claim("w4", false, later, &[]).await.unwrap().is_none(),
             "w3 no longer held it"
+        );
+        // A worker takes up a lapsed job of its own it is not making, as
+        // when its end was never heard, but not one it is.
+        assert!(db.renew("w2", &video, now() - 1).await.unwrap());
+        assert!(
+            db.claim("w2", true, later, std::slice::from_ref(&video))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            db.claim("w2", true, later, &[])
+                .await
+                .unwrap()
+                .unwrap()
+                .image
+                .id,
+            video
         );
     }
 
@@ -1641,8 +1698,14 @@ pub mod tests {
             display: true,
             ..Made::default()
         };
-        db.claim("w", true, now() + 60_000).await.unwrap().unwrap();
-        db.claim("w", false, now() + 60_000).await.unwrap().unwrap();
+        db.claim("w", true, now() + 60_000, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        db.claim("w", false, now() + 60_000, &[])
+            .await
+            .unwrap()
+            .unwrap();
         assert!(
             !db.finish_job("ann", "other", &video, made.clone())
                 .await
@@ -1676,7 +1739,12 @@ pub mod tests {
             (p.status, p.failure.as_str()),
             (Status::Failed, "unreadable")
         );
-        assert!(db.claim("w", false, now() + 1000).await.unwrap().is_none());
+        assert!(
+            db.claim("w", false, now() + 1000, &[])
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

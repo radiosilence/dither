@@ -467,7 +467,7 @@ impl Uploads {
                 self.jobs.wake();
                 // A picture takes seconds: its sender hears how it went, as
                 // they would were it made here. A video is processing.
-                if !video && self.jobs.working() {
+                if !video && self.jobs.takes_pictures() {
                     return self.picture_ended(&upload, id, ends).await;
                 }
                 Outcome::Done(id)
@@ -618,7 +618,14 @@ mod tests {
                 db.clone(),
                 store.clone(),
                 &crate::config::Config::test(dir.path().to_path_buf()),
-                Arc::new(Hub::new(db.clone(), dir.path()).unwrap()),
+                Arc::new(
+                    Hub::new(
+                        db.clone(),
+                        store.clone(),
+                        &crate::config::Config::test(dir.path().to_path_buf()),
+                    )
+                    .unwrap(),
+                ),
             )
             .unwrap(),
         );
@@ -780,7 +787,14 @@ mod tests {
                     process_memory: 8 << 20,
                     ..crate::config::Config::test(dir.path().to_path_buf())
                 },
-                Arc::new(Hub::new(db.clone(), dir.path()).unwrap()),
+                Arc::new(
+                    Hub::new(
+                        db.clone(),
+                        Store::memory(),
+                        &crate::config::Config::test(dir.path().to_path_buf()),
+                    )
+                    .unwrap(),
+                ),
             )
             .unwrap(),
         );
