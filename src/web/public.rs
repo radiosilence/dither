@@ -42,10 +42,14 @@ use crate::web::Helpers as _;
 use crate::web::clip::Clip;
 use crate::web::{AppState, human, on_public_host};
 
-/// Public pages: images, video, styles and the player's script from here
-/// only, and nothing inline.
-const CSP_PUBLIC: &str = "default-src 'none'; img-src 'self'; media-src 'self'; script-src 'self'; \
-     style-src 'self'; font-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
+/// Public pages: no script at all, images and styles from here only.
+const CSP_PUBLIC: &str = "default-src 'none'; img-src 'self'; style-src 'self'; font-src 'self'; \
+     form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
+/// A public page holding a video: video, and the player's script, from here
+/// too, and still nothing inline.
+const CSP_PUBLIC_VIDEO: &str = "default-src 'none'; img-src 'self'; media-src 'self'; \
+     script-src 'self'; style-src 'self'; font-src 'self'; form-action 'none'; \
+     frame-ancestors 'none'; base-uri 'none'";
 /// Image files: nothing at all, in a sandbox, should a browser ever render
 /// one as a document.
 const CSP_FILE: &str = "default-src 'none'; sandbox";
@@ -243,7 +247,7 @@ struct Landing;
 
 crate::i18n::translated!(AlbumPage, ImagePage, Missing, Landing);
 
-fn page(html: String, private: bool) -> Response {
+fn page(html: String, private: bool, video: bool) -> Response {
     let cache = if private {
         "private, no-store"
     } else {
@@ -251,7 +255,10 @@ fn page(html: String, private: bool) -> Response {
     };
     (
         [
-            (header::CONTENT_SECURITY_POLICY, CSP_PUBLIC),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                if video { CSP_PUBLIC_VIDEO } else { CSP_PUBLIC },
+            ),
             (header::CACHE_CONTROL, cache),
             (header::HeaderName::from_static("x-robots-tag"), "noindex"),
         ],
@@ -262,7 +269,7 @@ fn page(html: String, private: bool) -> Response {
 
 pub async fn not_found() -> Response {
     let html = Missing.render().unwrap_or_default();
-    let mut response = page(html, false);
+    let mut response = page(html, false, false);
     *response.status_mut() = StatusCode::NOT_FOUND;
     response
 }
@@ -270,7 +277,7 @@ pub async fn not_found() -> Response {
 /// The public domain's front page, which says nothing: a name there would
 /// be a thread from the domain back to whoever runs it.
 pub async fn landing() -> Response {
-    page(Landing.render().unwrap_or_default(), false)
+    page(Landing.render().unwrap_or_default(), false, false)
 }
 
 pub async fn robots() -> Response {
@@ -337,9 +344,10 @@ pub async fn album(
         image: cover.map(|c| og_image(public, c)),
         video: cover.and_then(|c| og_video(public, c)),
     };
+    let video = images.iter().any(Image::is_video);
     let html = AlbumPage {
         og,
-        video: images.iter().any(Image::is_video),
+        video,
         title: album.title.clone(),
         description: album.description.clone(),
         count: images.len() as u64,
@@ -348,7 +356,7 @@ pub async fn album(
     .render();
     metrics::served(Served::Page, 0);
     match html {
-        Ok(html) => page(html, album.private),
+        Ok(html) => page(html, album.private, video),
         Err(e) => {
             tracing::error!(error = %e, "rendering an album failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -424,7 +432,7 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     .render();
     metrics::served(Served::Page, 0);
     match html {
-        Ok(html) => page(html, album.private),
+        Ok(html) => page(html, album.private, image.is_video()),
         Err(e) => {
             tracing::error!(error = %e, "rendering an image page failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -690,15 +698,13 @@ impl Wanted {
         }
     }
 
-    /// Bytes `start..end` of a file of `size`, or `None` when none of them
-    /// are in it.
-    fn within(self, size: u64) -> Option<(u64, u64)> {
-        let (start, end) = match self {
-            Wanted::Between(a, b) => (a, b.saturating_add(1).min(size)),
-            Wanted::From(a) => (a, size),
-            Wanted::Last(n) => (size.saturating_sub(n), size),
-        };
-        (start < end).then_some((start, end))
+    fn range(self) -> object_store::GetRange {
+        use object_store::GetRange;
+        match self {
+            Wanted::Between(a, b) => GetRange::Bounded(a..b.saturating_add(1)),
+            Wanted::From(a) => GetRange::Offset(a),
+            Wanted::Last(n) => GetRange::Suffix(n),
+        }
     }
 }
 
@@ -711,8 +717,15 @@ async fn partial(
     served: Served,
     mut h: HeaderMap,
 ) -> Response {
-    let size = match state.store.size(key).await {
-        Ok(Some(size)) => size,
+    let (body, range, total) = match state.store.get_range(key, wanted.range()).await {
+        Ok(Some(store::Part::Within { body, range, total })) => (body, range, total),
+        Ok(Some(store::Part::Outside { total })) => {
+            h.insert(
+                header::CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes */{total}")).expect("digits"),
+            );
+            return (StatusCode::RANGE_NOT_SATISFIABLE, h).into_response();
+        }
         Ok(None) => {
             tracing::error!(%key, "an image's file is missing from the store");
             return not_found().await;
@@ -722,27 +735,14 @@ async fn partial(
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };
-    let Some((start, end)) = wanted.within(size) else {
-        h.insert(
-            header::CONTENT_RANGE,
-            HeaderValue::from_str(&format!("bytes */{size}")).expect("digits"),
-        );
-        return (StatusCode::RANGE_NOT_SATISFIABLE, h).into_response();
-    };
-    let body = match state.store.get_range(key, start, end).await {
-        Ok(Some((body, _))) => body,
-        Ok(None) => return not_found().await,
-        Err(e) => {
-            tracing::error!(%key, error = %e, "reading the store failed");
-            return StatusCode::BAD_GATEWAY.into_response();
-        }
-    };
+    let len = range.end - range.start;
     h.insert(
         header::CONTENT_RANGE,
-        HeaderValue::from_str(&format!("bytes {start}-{}/{size}", end - 1)).expect("digits"),
+        HeaderValue::from_str(&format!("bytes {}-{}/{total}", range.start, range.end - 1))
+            .expect("digits"),
     );
-    h.insert(header::CONTENT_LENGTH, HeaderValue::from(end - start));
-    metrics::served(served, end - start);
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+    metrics::served(served, len);
     let body = match body {
         store::Body::Bytes(bytes) => HttpBody::from(bytes),
         store::Body::Stream { stream, .. } => {
@@ -765,12 +765,10 @@ mod tests {
         assert_eq!(Wanted::parse("bytes=9-3"), None);
         assert_eq!(Wanted::parse("items=0-1"), None);
         assert_eq!(Wanted::parse("bytes=-"), None);
-        assert_eq!(Wanted::Between(0, 99).within(50), Some((0, 50)));
-        assert_eq!(Wanted::From(10).within(50), Some((10, 50)));
-        assert_eq!(Wanted::From(50).within(50), None);
-        assert_eq!(Wanted::Last(500).within(50), Some((0, 50)));
-        assert_eq!(Wanted::Last(0).within(50), None);
-        assert_eq!(Wanted::Between(49, 1000).within(50), Some((49, 50)));
+        assert_eq!(
+            Wanted::Between(0, 99).range(),
+            object_store::GetRange::Bounded(0..100)
+        );
     }
 
     #[test]

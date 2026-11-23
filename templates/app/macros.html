@@ -1,2 +1,4 @@
 {# How many images, and what they take when they take anything. #}
+{# Why a video could not be made, from the key the worker recorded (`video::FAILED_UNREADABLE`, `video::FAILED`). #}
+{% macro failure(why) %}{% if why.as_str() == "unreadable" %}{{ __("It can't be read: it may be damaged.") }}{% else %}{{ __("It couldn't be processed. Delete it and upload it again.") }}{% endif %}{% endmacro %}
 {% macro images(count, size) %}{{ __n("%{count} image", "%{count} images", *count) }}{% if let Some(size) = size %} · {{ size }}{% endif %}{% endmacro %}

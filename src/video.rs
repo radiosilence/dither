@@ -309,6 +309,7 @@ impl Tools {
             if probe.video.codec == "hevc" {
                 args.extend(["-tag:v", "hvc1"].iter().map(Into::into));
             }
+            args.extend(probe.length());
             args.extend(clean_output().iter().map(Into::into));
             args.push(file(to));
             match self
@@ -390,6 +391,7 @@ impl Tools {
         }
         args.extend(["-threads".into(), threads.into()]);
         args.extend(["-progress", "pipe:1", "-nostats"].iter().map(Into::into));
+        args.extend(probe.length());
         args.extend(clean_output().iter().map(Into::into));
         args.push(file(to));
         // Generous: a slow machine transcoding 4K HEVC runs well below real
@@ -646,6 +648,13 @@ impl Probe {
                 .is_none_or(|a| matches!(a.codec.as_str(), "aac" | "mp3") && a.channels <= 2)
     }
 
+    /// Output held to the length the file declared, which the length limit
+    /// and the time limit were judged by: a file whose index says ten
+    /// seconds and whose samples run for hours is cut at ten.
+    fn length(&self) -> [OsString; 2] {
+        ["-t".into(), format!("{:.3}", self.duration + 1.0).into()]
+    }
+
     /// The `-map`s for the streams kept.
     fn maps(&self) -> Vec<OsString> {
         let mut maps = vec!["-map".into(), format!("0:{}", self.video.index).into()];
@@ -673,6 +682,11 @@ pub struct Settings {
     pub max_seconds: u64,
     pub max_pixels: u64,
 }
+
+/// What a failed video records: its file could not be read, or something on
+/// this side failed. The pages word each.
+pub const FAILED_UNREADABLE: &str = "unreadable";
+pub const FAILED: &str = "failed";
 
 /// The video the worker is making.
 struct Making {
@@ -848,6 +862,21 @@ impl Videos {
             return;
         };
         let this = self.clone();
+        // Without ffmpeg, videos waiting to be made wait on, their uploads
+        // kept, for a start that has it.
+        if !self.enabled() {
+            tokio::spawn(async move {
+                if let Ok(videos) = this.db.processing().await
+                    && !videos.is_empty()
+                {
+                    tracing::warn!(
+                        count = videos.len(),
+                        "videos wait to be made, and ffmpeg is off"
+                    );
+                }
+            });
+            return;
+        }
         tokio::spawn(async move {
             match this.db.processing().await {
                 Ok(videos) => {
@@ -892,13 +921,18 @@ impl Videos {
     async fn make(&self, id: &str) -> Again {
         let (image, album) = match self.db.image(id).await {
             Ok(Some(found)) => found,
-            Ok(None) => return Again::No,
+            // Deleted while it waited its turn.
+            Ok(None) => {
+                let _ = tokio::fs::remove_file(self.source(id)).await;
+                return Again::No;
+            }
             Err(e) => {
                 tracing::warn!(video = id, error = %e, "reading a video to make failed");
                 return Again::Later;
             }
         };
         if image.status != Status::Processing {
+            let _ = tokio::fs::remove_file(self.source(id)).await;
             return Again::No;
         }
         let video = Making {
@@ -940,17 +974,21 @@ impl Videos {
                 false
             }
             Err(problem) => {
+                // Recorded as a key the pages word, not as words.
                 let why = match problem {
-                    Problem::Rejected(why) => why,
+                    Problem::Rejected(why) => {
+                        tracing::info!(video = id, reason = %why, "a video could not be read");
+                        FAILED_UNREADABLE
+                    }
                     Problem::Stopped => unreachable!("matched above"),
                     Problem::Failed(why) => {
                         tracing::error!(video = id, error = %why, "making a video failed");
-                        "it couldn't be processed; delete it and upload it again".into()
+                        FAILED
                     }
                 };
                 let _ = tokio::fs::remove_file(self.source(id)).await;
                 store::discard(&self.store, &self.db, vec![id.to_string()]).await;
-                if let Err(e) = self.db.fail_video(&owner, id, &why).await {
+                if let Err(e) = self.db.fail_video(&owner, id, why).await {
                     tracing::warn!(video = id, error = %e, "recording a failed video failed");
                 }
                 false
@@ -1080,7 +1118,15 @@ impl Videos {
             .await
             .map_err(|e| Problem::Failed(format!("storing: {e:#}")))?;
         self.tick(video, 1000);
-        let (width, height) = probe.shown();
+        // The playback copy standing in for the original has its own size.
+        let (width, height) = if remuxed {
+            probe.shown()
+        } else {
+            tools
+                .probe(Container::Mp4, &original)
+                .await
+                .map_or(probe.shown(), |p| p.shown())
+        };
         Ok(MadeVideo {
             width,
             height,

@@ -329,6 +329,12 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
     );
     assert!(html.contains("<meta name=\"robots\" content=\"noindex\">"));
     assert!(!html.contains("<script"), "public pages carry no script");
+    assert!(
+        !page
+            .header("content-security-policy")
+            .contains("script-src"),
+        "nor may they load any"
+    );
     assert_eq!(page.header("x-robots-tag"), "noindex");
 
     let album_page = app.get(&format!("/a/{album}")).await;
@@ -892,6 +898,12 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
     assert!(
         page.contains("/assets/player.js?v="),
         "a video page loads the player"
+    );
+    let csp = app.get(&format!("/{id}")).await;
+    let csp = csp.header("content-security-policy");
+    assert!(
+        csp.contains("script-src 'self'") && csp.contains("media-src 'self'"),
+        "{csp}"
     );
     assert!(page.contains("data-player"));
     assert!(page.contains("<meta property=\"og:type\" content=\"video.other\">"));

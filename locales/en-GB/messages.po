@@ -123,6 +123,14 @@ msgstr ""
 msgid "HEIC isn't supported yet: export it as JPEG"
 msgstr ""
 
+#: templates/app/macros.html
+msgid "It can't be read: it may be damaged."
+msgstr ""
+
+#: templates/app/macros.html
+msgid "It couldn't be processed. Delete it and upload it again."
+msgstr ""
+
 #: templates/app/library.html
 msgid ""
 "JPEG, PNG, GIF or WebP up to %{max} each, and videos up to %{video}. Where a "
@@ -164,10 +172,6 @@ msgstr ""
 
 #: templates/player.html
 msgid "This video can't play here."
-msgstr ""
-
-#: templates/app/viewer.html
-msgid "This video couldn't be processed: %{why}"
 msgstr ""
 
 #: templates/app/picker.html

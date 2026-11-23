@@ -199,49 +199,51 @@ impl Store {
             .with_context(|| format!("storing {key}"))
     }
 
-    /// Bytes `start..end` of the object (`end` past its length reads to its
-    /// end), with its whole length; `None` when there is none.
+    /// Part of the object, as `range` asks: what of it there is, or that
+    /// none of it is in the object; `None` when there is no object. One read
+    /// when the range is in the object, as nearly every request's is.
     pub async fn get_range(
         &self,
         key: &Path,
-        start: u64,
-        end: u64,
-    ) -> object_store::Result<Option<(Body, u64)>> {
+        range: GetRange,
+    ) -> object_store::Result<Option<Part>> {
         if let Some(hit) = self.cache.get(key) {
             crate::metrics::cache(true);
-            let len = hit.len() as u64;
-            let (s, e) = (start.min(len) as usize, end.min(len) as usize);
-            return Ok(Some((Body::Bytes(hit.slice(s..e)), len)));
+            let total = hit.len() as u64;
+            return Ok(Some(match bounds(&range, total) {
+                Some(r) => Part::Within {
+                    body: Body::Bytes(hit.slice(r.start as usize..r.end as usize)),
+                    range: r,
+                    total,
+                },
+                None => Part::Outside { total },
+            }));
         }
         let options = GetOptions {
-            range: Some(GetRange::Bounded(start..end)),
+            range: Some(range.clone()),
             ..GetOptions::default()
         };
-        let result = match self.inner.get_opts(key, options).await {
-            Ok(r) => r,
-            Err(object_store::Error::NotFound { .. }) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let total = result.meta.size;
-        let size = result.range.end - result.range.start;
-        Ok(Some((
-            Body::Stream {
-                size,
-                stream: result.into_stream(),
-            },
-            total,
-        )))
-    }
-
-    /// The object's length, or `None` when there is none.
-    pub async fn size(&self, key: &Path) -> object_store::Result<Option<u64>> {
-        if let Some(hit) = self.cache.get(key) {
-            return Ok(Some(hit.len() as u64));
-        }
-        match self.inner.head(key).await {
-            Ok(meta) => Ok(Some(meta.size)),
+        match self.inner.get_opts(key, options).await {
+            Ok(result) => {
+                let (r, total) = (result.range.clone(), result.meta.size);
+                Ok(Some(Part::Within {
+                    body: Body::Stream {
+                        size: r.end - r.start,
+                        stream: result.into_stream(),
+                    },
+                    range: r,
+                    total,
+                }))
+            }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(e),
+            // Each store words a range outside the object differently, so
+            // its length decides whether that is what this was.
+            Err(e) => match self.inner.head(key).await {
+                Ok(meta) if bounds(&range, meta.size).is_none() => {
+                    Ok(Some(Part::Outside { total: meta.size }))
+                }
+                _ => Err(e),
+            },
         }
     }
 
@@ -314,6 +316,28 @@ impl Store {
     pub fn dir(&self) -> Option<&FsPath> {
         self.dir.as_deref()
     }
+}
+
+/// What a ranged read found.
+pub enum Part {
+    Within {
+        body: Body,
+        range: std::ops::Range<u64>,
+        total: u64,
+    },
+    /// None of the range is in an object of `total` bytes.
+    Outside { total: u64 },
+}
+
+/// The bytes `range` names in an object of `len`, or `None` when it names
+/// none of them.
+pub fn bounds(range: &GetRange, len: u64) -> Option<std::ops::Range<u64>> {
+    let r = match range {
+        GetRange::Bounded(r) => r.start..r.end.min(len),
+        GetRange::Offset(start) => *start..len,
+        GetRange::Suffix(n) => len.saturating_sub(*n)..len,
+    };
+    (r.start < r.end).then_some(r)
 }
 
 /// Bytes free to an unprivileged writer, and the size, of the filesystem
@@ -476,24 +500,59 @@ mod tests {
                     .concat(),
             }
         };
-        let (body, total) = store.get_range(&k, 1000, 2000).await.unwrap().unwrap();
-        assert_eq!(total, bytes.len() as u64);
+        let within = |part: Option<Part>| match part {
+            Some(Part::Within { body, range, total }) => (body, range, total),
+            _ => panic!("expected part of the object"),
+        };
+        let (body, range, total) = within(
+            store
+                .get_range(&k, GetRange::Bounded(1000..2000))
+                .await
+                .unwrap(),
+        );
+        assert_eq!((range, total), (1000..2000, bytes.len() as u64));
         assert_eq!(read(body).await, &bytes[1000..2000]);
+        let (body, range, _) = within(store.get_range(&k, GetRange::Suffix(10)).await.unwrap());
+        assert_eq!(range.start, bytes.len() as u64 - 10);
+        assert_eq!(read(body).await, &bytes[bytes.len() - 10..]);
+        let past = bytes.len() as u64 + 5;
+        assert!(matches!(
+            store.get_range(&k, GetRange::Offset(past)).await.unwrap(),
+            Some(Part::Outside { total }) if total == bytes.len() as u64
+        ));
         // A cached object is sliced from memory.
         let t = key(Variant::Thumb, "abcdefghij");
         store
             .put(&t, Bytes::from_static(b"0123456789"))
             .await
             .unwrap();
-        let (body, total) = store.get_range(&t, 2, 5).await.unwrap().unwrap();
-        assert_eq!((read(body).await, total), (b"234".to_vec(), 10));
+        let (body, range, total) =
+            within(store.get_range(&t, GetRange::Bounded(2..5)).await.unwrap());
+        assert_eq!(
+            (read(body).await, range, total),
+            (b"234".to_vec(), 2..5, 10)
+        );
+        assert!(matches!(
+            store.get_range(&t, GetRange::Offset(10)).await.unwrap(),
+            Some(Part::Outside { total: 10 })
+        ));
         assert!(
             store
-                .get_range(&key(Variant::Original, "nothing"), 0, 1)
+                .get_range(&key(Variant::Original, "nothing"), GetRange::Offset(0))
                 .await
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn ranges_fall_within_the_object_or_outside_it() {
+        assert_eq!(bounds(&GetRange::Bounded(0..100), 50), Some(0..50));
+        assert_eq!(bounds(&GetRange::Offset(10), 50), Some(10..50));
+        assert_eq!(bounds(&GetRange::Offset(50), 50), None);
+        assert_eq!(bounds(&GetRange::Suffix(500), 50), Some(0..50));
+        assert_eq!(bounds(&GetRange::Suffix(0), 50), None);
+        assert_eq!(bounds(&GetRange::Bounded(49..1000), 50), Some(49..50));
     }
 
     #[test]

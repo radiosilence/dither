@@ -29,7 +29,7 @@
     </div>
   </form>
 </dialog>
-<input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp{% if shell.max_video.is_some() %},video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-m4v,.mp4,.mov,.m4v,.webm,.mkv{% endif %}" hidden>
+<input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp{% if shell.max_video.is_some() %},video/*,.mp4,.mov,.m4v,.3gp,.webm,.mkv{% endif %}" hidden>
 {# What the browser's script says, keyed by name. Placeholders it fills itself are left as written. A line with a
    count comes once per plural form of the language, each rendered at a count in that form, which the script reads
    to file it; `%{n}` is the count it fills in. #}

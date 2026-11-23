@@ -77,7 +77,10 @@ impl File {
             .map(|(_, e)| e.to_ascii_lowercase());
         self.mime.starts_with("video/")
             || (self.mime.is_empty()
-                && matches!(ext.as_deref(), Some("mp4" | "mov" | "m4v" | "webm" | "mkv")))
+                && matches!(
+                    ext.as_deref(),
+                    Some("mp4" | "mov" | "m4v" | "3gp" | "webm" | "mkv")
+                ))
     }
 }
 

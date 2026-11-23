@@ -320,9 +320,11 @@ function enhance(root: HTMLElement) {
   // A tap on the picture: with a finger, the first shows the bar and a
   // double tap at either side skips; with a mouse, a click plays or pauses
   // and a double click goes full screen.
+  let pointer = "mouse";
   root.addEventListener("pointermove", (ev) => {
     if (ev.pointerType === "mouse") wake(p);
   });
+  root.addEventListener("pointerdown", (ev) => (pointer = ev.pointerType));
   root.addEventListener("pointerup", (ev) => {
     const target = ev.target as Element;
     if (target.closest("[data-player-controls], .player-start, .player-failed") || ev.button !== 0) return;
@@ -342,6 +344,7 @@ function enhance(root: HTMLElement) {
       return;
     }
     const hidden = root.classList.contains("idle") && !video.paused;
+    if (p.tap) clearTimeout(p.tap.timer);
     p.tap = {
       at: now,
       timer: window.setTimeout(() => {
@@ -351,8 +354,10 @@ function enhance(root: HTMLElement) {
       }, 250),
     };
   });
+  // A finger's double tap skips (above), and some browsers follow it with a
+  // dblclick that must not also go full screen.
   root.addEventListener("dblclick", (ev) => {
-    if (!(ev.target as Element).closest("[data-player-controls]")) full(p);
+    if (pointer === "mouse" && !(ev.target as Element).closest("[data-player-controls]")) full(p);
   });
   // Handled here, the keys go no further: the viewer's arrows move between
   // images only when focus is not in a player.

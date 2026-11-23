@@ -1,4 +1,5 @@
 {% import "player.html" as player %}
+{% import "app/macros.html" as m %}
 <div id="viewer-body" class="viewer-body" data-image="{{ id }}">
   <div class="viewer-bar">
     <span class="text-meta text-muted">{{ __("%{n} of %{total}").with("n", position).with("total", total) }}</span>
@@ -12,7 +13,7 @@
     {% else if let Some(done) = progress %}
     <div class="stage-wait"><p>{{ __("Processing this video. It can be shared once it's done.") }}</p><progress class="meter" data-progress-of="{{ id }}" max="1000" value="{{ done }}"></progress></div>
     {% else if let Some(why) = failure.as_ref() %}
-    <div class="stage-wait bad">{{ icon("warning", 22.0)|safe }}<p>{{ __("This video couldn't be processed: %{why}").with("why", why) }}</p></div>
+    <div class="stage-wait bad">{{ icon("warning", 22.0)|safe }}<p>{% call m::failure(why) %}{% endcall %}</p></div>
     {% else %}
     <img src="{{ src }}" width="{{ width }}" height="{{ height }}" alt="{{ caption }}" decoding="async" draggable="false">
     {% endif %}
