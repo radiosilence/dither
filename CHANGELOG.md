@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+### Fixed
+
+- **Link previews show their picture on WhatsApp.** A page's `og:image` is now a JPEG of at most 1200 pixels and 300 KB at `/p/<id>.jpg`, made at upload, or the first time a preview asks for an image uploaded earlier. It was the original, or the WebP display copy above 5 MB, and WhatsApp shows nothing for an image that large. An animated picture under 5 MB keeps its original, so it still plays where a preview can.
+
 ## 0.2.0
 
 ### Internal
