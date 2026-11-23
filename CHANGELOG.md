@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+
+- **An album's app address works as a link.** Anyone but its owner who opens `/albums/<id>`, link previews included, is sent to its public page, unless it is private. Link previews' fetchers are logged with what they asked for and were answered.
+
+### Changed
+
+- **One copy of each video.** A video is converted to H.264 at its own size (up to 4K, CRF 18, SDR, AAC), which plays everywhere and is what downloads, or with *keep videos as recorded* ticked, kept exactly as recorded; nothing else is stored. Videos already H.264 are not re-encoded, and a frame of an HDR video is tone-mapped for its thumbnail.
+
+### Fixed
+
+- **A caption stays with its image.** After a caption was typed, moving to the next image in the viewer showed the same text in its caption field; each image's field is now its own, and leaving one saves it at once.
+
 ## 0.4.0
 
 ### Added
