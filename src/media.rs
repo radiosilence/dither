@@ -212,19 +212,6 @@ pub fn preview_size(w: u32, h: u32, animated: bool) -> (u32, u32) {
     fit(w, h, PREVIEW_MAX)
 }
 
-/// A link preview of `source`, one of an image's stored copies, at `size`: a
-/// JPEG, which every preview fetcher takes, with transparency laid over white
-/// and the colour profile kept, at the best quality that fits
-/// [`PREVIEW_BYTES`]. The source is at most [`DISPLAY_MAX`] on a side (a
-/// display copy, a thumbnail, or an original too small to have a display
-/// copy), so this needs little memory.
-pub fn preview(source: &[u8], size: (u32, u32)) -> Result<Vec<u8>, Reject> {
-    let kind = sanitize::sniff(source).map_err(Reject::Unsupported)?;
-    let max = u64::from(DISPLAY_MAX) * u64::from(DISPLAY_MAX);
-    let (img, icc) = decoded(source, kind, max, None)?;
-    Ok(jpeg_preview(&img, size, icc.as_deref()))
-}
-
 /// `bytes` decoded at eight bits a channel and turned upright, by
 /// `orientation` or else by the file's own, with its colour profile when that
 /// is an RGB one.
@@ -593,8 +580,7 @@ mod tests {
         image::codecs::png::PngEncoder::new(&mut source)
             .write_image(noisy.as_raw(), 3000, 2000, image::ExtendedColorType::Rgb8)
             .unwrap();
-        let p = process(&source, 100_000_000).unwrap();
-        let jpeg = preview(p.display.as_ref().unwrap(), (1200, 800)).unwrap();
+        let jpeg = process(&source, 100_000_000).unwrap().preview;
         assert_eq!(&jpeg[..3], &[0xFF, 0xD8, 0xFF]);
         assert!(jpeg.len() <= PREVIEW_BYTES, "{} bytes", jpeg.len());
         let img = image::load_from_memory(&jpeg).unwrap();
@@ -608,7 +594,7 @@ mod tests {
         image::codecs::png::PngEncoder::new(&mut png)
             .write_image(img.as_raw(), 40, 20, image::ExtendedColorType::Rgba8)
             .unwrap();
-        let p = preview(&process(&png, 1_000_000).unwrap().original, (40, 20)).unwrap();
+        let p = process(&png, 1_000_000).unwrap().preview;
         let shown = image::load_from_memory(&p).unwrap().into_rgb8();
         assert!(shown.pixels().all(|px| px.0.iter().all(|&c| c > 250)));
 
@@ -616,8 +602,7 @@ mod tests {
         exif.extend_from_slice(&[0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0, 0]);
         let turned = process(&with_segment(&jpeg(300, 200), 0xE1, &exif), 1_000_000).unwrap();
         assert_eq!((turned.width, turned.height), (200, 300));
-        let p = preview(&turned.original, (200, 300)).unwrap();
-        let shown = image::load_from_memory(&p).unwrap();
+        let shown = image::load_from_memory(&turned.preview).unwrap();
         assert_eq!((shown.width(), shown.height()), (200, 300));
     }
 

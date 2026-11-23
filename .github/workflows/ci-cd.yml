@@ -663,6 +663,10 @@ jobs:
       # A version cannot be published twice, so a retried release skips one
       # already out and goes on to the GitHub release. Only a 404 means it is
       # not out; any other error fails rather than guessing.
+      #
+      # The package pins the image by digest, which is known only now that
+      # container-release has pushed it: written into src/versions.ts here,
+      # before prepublishOnly builds it, and never committed.
       - env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -675,6 +679,15 @@ jobs:
             echo "::error::cannot tell whether $spec is published: $out"
             exit 1
           fi
+          version="$(node -p 'require("./package.json").version')"
+          digest="$(docker buildx imagetools inspect "$IMAGE:v$version" --format '{{json .Manifest}}' | jq -r .digest)"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::no digest for $IMAGE:v$version: $digest"
+            exit 1
+          fi
+          sed -i "s|^export const IMAGE_DIGEST: string = \"\";|export const IMAGE_DIGEST: string = \"$digest\";|" src/versions.ts
+          grep -q "^export const IMAGE_DIGEST: string = \"$digest\";" src/versions.ts
+          echo "pinning $IMAGE:v$version@$digest"
           npm publish
 
   # Last, so a release never names an image or a package that does not exist.

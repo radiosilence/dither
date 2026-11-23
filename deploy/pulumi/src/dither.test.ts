@@ -52,6 +52,11 @@ describe("environment", () => {
     expect(Object.keys(w).some((k) => k.startsWith("OIDC"))).toBe(false);
   });
 
+  it("gives the worker the disk's floor, which ffmpeg's files may not breach", () => {
+    const w = Object.fromEntries(workerEnvironment({ ...base, minFreeBytes: 1024 }).map((e) => [e.name, e.value]));
+    expect(w.MIN_FREE_BYTES).toBe("1024");
+  });
+
   it("links to the public domain when there is one", () => {
     expect(env(base).PUBLIC_URL).toBe("https://dither.example");
     expect(env({ ...base, publicHostname: "pics.example" }).PUBLIC_URL).toBe("https://pics.example");

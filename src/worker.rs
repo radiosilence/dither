@@ -80,12 +80,18 @@ pub struct Worker {
 /// Run until the web process goes away (an error, so the process exits and
 /// is started again) or a signal to stop (released claims, and `Ok`).
 pub async fn run(config: &Config, store: Store) -> anyhow::Result<()> {
+    // The environment holds the bucket's keys, and a process running as the
+    // same user can otherwise read it from /proc: ffmpeg, the worker's own
+    // child, parses untrusted files. Not dumpable, /proc keeps it from them.
+    #[cfg(target_os = "linux")]
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+        .context("keeping the worker's memory and environment from other processes")?;
     let path = jobs::socket(&config.state_dir);
     let stream = connect(&path).await;
     let db = Db::open(&config.state_dir.join("dither.db"))
         .await
         .context("opening the database")?;
-    let tools = Tools::find(&config.video).await?;
+    let tools = Tools::find(&config.video, config.min_free_bytes).await?;
     std::fs::create_dir_all(jobs::dir(&config.state_dir))?;
     let (events, mut said) = mpsc::unbounded_channel();
     let mib = (config.process_memory / MIB).clamp(1, u64::from(u32::MAX)) as u32;

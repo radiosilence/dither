@@ -38,8 +38,6 @@ use crate::media;
 use crate::sanitize::Kind;
 use crate::store::{self, Store};
 
-/// The share of a disk uploads leave free when no floor is set.
-const DEFAULT_FREE_SHARE: f64 = 0.15;
 use crate::media::HEAD;
 
 /// The largest chunk a client sends. Traefik reads a request's body within
@@ -93,7 +91,7 @@ pub struct Uploads {
     /// The largest video, when videos are taken.
     max_video_bytes: Option<u64>,
     /// Free space kept on the disks uploads write to; `None` keeps a share of
-    /// each disk instead ([`DEFAULT_FREE_SHARE`]).
+    /// each disk instead ([`store::DEFAULT_FREE_SHARE`]).
     min_free: Option<u64>,
     locks: Locks,
     running: parking_lot::Mutex<HashMap<String, watch::Receiver<Option<Outcome>>>>,
@@ -176,15 +174,10 @@ impl Uploads {
     /// the disk.
     pub fn room_for(&self, needed: u64) -> bool {
         let disks = [Some(self.dir.as_path()), self.store.dir()];
-        disks.into_iter().flatten().all(|dir| {
-            let Some((free, total)) = store::disk(dir) else {
-                return true;
-            };
-            let keep = self
-                .min_free
-                .unwrap_or((total as f64 * DEFAULT_FREE_SHARE) as u64);
-            free >= keep.saturating_add(needed)
-        })
+        disks
+            .into_iter()
+            .flatten()
+            .all(|dir| store::room(dir, self.min_free).is_none_or(|room| room >= needed))
     }
 
     /// Append a chunk that starts at `start` and is `len` bytes long. Returns

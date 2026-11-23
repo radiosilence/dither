@@ -357,6 +357,20 @@ pub fn bounds(range: &GetRange, len: u64) -> Option<std::ops::Range<u64>> {
     (r.start < r.end).then_some(r)
 }
 
+/// The share of a disk uploads, and what is made of them, leave free when no
+/// floor is set: the kubelet starts evicting pods at 10% free, and the
+/// machine's other services share the disk.
+pub const DEFAULT_FREE_SHARE: f64 = 0.15;
+
+/// What can still be written to the filesystem holding `dir` before it falls
+/// to `min_free`, or by default [`DEFAULT_FREE_SHARE`] of its size. `None`
+/// when the filesystem cannot be asked.
+pub fn room(dir: &FsPath, min_free: Option<u64>) -> Option<u64> {
+    let (free, total) = disk(dir)?;
+    let keep = min_free.unwrap_or((total as f64 * DEFAULT_FREE_SHARE) as u64);
+    Some(free.saturating_sub(keep))
+}
+
 /// Bytes free to an unprivileged writer, and the size, of the filesystem
 /// holding `dir`.
 pub fn disk(dir: &FsPath) -> Option<(u64, u64)> {

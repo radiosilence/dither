@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -31,6 +32,7 @@ use anyhow::Context as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
 use tokio::sync::watch;
 
+use crate::sandbox::Sandbox;
 use crate::sanitize::Container;
 
 /// A playback copy's longer side, and the longest a video plays as uploaded.
@@ -59,6 +61,23 @@ pub fn decodable(codec: &str) -> bool {
     DECODERS.split(',').any(|d| d == codec)
 }
 
+/// The bitstream filter that drops SEI messages from a video of `codec` as
+/// it is copied: the NAL units that draw nothing and carry what the encoder
+/// or camera chose to say, which can be its settings, the time, or (some
+/// Sony cameras) where it was. H.264's are type 6; HEVC's prefix and suffix
+/// SEI are 39 and 40, HDR's mastering metadata among them, which the
+/// stream's own colour description survives without. Only these two codecs:
+/// phones and cameras record them, and the others carry no such messages.
+/// HEVC can also carry SEI in its decoder configuration, which the filter
+/// does not reach: [`crate::mp4::strip_sei`] takes those out afterwards.
+fn sei_filter(codec: &str) -> Option<&'static str> {
+    match codec {
+        "h264" => Some("filter_units=remove_types=6"),
+        "hevc" => Some("filter_units=remove_types=39|40"),
+        _ => None,
+    }
+}
+
 /// Whether MP4 holds a video of `codec`, so the original can be remuxed into
 /// it as recorded. One that does not (VP8, Theora, ProRes) keeps only its
 /// playback copy.
@@ -74,29 +93,46 @@ const TONEMAP: &str = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
 /// ffmpeg and ffprobe, found and checked at startup.
 #[derive(Debug, Clone)]
 pub struct Tools {
+    /// Where each is, resolved from `PATH` if need be: a run's sandbox lets
+    /// it execute that and the system's library directories only.
     ffmpeg: PathBuf,
     ffprobe: PathBuf,
     /// Whether the build has zimg's `zscale`, which tone mapping needs.
     zscale: bool,
     threads: u32,
+    /// What uploads keep free on a disk (`MIN_FREE_BYTES`), which no file a
+    /// run writes may eat into.
+    min_free: Option<u64>,
 }
 
 impl Tools {
     /// The tools `video` names, if they run and can make a playback copy.
     /// `None` with videos off, or not found under `auto`; an error when they
-    /// are required and missing.
-    pub async fn find(video: &crate::config::Video) -> anyhow::Result<Option<Self>> {
+    /// are required and missing. `min_free` is what uploads keep free.
+    pub async fn find(
+        video: &crate::config::Video,
+        min_free: Option<u64>,
+    ) -> anyhow::Result<Option<Self>> {
         use crate::config::VideoMode;
         if video.mode == VideoMode::Off {
             return Ok(None);
         }
-        match Self::check(video).await {
+        match Self::check(video, min_free).await {
             Ok(tools) => {
+                let landlock = crate::sandbox::landlock_abi();
                 tracing::info!(
                     ffmpeg = %tools.ffmpeg.display(),
                     tonemap = tools.zscale,
+                    confined = crate::sandbox::confines(),
+                    landlock = ?landlock,
                     "videos on"
                 );
+                if landlock.is_none() && crate::sandbox::confines() {
+                    tracing::warn!(
+                        "this kernel has no Landlock: ffmpeg runs under seccomp and limits, \
+                         but can read whatever the worker can"
+                    );
+                }
                 Ok(Some(tools))
             }
             Err(e) if video.mode == VideoMode::Auto => {
@@ -107,27 +143,46 @@ impl Tools {
         }
     }
 
-    async fn check(video: &crate::config::Video) -> anyhow::Result<Self> {
-        output(&video.ffprobe, &["-hide_banner", "-version"]).await?;
-        let encoders = output(&video.ffmpeg, &["-hide_banner", "-encoders"]).await?;
+    /// Each tool found, and run in the sandbox every run gets, so one the
+    /// sandbox would break is found out here rather than on an upload.
+    async fn check(video: &crate::config::Video, min_free: Option<u64>) -> anyhow::Result<Self> {
+        let ffprobe = crate::sandbox::locate(&video.ffprobe)
+            .with_context(|| format!("finding {}", video.ffprobe.display()))?;
+        let ffmpeg = crate::sandbox::locate(&video.ffmpeg)
+            .with_context(|| format!("finding {}", video.ffmpeg.display()))?;
+        output(&ffprobe, &["-hide_banner", "-version"]).await?;
+        let encoders = output(&ffmpeg, &["-hide_banner", "-encoders"]).await?;
         for needed in ["libx264", "aac"] {
             anyhow::ensure!(
                 encoders.split_whitespace().any(|w| w == needed),
                 "ffmpeg has no {needed} encoder"
             );
         }
-        let filters = output(&video.ffmpeg, &["-hide_banner", "-filters"]).await?;
+        // What strips metadata from inside a video's stream (`SEI_TYPES`).
+        let bsfs = output(&ffmpeg, &["-hide_banner", "-bsfs"]).await?;
+        anyhow::ensure!(
+            bsfs.lines().any(|l| l.trim() == "filter_units"),
+            "ffmpeg has no filter_units bitstream filter"
+        );
+        let filters = output(&ffmpeg, &["-hide_banner", "-filters"]).await?;
         let has = |name: &str| {
             filters
                 .lines()
                 .any(|l| l.split_whitespace().nth(1) == Some(name))
         };
         Ok(Self {
-            ffmpeg: video.ffmpeg.clone(),
-            ffprobe: video.ffprobe.clone(),
+            ffmpeg,
+            ffprobe,
             zscale: has("zscale") && has("tonemap"),
             threads: video.threads,
+            min_free,
         })
+    }
+
+    /// The largest file a run may write into `dir`: the room its disk has
+    /// above what uploads keep free, or `None` when the disk cannot be asked.
+    fn room(&self, dir: &Path) -> Option<u64> {
+        crate::store::room(dir, self.min_free)
     }
 
     /// What every run reading `container` is limited to: the file protocol,
@@ -150,36 +205,29 @@ impl Tools {
         ]
     }
 
-    /// Run `program` and return what it wrote, or why it failed. With
-    /// `each`, its standard output is read a line at a time as it comes and
-    /// handed over, and nothing is returned. What it writes past what is
-    /// kept is read and dropped, so it never blocks on a full pipe. Stopped
-    /// at `limit`, or when `stop` turns true. Trouble on this side (it would
-    /// not start, its output could not be read) says so: [`LOCAL`].
+    /// Run `program`, confined by `sandbox`, and return what it wrote, or
+    /// why it failed. With `each`, its standard output is read a line at a
+    /// time as it comes and handed over, and nothing is returned. What it
+    /// writes past what is kept is read and dropped, so it never blocks on a
+    /// full pipe. Stopped at `limit`, or when `stop` turns true. Trouble on
+    /// this side (it would not start, its output could not be read, the disk
+    /// had no room for what it wrote) says so: [`LOCAL`].
     async fn run(
         &self,
         program: &Path,
         args: Vec<OsString>,
+        sandbox: &Sandbox,
         limit: Duration,
         mut stop: watch::Receiver<bool>,
         mut each: Option<&mut (dyn FnMut(&str) + Send)>,
     ) -> Result<Vec<u8>, String> {
-        let mut cmd = command(program);
+        let mut cmd = command(program, sandbox)
+            .map_err(|e| format!("{LOCAL}confining {}: {e}", program.display()))?;
         cmd.args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        // Serving comes first: the priority is lowered in the child before it
-        // runs ffmpeg, so every thread ffmpeg starts has it too.
-        // SAFETY: the closure runs between fork and exec, where only
-        // async-signal-safe calls are allowed; setpriority is a system call
-        // and allocates nothing.
-        unsafe {
-            cmd.pre_exec(|| {
-                rustix::process::setpriority_process(None, 10).map_err(std::io::Error::from)
-            });
-        }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("{LOCAL}starting {}: {e}", program.display()))?;
@@ -239,6 +287,12 @@ impl Tools {
         match outcome {
             Err(_) => Err(format!("timed out after {}s", limit.as_secs())),
             Ok(Err(e)) => Err(e),
+            // The file it wrote grew past the room its sandbox allowed: the
+            // disk's doing, not the upload's, so tried again later.
+            Ok(Ok((status, _))) if status.signal() == Some(libc::SIGXFSZ) => Err(format!(
+                "{LOCAL}the disk had no room for what {} was writing",
+                program.display()
+            )),
             Ok(Ok((status, _))) if !status.success() => Err(if errors.is_empty() {
                 status.to_string()
             } else {
@@ -265,6 +319,7 @@ impl Tools {
             .run(
                 &self.ffprobe,
                 args,
+                &Sandbox::reading(&[path]),
                 Duration::from_secs(60),
                 watch::channel(false).1,
                 None,
@@ -315,12 +370,22 @@ impl Tools {
         self.run(
             &self.ffprobe,
             args,
+            &Sandbox::reading(&[path]),
             Duration::from_secs(300),
             watch::channel(false).1,
             Some(&mut each),
         )
         .await?;
         Ok(end)
+    }
+
+    /// The sandbox of a run reading `from` and writing `to`: it may write in
+    /// `to`'s directory, no file larger than the room left there.
+    fn writes(&self, from: &Path, to: &Path) -> Result<Sandbox, String> {
+        let dir = to
+            .parent()
+            .ok_or_else(|| format!("{LOCAL}{} is in no directory", to.display()))?;
+        Ok(Sandbox::writing(&[from], dir, self.room(dir)))
     }
 
     /// What every ffmpeg run starts with: no questions, errors only, and its
@@ -340,10 +405,11 @@ impl Tools {
         ["-threads".into(), self.threads.to_string().into()]
     }
 
-    /// The original as MP4, without metadata: streams copied, or failing
-    /// that (audio MP4 cannot hold, such as Vorbis) with the audio as AAC.
-    /// The video's codec is one MP4 holds ([`fits_mp4`]); `size` is the
-    /// file's, which the time limit allows for at a slow disk's pace.
+    /// The original as MP4, without metadata: streams copied, less the SEI
+    /// messages in the video's own stream ([`sei_filter`]), or failing that
+    /// (audio MP4 cannot hold, such as Vorbis) with the audio as AAC. The
+    /// video's codec is one MP4 holds ([`fits_mp4`]); `size` is the file's,
+    /// which the time limit allows for at a slow disk's pace.
     pub async fn remux(
         &self,
         container: Container,
@@ -364,6 +430,9 @@ impl Tools {
             args.extend(["-i".into(), file(from)]);
             args.extend(probe.maps());
             args.extend(["-c:v", "copy"].iter().map(Into::into));
+            if let Some(filter) = sei_filter(&probe.video.codec) {
+                args.extend(["-bsf:v", filter].iter().map(Into::into));
+            }
             if probe.audio.is_some() {
                 let audio: &[&str] = if audio_copy {
                     &["-c:a", "copy"]
@@ -379,13 +448,25 @@ impl Tools {
             args.extend(probe.length());
             args.extend(clean_output().iter().map(Into::into));
             args.push(file(to));
+            let sandbox = self.writes(from, to)?;
             match self
-                .run(&self.ffmpeg, args, limit, stop.clone(), None)
+                .run(&self.ffmpeg, args, &sandbox, limit, stop.clone(), None)
                 .await
             {
-                Ok(_) => return Ok(()),
-                // Out of time, another try would only run out again.
-                Err(e) if e == "stopped" || e.starts_with("timed out") => return Err(e),
+                Ok(_) => {
+                    let to = to.to_path_buf();
+                    return tokio::task::spawn_blocking(move || crate::mp4::strip_sei(&to))
+                        .await
+                        .map_err(|e| e.to_string())
+                        .and_then(|r| r.map_err(|e| e.to_string()))
+                        .map(drop)
+                        .map_err(|e| format!("{LOCAL}taking SEI out of the original: {e}"));
+                }
+                // Out of time, another try would only run out again, and
+                // trouble on this side is not the audio's.
+                Err(e) if e == "stopped" || e.starts_with("timed out") || e.starts_with(LOCAL) => {
+                    return Err(e);
+                }
                 Err(e) => {
                     tracing::info!(error = %e, audio_copy, "remuxing into MP4 failed");
                     failure = e;
@@ -483,9 +564,17 @@ impl Tools {
                 progress(us.max(0) as f64 / 1e6);
             }
         };
-        self.run(&self.ffmpeg, args, limit, stop.clone(), Some(&mut each))
-            .await
-            .map(drop)
+        let sandbox = self.writes(from, to)?;
+        self.run(
+            &self.ffmpeg,
+            args,
+            &sandbox,
+            limit,
+            stop.clone(),
+            Some(&mut each),
+        )
+        .await
+        .map(drop)
     }
 
     /// A frame of `path`, an MP4 this made, as PNG: upright, since ffmpeg
@@ -521,6 +610,7 @@ impl Tools {
             .run(
                 &self.ffmpeg,
                 args,
+                &Sandbox::reading(&[path]),
                 Duration::from_secs(120),
                 stop.clone(),
                 None,
@@ -533,22 +623,39 @@ impl Tools {
     }
 }
 
-/// `program` to run with none of this process's environment but where to
-/// find programs: the environment holds the sign-in secret and the bucket's
-/// keys, and ffmpeg is what parses untrusted files.
-fn command(program: &Path) -> tokio::process::Command {
+/// `program` to run confined by `sandbox`, at a lower priority, and with
+/// none of this process's environment but where to find programs: ffmpeg is
+/// what parses untrusted files, and the worker's environment holds the
+/// bucket's keys. Clearing it is not what keeps them from a run, though: a
+/// process can read its parent's environment from `/proc` unless the parent
+/// says otherwise, which the worker does, and the sandbox has no `/proc`.
+fn command(program: &Path, sandbox: &Sandbox) -> std::io::Result<tokio::process::Command> {
+    let confine = sandbox.prepare(program)?;
     let mut cmd = tokio::process::Command::new(program);
     cmd.env_clear();
     if let Some(path) = std::env::var_os("PATH") {
         cmd.env("PATH", path);
     }
-    cmd
+    // Serving comes first: the priority is lowered in the child before it
+    // runs ffmpeg, so every thread ffmpeg starts has it too. Then the
+    // sandbox, last, since it refuses what came before it.
+    // SAFETY: the closure runs between fork and exec, where only
+    // async-signal-safe calls are allowed: setpriority and everything
+    // `apply` does are system calls, and nothing allocates.
+    unsafe {
+        cmd.pre_exec(move || {
+            rustix::process::setpriority_process(None, 10).map_err(std::io::Error::from)?;
+            confine.apply()
+        });
+    }
+    Ok(cmd)
 }
 
 /// What `program` writes to standard output given `args`, for the checks at
-/// startup.
+/// startup: run in a sandbox that reads nothing, as every run's is at least.
 async fn output(program: &Path, args: &[&str]) -> anyhow::Result<String> {
-    let mut cmd = command(program);
+    let mut cmd = command(program, &Sandbox::reading(&[]))
+        .with_context(|| format!("confining {}", program.display()))?;
     cmd.args(args)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
@@ -787,7 +894,7 @@ pub mod tests {
     /// ffmpeg fails instead.
     pub async fn tools() -> Option<Tools> {
         let video = crate::config::Config::test(PathBuf::new()).video;
-        let found = Tools::find(&video).await.expect("auto never fails");
+        let found = Tools::find(&video, None).await.expect("auto never fails");
         let required = std::env::var_os("DITHER_REQUIRE_FFMPEG").is_some();
         match &found {
             None => {
@@ -937,6 +1044,118 @@ pub mod tests {
         assert!(kept.audio.is_some());
         // Safari plays HEVC in MP4 only tagged hvc1.
         assert!(after.contains("\"codec_tag_string\": \"hvc1\""), "{after}");
+        // Inside the stream too: the encoder's SEI message, where a camera
+        // writes its own, is gone with the rest.
+        let contains = |path: &Path, what: &[u8]| {
+            std::fs::read(path)
+                .unwrap()
+                .windows(what.len())
+                .any(|w| w == what)
+        };
+        assert!(
+            contains(&phone, b"x265 (build"),
+            "the clip carries an SEI message"
+        );
+        assert!(!contains(&out, b"x265 (build"), "the SEI message survived");
+        // And what is left still decodes.
+        let png = tools.frame(&out, 1.0, &never()).await.unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+    }
+
+    #[tokio::test]
+    async fn an_h264_original_loses_its_sei_messages_and_still_plays() {
+        let Some(tools) = tools().await else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let raw = clip(
+            dir.path(),
+            "raw.mp4",
+            2,
+            "320x240",
+            &["-c:v", "libx264", "-c:a", "aac"],
+        );
+        let bytes = std::fs::read(&raw).unwrap();
+        assert!(
+            bytes.windows(11).any(|w| w == b"x264 - core"),
+            "x264 writes one"
+        );
+        let probe = tools.probe(Container::Mp4, &raw).await.unwrap();
+        let out = dir.path().join("original.mp4");
+        tools
+            .remux(Container::Mp4, &probe, &raw, &out, 0, &never())
+            .await
+            .unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(
+            !bytes.windows(11).any(|w| w == b"x264 - core"),
+            "it survived"
+        );
+        // Still a video that decodes to its end.
+        let png = tools.frame(&out, 1.5, &never()).await.unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+    }
+
+    #[tokio::test]
+    async fn a_run_reaches_neither_the_network_nor_other_files() {
+        let Some(tools) = tools().await else { return };
+        if !crate::sandbox::confines() {
+            return;
+        }
+        let run = |args: &[&str]| {
+            let args: Vec<OsString> = args.iter().map(Into::into).collect();
+            let tools = tools.clone();
+            async move {
+                tools
+                    .run(
+                        &tools.ffprobe,
+                        args,
+                        &Sandbox::reading(&[]),
+                        Duration::from_secs(30),
+                        never(),
+                        None,
+                    )
+                    .await
+            }
+        };
+        // Its own whitelists aside: the kernel refuses the socket.
+        let err = run(&["-v", "error", "http://127.0.0.1:9/"])
+            .await
+            .unwrap_err();
+        assert!(err.contains("Operation not permitted"), "{err}");
+        if crate::sandbox::landlock_abi().is_some() {
+            let dir = tempfile::tempdir().unwrap();
+            let other = clip(dir.path(), "other.mp4", 1, "64x64", &[]);
+            let named = format!("file:{}", other.display());
+            let err = run(&["-v", "error", &named]).await.unwrap_err();
+            assert!(err.contains("Permission denied"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_past_the_room_left_stops_the_run_as_this_sides_trouble() {
+        let Some(tools) = tools().await else { return };
+        if !crate::sandbox::confines() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = clip(dir.path(), "source.mp4", 2, "320x240", &[]);
+        let out = dir.path().join("out.mkv");
+        let args: Vec<OsString> = ["-v", "error", "-y", "-i"]
+            .iter()
+            .map(Into::into)
+            .chain([file(&source), "-c".into(), "copy".into(), file(&out)])
+            .collect();
+        let err = tools
+            .run(
+                &tools.ffmpeg,
+                args,
+                &Sandbox::writing(&[&source], dir.path(), Some(1000)),
+                Duration::from_secs(30),
+                never(),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.starts_with(LOCAL) && err.contains("no room"), "{err}");
     }
 
     #[tokio::test]
@@ -1154,7 +1373,12 @@ pub mod tests {
     async fn ffmpeg_sees_none_of_the_environment() {
         // Cargo gives a test this; it stands in for the secrets a pod has.
         assert!(std::env::var_os("CARGO_PKG_NAME").is_some());
-        let out = command(Path::new("env")).output().await.unwrap();
+        let env = crate::sandbox::locate(Path::new("env")).unwrap();
+        let out = command(&env, &Sandbox::reading(&[]))
+            .unwrap()
+            .output()
+            .await
+            .unwrap();
         let seen = String::from_utf8_lossy(&out.stdout);
         assert!(!seen.contains("CARGO_PKG_NAME"), "{seen}");
         assert!(seen.contains("PATH="), "{seen}");

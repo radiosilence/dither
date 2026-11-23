@@ -16,7 +16,8 @@ pub struct Clip {
     pub audio: bool,
     /// Short and silent: plays on a loop, as a GIF would.
     pub looping: bool,
-    /// For the system's media controls.
+    /// For the system's media controls: the caption's first line, or empty
+    /// for the template to word.
     pub title: String,
 }
 

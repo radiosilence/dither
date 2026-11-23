@@ -104,6 +104,8 @@ export function workerEnvironment(args: DitherArgs) {
           { name: "AWS_REGION", value: args.bucket.region ?? "auto" },
         ]
       : []),
+    // No file ffmpeg writes may take the disk below the floor uploads keep.
+    ...(args.minFreeBytes === undefined ? [] : [{ name: "MIN_FREE_BYTES", value: String(args.minFreeBytes) }]),
     ...(args.video === false ? [{ name: "VIDEO", value: "off" }] : []),
     ...(args.maxVideoSeconds ? [{ name: "MAX_VIDEO_SECONDS", value: String(args.maxVideoSeconds) }] : []),
     { name: "RUST_LOG", value: "info" },

@@ -248,7 +248,10 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response
     if on_public_host(&state.config, &headers) {
         return crate::web::public::landing().await;
     }
-    let Some(session) = crate::auth::extract::current(&state, &headers).await else {
+    let Some(session) = crate::auth::extract::current(&state, &headers)
+        .await
+        .filter(|s| !crate::auth::extract::stale(&state, s))
+    else {
         return Redirect::to("/auth/login").into_response();
     };
     match library(&state, &session).await {

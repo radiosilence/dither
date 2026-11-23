@@ -17,10 +17,9 @@
 //!
 //! A preview's picture is its own copy, `/p/<id>.jpg`: a JPEG held to
 //! [`crate::media::PREVIEW_BYTES`], since WhatsApp shows nothing for a larger
-//! `og:image` and not every fetcher reads WebP. It is made at upload, and for
-//! an image uploaded before previews existed, the first time one is asked for.
-//! An animated picture small enough is its own preview, so it plays where
-//! previews do.
+//! `og:image` and not every fetcher reads WebP. The worker makes it with the
+//! other copies; nothing here decodes a picture. An animated picture small
+//! enough is its own preview, so it plays where previews do.
 //!
 //! A video's page names its playback copy as `og:video` and a frame as its
 //! picture. Every file is served with byte ranges, which seeking a video
@@ -59,10 +58,6 @@ const CSP_VIDEO_FILE: &str = "default-src 'none'; media-src 'self'; sandbox";
 /// An animated picture up to this size is its own `og:image`, so it plays in
 /// the previews that play one (X's limit is 5 MB).
 const OG_ANIMATED_MAX: u64 = 5_000_000;
-/// Previews made at once for images uploaded before previews existed. Each
-/// holds a decoded copy of at most `DISPLAY_MAX` square, so two at a time is a
-/// bounded tens of megabytes.
-static MAKING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// An image as a page draws it.
 pub struct Pic {
@@ -108,7 +103,15 @@ pub fn clip(i: &Image) -> Clip {
         seconds,
         audio: i.audio,
         looping: !i.audio && seconds <= LOOP_MAX_SECONDS,
-        title: i.caption.lines().next().unwrap_or(&i.name).to_string(),
+        // Never the name it was uploaded under, which is its owner's: a
+        // phone's says little, a laptop's can say a lot.
+        title: i
+            .caption
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
     }
 }
 
@@ -491,46 +494,6 @@ pub async fn preview(
     }
 }
 
-/// Image `image`'s preview, for one uploaded before previews were made at
-/// upload: made from its smallest stored copy at least the preview's size,
-/// and kept. `None` when that copy is missing. A preview that cannot be kept
-/// is served all the same, and one made while its image was being deleted is
-/// deleted again, so none outlives it.
-async fn make_preview(state: &AppState, image: &Image) -> anyhow::Result<Option<bytes::Bytes>> {
-    // A video's is made with its other copies, from a frame.
-    if image.is_video() {
-        return Ok(None);
-    }
-    let key = store::key(Variant::Preview, &image.id);
-    let source = if image.display {
-        Variant::Display
-    } else if image.animated {
-        Variant::Thumb
-    } else {
-        Variant::Original
-    };
-    let Some(bytes) = state.store.read(&store::key(source, &image.id)).await? else {
-        return Ok(None);
-    };
-    let size = preview_size(image.width, image.height, image.animated);
-    let jpeg = {
-        let _turn = MAKING.acquire().await?;
-        // A link shared to a group brings every member's client at once: the
-        // first makes it, and the rest find it made.
-        if let Some(store::Body::Bytes(made)) = state.store.get(&key).await? {
-            return Ok(Some(made));
-        }
-        tokio::task::spawn_blocking(move || crate::media::preview(&bytes, size)).await??
-    };
-    let jpeg = bytes::Bytes::from(jpeg);
-    if let Err(e) = state.store.put(&key, jpeg.clone()).await {
-        tracing::warn!(image = %image.id, error = %e, "keeping a link preview failed");
-    } else if matches!(state.db.image(&image.id).await, Ok(None)) {
-        let _ = state.store.delete(&key).await;
-    }
-    Ok(Some(jpeg))
-}
-
 async fn file(
     state: &AppState,
     headers: &HeaderMap,
@@ -636,20 +599,10 @@ async fn file(
             .expect("an id and an extension"),
     );
     let key = store::key(variant, id);
-    // A preview may still have to be made, so it is always sent whole.
-    let wanted = (variant != Variant::Preview)
-        .then(|| Wanted::from(headers, &etag, &modified))
-        .flatten();
-    if let Some(wanted) = wanted {
+    if let Some(wanted) = Wanted::from(headers, &etag, &modified) {
         return partial(state, &key, wanted, served, h).await;
     }
-    let found = match state.store.get(&key).await {
-        Ok(None) if variant == Variant::Preview => make_preview(state, &image)
-            .await
-            .map(|made| made.map(store::Body::Bytes)),
-        other => other.map_err(anyhow::Error::from),
-    };
-    let body = match found {
+    let body = match state.store.get(&key).await {
         Ok(Some(body)) => body,
         Ok(None) => {
             tracing::error!(
