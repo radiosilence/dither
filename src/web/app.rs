@@ -248,7 +248,10 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response
     if on_public_host(&state.config, &headers) {
         return crate::web::public::landing().await;
     }
-    let Some(session) = crate::auth::extract::current(&state, &headers).await else {
+    let Some(session) = crate::auth::extract::current(&state, &headers)
+        .await
+        .filter(|s| !crate::auth::extract::stale(&state, s))
+    else {
         return Redirect::to("/auth/login").into_response();
     };
     match library(&state, &session).await {
@@ -320,7 +323,13 @@ pub async fn album(
         let path = uri.path_and_query().map_or("/", |p| p.as_str());
         Redirect::to(&crate::auth::routes::login_url(path)).into_response()
     };
+    // A day-old sign-in goes back through the provider before a page is
+    // drawn for it, as behind the session layer.
+    let stale = session
+        .as_ref()
+        .is_some_and(|s| crate::auth::extract::stale(&state, s));
     Ok(match (session, found) {
+        (Some(_), _) if stale && page_load => sign_in(),
         (Some(session), Some(album)) if album.owner == session.sub => {
             Html(editor(&state, &session, album).await?).into_response()
         }

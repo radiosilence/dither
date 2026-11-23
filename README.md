@@ -70,8 +70,10 @@ kept exactly as recorded instead, and plays where the browser can.
 Either way it goes into MP4 with its first video and sound streams and
 nothing else: phones write where a video was taken into the container's
 metadata and into timed metadata tracks, as they do into a photo's EXIF, and
-none of it is kept. The rotation a phone records is part of the video track
-and survives. A frame of it becomes the thumbnail and the link preview,
+none of it is kept. Nor are the SEI messages inside an H.264 or HEVC stream,
+where an encoder writes its settings and some cameras the time or where they
+were, whether in the frames or in the stream's configuration. The rotation a
+phone records is part of the video track and survives. A frame of it becomes the thumbnail and the link preview,
 tone-mapped when the video is HDR, and a page's `og:video` names it, for the
 sites that play one inline.
 
@@ -83,8 +85,18 @@ ffmpeg parses untrusted files, so it runs as a process of its own, with none
 of the environment: told the container it reads rather than left to probe,
 limited to the file protocol and to the decoders phones and cameras need, on
 `VIDEO_THREADS` threads (filters included) at a lower priority, and with a
-time limit. A video whose codec MP4 cannot hold (VP8, Theora, ProRes) is
-converted even when it is to be kept as recorded.
+time limit. Those are ffmpeg's own checks, which a file exploiting a bug in
+it would ignore, so the kernel confines each run as well. Landlock lets it
+read only the programs' directories and the file it was given, and write
+only in its own working directory: not the database, the store or `/proc`,
+and no TCP. seccomp refuses it sockets, other processes (`ptrace`,
+`process_vm_*`), new namespaces and the kernel interfaces exploits reach for
+(io_uring, BPF, perf events, userfaultfd). It writes no file larger than the
+disk's room above `MIN_FREE_BYTES` and dumps no core, and the worker that
+starts it keeps its own memory and environment out of `/proc`. Landlock
+applies as far as the kernel has it, which the worker logs at startup; the
+rest applies on any Linux. A video whose codec MP4 cannot hold (VP8, Theora,
+ProRes) is converted even when it is to be kept as recorded.
 
 Every file is served with byte ranges, which seeking needs and Safari requires
 before it plays a video at all; video is never compressed again on the way
@@ -221,7 +233,11 @@ kōan's, from [@radiosilence/theme](https://github.com/radiosilence/theme).
 dither is an OAuth client of an OpenID Connect provider (`OIDC_ISSUER`) and
 has no allowlist of its own: who may sign in is the provider's decision.
 Every person who signs in gets albums of their own and sees nobody else's.
-Sessions are opaque ids in `__Host-` cookies, stored hashed.
+Sessions are opaque ids in `__Host-` cookies, stored hashed. A sign-in lasts
+two days, and a page load a day after it goes back through the provider,
+which remembers the person and asks nothing, but decides again whether they
+may sign in: someone the provider stops letting in is out of dither within a
+day. An upload or a live page already going carries on for the second day.
 
 The id_token is taken from the token endpoint in answer to a request dither
 makes, never from the browser, so its signature is not checked; its issuer,
@@ -255,7 +271,11 @@ name out of public repositories, closes both.
   only the player's own script, and load it only where there is a video.
 - ffmpeg, which parses uploaded videos, runs as a separate process told the
   container it reads, limited to the file protocol and a list of decoders,
-  at a lower priority, with a time limit (see *Videos*).
+  at a lower priority, with a time limit, and confined by Landlock, seccomp
+  and resource limits to the files it was given (see *Videos*).
+- The web process decodes nothing: every picture is made by the worker.
+- Sign-ins are checked with the provider again a day after they are made
+  (see *Signing in*).
 - A file's type is decided by its signature, never by its name or the type
   the browser claims. Decoding is limited in pixels and allocation.
 - Files in an album that is not private are cached by browsers for a year and
@@ -279,7 +299,7 @@ startup.
 | `STORAGE` | `file://<cwd>/data/objects` | The object store. |
 | `AWS_ENDPOINT`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | — | For an `s3://` store. R2's region is `auto`. |
 | `STATE_DIR` | `data/state` | The database and uploads in progress, on a local disk. |
-| `MIN_FREE_BYTES` | 15% of each disk | Uploads are refused below this much free space on a disk they write to. |
+| `MIN_FREE_BYTES` | 15% of each disk | Uploads are refused below this much free space on a disk they write to, and no file ffmpeg writes may take a disk below it. |
 | `MAX_UPLOAD_BYTES`, `MAX_PIXELS` | 64 000 000, 100 000 000 | Per image. |
 | `PROCESS_MEMORY_BYTES` | 1 GiB | Memory a worker's pictures take at once. A picture that needs more alone is refused when its upload finishes. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |

@@ -35,9 +35,22 @@ pub fn is_page_load(headers: &HeaderMap) -> bool {
 pub async fn current(state: &AppState, headers: &HeaderMap) -> Option<Session> {
     match session_id(headers) {
         Some(id) => state.sessions.get(id).await,
-        None if state.config.oidc.is_none() => Some(Session { sub: "dev".into() }),
+        None if state.config.oidc.is_none() => Some(Session {
+            sub: "dev".into(),
+            since: crate::db::now(),
+        }),
         None => None,
     }
+}
+
+/// Whether a page load for `session` goes back through the identity provider
+/// first: a day after it vouched for them, so that whoever it no longer lets
+/// in stops getting in here within a day. The provider remembers the person
+/// and asks nothing, so a page load is all it costs. What a page already
+/// open is doing (an upload, a live stream) is not interrupted: the session
+/// lasts a day beyond this ([`crate::auth::routes::SESSION_TTL`]).
+pub fn stale(state: &AppState, session: &Session) -> bool {
+    state.config.oidc.is_some() && session.age() >= crate::auth::routes::REVERIFY
 }
 
 pub async fn require_session(
@@ -45,16 +58,17 @@ pub async fn require_session(
     mut request: Request,
     next: Next,
 ) -> Response {
+    let page = is_page_load(request.headers());
     match current(&state, request.headers()).await {
-        Some(session) => {
+        Some(session) if !(page && stale(&state, &session)) => {
             request.extensions_mut().insert(session);
             next.run(request).await
         }
-        None if is_page_load(request.headers()) => {
+        _ if page => {
             let path = request.uri().path_and_query().map_or("/", |p| p.as_str());
             Redirect::to(&crate::auth::routes::login_url(path)).into_response()
         }
-        None => StatusCode::UNAUTHORIZED.into_response(),
+        _ => StatusCode::UNAUTHORIZED.into_response(),
     }
 }
 

@@ -117,6 +117,8 @@ export type DitherWorkerArgs = {
   videos?: number;
   /** Room for an upload and what is made of it (16Gi by default). */
   scratch?: string;
+  /** Free space ffmpeg's files may not take its disk below: 15% of the disk by default. */
+  minFreeBytes?: number;
   /** dither's namespace, when the worker runs in another. */
   ditherNamespace?: string;
 };
@@ -133,6 +135,8 @@ export function workerEnvironment(args: DitherWorkerArgs) {
     ...(args.videoThreads ? [{ name: "VIDEO_THREADS", value: String(args.videoThreads) }] : []),
     ...(args.pictures !== undefined ? [{ name: "PICTURE_WORKERS", value: String(args.pictures) }] : []),
     ...(args.videos !== undefined ? [{ name: "VIDEO_WORKERS", value: String(args.videos) }] : []),
+    // No file ffmpeg writes may take the disk below this floor.
+    ...(args.minFreeBytes === undefined ? [] : [{ name: "MIN_FREE_BYTES", value: String(args.minFreeBytes) }]),
     { name: "RUST_LOG", value: "info" },
   ];
 }

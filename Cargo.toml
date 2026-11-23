@@ -37,6 +37,11 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url = "2.5.9"
 webp = { version = "0.3.1", default-features = false }
+libc = "0.2.191"
+
+# The ffmpeg sandbox (`sandbox.rs`), which only Linux has.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.8"
 
 [dev-dependencies]
 # Extracts the templates' messages for the catalogue test.

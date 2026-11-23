@@ -30,6 +30,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_processing.sql"),
     include_str!("../migrations/0003_as_recorded.sql"),
+    include_str!("../migrations/0004_sessions.sql"),
 ];
 
 /// Idle connections kept: more than the service's usual concurrency, so the
@@ -1210,19 +1211,22 @@ impl Db {
             // Expired rows go on each sign-in; there are too few for a sweeper.
             c.execute("DELETE FROM sessions WHERE expires_at < ?1", [now()])?;
             c.execute(
-                "INSERT INTO sessions (id_hash, sub, expires_at) VALUES (?1, ?2, ?3)",
-                params![id_hash, sub, expires_at],
+                "INSERT INTO sessions (id_hash, sub, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![id_hash, sub, expires_at, now()],
             )
             .map(drop)
         })
         .await
     }
 
-    pub async fn session(&self, id_hash: Vec<u8>) -> Result<Option<String>> {
+    /// Whose session this is and when it was made, while it lasts.
+    pub async fn session(&self, id_hash: Vec<u8>) -> Result<Option<(String, i64)>> {
         self.run(move |c| {
-            c.prepare_cached("SELECT sub FROM sessions WHERE id_hash = ?1 AND expires_at > ?2")?
-                .query_row(params![id_hash, now()], |r| r.get(0))
-                .optional()
+            c.prepare_cached(
+                "SELECT sub, created_at FROM sessions WHERE id_hash = ?1 AND expires_at > ?2",
+            )?
+            .query_row(params![id_hash, now()], |r| Ok((r.get(0)?, r.get(1)?)))
+            .optional()
         })
         .await
     }
@@ -1761,7 +1765,9 @@ pub mod tests {
             .await
             .unwrap();
         db.create_session(vec![2], "ann", now() - 1).await.unwrap();
-        assert_eq!(db.session(vec![1]).await.unwrap().as_deref(), Some("ann"));
+        let (sub, since) = db.session(vec![1]).await.unwrap().unwrap();
+        assert_eq!(sub, "ann");
+        assert!(now() - since < 60_000);
         assert_eq!(db.session(vec![2]).await.unwrap(), None);
         db.delete_session(vec![1]).await.unwrap();
         assert_eq!(db.session(vec![1]).await.unwrap(), None);

@@ -93,7 +93,16 @@ impl Making {
 
 /// Run until a signal to stop, when the claims held are given back.
 pub async fn run(config: &Config) -> anyhow::Result<()> {
-    let tools = Tools::find(&config.video).await?;
+    // The environment holds the worker API's token, and a process running
+    // as the same user can otherwise read it from /proc: ffmpeg, the
+    // worker's own child, parses untrusted files. Not dumpable, /proc keeps
+    // it from them.
+    #[cfg(target_os = "linux")]
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+        .map_err(|e| {
+            anyhow::anyhow!("keeping the worker's memory and environment from other processes: {e}")
+        })?;
+    let tools = Tools::find(&config.video, config.min_free_bytes).await?;
     std::fs::create_dir_all(jobs::dir(&config.state_dir))?;
     let mib = (config.process_memory / MIB).clamp(1, u64::from(u32::MAX)) as u32;
     let worker = Arc::new(Worker {

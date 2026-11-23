@@ -58,6 +58,16 @@ describe("environment", () => {
     expect(env(base).WORKER_ADDR).toBe("0.0.0.0:8081");
   });
 
+  it("gives the worker the disk's floor, which ffmpeg's files may not breach", () => {
+    const w = Object.fromEntries(
+      workerEnvironment({ name: "lady", queue: "http://q:8081", token: "t", minFreeBytes: 1024 }).map((e) => [
+        e.name,
+        e.value,
+      ]),
+    );
+    expect(w.MIN_FREE_BYTES).toBe("1024");
+  });
+
   it("links to the public domain when there is one", () => {
     expect(env(base).PUBLIC_URL).toBe("https://dither.example");
     expect(env({ ...base, publicHostname: "pics.example" }).PUBLIC_URL).toBe("https://pics.example");

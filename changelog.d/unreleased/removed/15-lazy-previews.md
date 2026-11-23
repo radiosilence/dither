@@ -1,0 +1,1 @@
+- **The web process no longer makes link previews.** An image from before 0.3.0 without one gets none: every picture is made by the worker, and the web process decodes nothing.

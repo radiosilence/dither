@@ -1,0 +1,1 @@
+- **Sign-ins are checked with the provider daily.** A session lasts two days instead of thirty, and a page load a day after signing in goes back through the identity provider, which asks the person nothing but decides again whether they may sign in.

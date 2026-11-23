@@ -16,9 +16,14 @@ use crate::auth::session::Sessions;
 use crate::error::{AppError, AppResult};
 use crate::web::AppState;
 
-/// How long a sign-in lasts: a month, since signing in again from a phone in
-/// the middle of sharing something is the worst moment for it.
-pub const SESSION_TTL: Duration = Duration::from_secs(30 * 24 * 3600);
+/// How long a sign-in lasts: two days, of which a page load uses the first
+/// ([`REVERIFY`]). The second is for a page already open, so an upload under
+/// way or a live stream is not cut off; the next page load signs in again.
+pub const SESSION_TTL: Duration = Duration::from_secs(2 * 24 * 3600);
+/// How old a sign-in may be before a page load sends it back through the
+/// identity provider, which remembers the person and asks nothing, but says
+/// again whether they may still sign in.
+pub const REVERIFY: Duration = Duration::from_secs(24 * 3600);
 /// Long enough to finish a sign-in round trip and no longer.
 pub const FLOW_TTL: Duration = Duration::from_secs(600);
 
@@ -124,6 +129,10 @@ async fn callback(
     )
     .await?;
     state.db.upsert_user(&who.sub, &who.login).await?;
+    // A sign-in that replaces one (a day-old session checked again) ends it.
+    if let Some(old) = session_id(&headers) {
+        state.sessions.delete(old).await;
+    }
     let session = state.sessions.create(&who.sub, SESSION_TTL).await?;
     tracing::info!(login = %who.login, "signed in");
     Ok(redirect(

@@ -651,6 +651,13 @@ jobs:
         working-directory: deploy/pulumi
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The image's digest is read from the registry, signed in so neither a
+      # private package nor anonymous rate limits stand in the way.
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d # v5.2.4
         with:
           install_args: node aube
@@ -663,6 +670,10 @@ jobs:
       # A version cannot be published twice, so a retried release skips one
       # already out and goes on to the GitHub release. Only a 404 means it is
       # not out; any other error fails rather than guessing.
+      #
+      # The package pins the image by digest, which is known only now that
+      # container-release has pushed it: written into src/versions.ts here,
+      # before prepublishOnly builds it, and never committed.
       - env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -675,6 +686,15 @@ jobs:
             echo "::error::cannot tell whether $spec is published: $out"
             exit 1
           fi
+          version="$(node -p 'require("./package.json").version')"
+          digest="$(docker buildx imagetools inspect "$IMAGE:v$version" --format '{{json .Manifest}}' | jq -r .digest)"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::no digest for $IMAGE:v$version: $digest"
+            exit 1
+          fi
+          sed -i "s|^export const IMAGE_DIGEST: string = \"\";|export const IMAGE_DIGEST: string = \"$digest\";|" src/versions.ts
+          grep -q "^export const IMAGE_DIGEST: string = \"$digest\";" src/versions.ts
+          echo "pinning $IMAGE:v$version@$digest"
           npm publish
 
   # Last, so a release never names an image or a package that does not exist.

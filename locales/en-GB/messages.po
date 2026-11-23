@@ -196,7 +196,7 @@ msgstr ""
 msgid "a new album"
 msgstr ""
 
-#: templates/public/layout.html
+#: templates/player.html templates/public/layout.html
 msgid "a video"
 msgstr ""
 

@@ -1,0 +1,1 @@
+- **The Pulumi package pins the image by digest.** CI writes the released image's digest into the package it publishes, so a tag moved later changes nothing that is deployed; the worker is given `MIN_FREE_BYTES` too.

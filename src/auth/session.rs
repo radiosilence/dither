@@ -22,6 +22,15 @@ use crate::db::Db;
 pub struct Session {
     /// The identity provider's subject: whose albums these are.
     pub sub: String,
+    /// When the provider last vouched for them, in milliseconds.
+    pub since: i64,
+}
+
+impl Session {
+    /// How long ago the provider last vouched for them.
+    pub fn age(&self) -> Duration {
+        Duration::from_millis(u64::try_from(crate::db::now() - self.since).unwrap_or(0))
+    }
 }
 
 /// A login round-trip in progress: the PKCE verifier and the CSRF state, held
@@ -77,7 +86,7 @@ impl Sessions {
             .inspect_err(|e| tracing::warn!(error = %e, "session lookup failed"))
             .ok()
             .flatten()
-            .map(|sub| Session { sub })
+            .map(|(sub, since)| Session { sub, since })
     }
 
     pub async fn delete(&self, id: &str) {

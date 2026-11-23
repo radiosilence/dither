@@ -363,18 +363,6 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
             .as_deref(),
         Some(&preview.body[..])
     );
-    // One uploaded before previews were made at upload gets one when first
-    // asked for, and keeps it.
-    let key = store::key(Variant::Preview, &id);
-    app.state.store.delete(&key).await.unwrap();
-    let made = app.get(&format!("/p/{id}.jpg")).await;
-    assert_eq!(made.status, StatusCode::OK);
-    let shown = image::load_from_memory(&made.body).unwrap();
-    assert_eq!((shown.width(), shown.height()), (1200, 800));
-    assert_eq!(
-        app.state.store.read(&key).await.unwrap().as_deref(),
-        Some(&made.body[..])
-    );
     assert_eq!(
         app.get(&format!("/p/{id}.webp")).await.status,
         StatusCode::NOT_FOUND
@@ -580,6 +568,62 @@ async fn without_a_session_pages_go_to_sign_in_and_everything_else_is_refused() 
         .write("POST", "/api/albums", json!({}), Some("expired"))
         .await;
     assert_eq!(api.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_day_old_sign_in_is_checked_again_on_a_page_load_but_not_mid_upload() {
+    let app = app_with(|c| {
+        c.oidc = Some(crate::config::Oidc {
+            issuer: "https://auth.test".into(),
+            client_id: "dither".into(),
+            client_secret: "secret".into(),
+            token_url: "https://auth.test/oauth2/token".into(),
+        });
+    })
+    .await;
+    let ann = app.session("ann").await;
+    let album = app
+        .write("POST", "/api/albums", json!({}), Some(&ann))
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let page = format!("/albums/{album}");
+    assert_eq!(app.get_as(&page, &ann).await.status, StatusCode::OK);
+    assert_eq!(app.get_as("/", &ann).await.status, StatusCode::OK);
+
+    // A day on, a page load goes back through the provider first.
+    let day = crate::auth::routes::REVERIFY.as_millis() as i64;
+    app.state
+        .db
+        .run(move |c| {
+            c.execute("UPDATE sessions SET created_at = created_at - ?1", [day])
+                .map(drop)
+        })
+        .await
+        .unwrap();
+    let again = app.get_as(&page, &ann).await;
+    assert_eq!(again.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        again.header("location"),
+        crate::auth::routes::login_url(&page)
+    );
+    assert_eq!(
+        app.get_as("/", &ann).await.header("location"),
+        "/auth/login"
+    );
+    // Behind the session layer too.
+    let picker = format!("/albums/{album}/picker");
+    assert_eq!(
+        app.get_as(&picker, &ann).await.header("location"),
+        crate::auth::routes::login_url(&picker)
+    );
+    // What a page already open is doing carries on.
+    let api = app
+        .write("POST", "/api/albums", json!({}), Some(&ann))
+        .await;
+    assert_eq!(api.status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -995,6 +1039,11 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
     assert!(page.contains("· 0:02 ·"), "{page}");
     let public = app.get(&format!("/a/{album}")).await.text();
     assert!(public.contains(&format!("src=\"/{id}.mp4\"")), "{public}");
+    // The name it was uploaded under is its owner's alone.
+    for html in [&public, &page] {
+        assert!(!html.contains("0.jpg"), "{html}");
+        assert!(html.contains("data-title=\"a video\""), "{html}");
+    }
 }
 
 #[tokio::test]
@@ -1034,6 +1083,13 @@ async fn a_video_kept_as_recorded_is_its_one_copy() {
         .unwrap();
     assert_eq!(probe.video.codec, "hevc", "as recorded");
     assert_eq!(probe.shown(), (360, 640));
+    // Kept as recorded, and still without the encoder's SEI message, where
+    // a camera writes its own.
+    let body = std::fs::read(&kept).unwrap();
+    assert!(
+        !body.windows(11).any(|w| w == b"x265 (build"),
+        "SEI survived"
+    );
 }
 
 #[tokio::test]
