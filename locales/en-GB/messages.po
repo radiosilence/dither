@@ -388,6 +388,10 @@ msgstr ""
 msgid "original"
 msgstr ""
 
+#: templates/app/views.html
+msgid "other sites"
+msgstr ""
+
 #: templates/app/layout.html
 msgid "pasted image"
 msgstr ""

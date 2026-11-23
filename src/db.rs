@@ -1227,7 +1227,7 @@ impl Db {
     pub async fn add_views(
         &self,
         p: crate::views::Pending,
-    ) -> std::result::Result<(), (rusqlite::Error, Option<crate::views::Pending>)> {
+    ) -> std::result::Result<(), Box<(rusqlite::Error, Option<crate::views::Pending>)>> {
         // A target that still exists: counts never outlive what they count.
         const EXISTS: &str = "WHERE EXISTS (SELECT 1 FROM images WHERE id = ?1) \
              OR EXISTS (SELECT 1 FROM albums WHERE id = ?1)";
@@ -1291,8 +1291,8 @@ impl Db {
             .await
         {
             Ok(None) => Ok(()),
-            Ok(Some((e, p))) => Err((e, Some(p))),
-            Err(e) => Err((e, None)),
+            Ok(Some((e, p))) => Err(Box::new((e, Some(p)))),
+            Err(e) => Err(Box::new((e, None))),
         }
     }
 

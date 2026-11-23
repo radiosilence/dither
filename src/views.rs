@@ -182,6 +182,13 @@ impl Views {
             visit: Visit,
             bytes: u64,
         }
+        impl Sending {
+            // A method, so the closure below takes the whole of it, and its
+            // drop with it, rather than a copy of the count.
+            fn sent(&mut self, n: usize) {
+                self.bytes += n as u64;
+            }
+        }
         impl Drop for Sending {
             fn drop(&mut self) {
                 self.views
@@ -196,7 +203,7 @@ impl Views {
         };
         Body::from_stream(body.into_data_stream().map(move |chunk| {
             if let Ok(chunk) = &chunk {
-                sending.bytes += chunk.len() as u64;
+                sending.sent(chunk.len());
             }
             chunk
         }))
@@ -275,7 +282,8 @@ impl Views {
         if pending.is_empty() {
             return;
         }
-        if let Err((e, pending)) = db.add_views(pending).await {
+        if let Err(failed) = db.add_views(pending).await {
+            let (e, pending) = *failed;
             tracing::warn!(error = %e, "writing view counts failed; kept for the next try");
             if let Some(pending) = pending {
                 self.0.inner.lock().pending.merge(pending);
