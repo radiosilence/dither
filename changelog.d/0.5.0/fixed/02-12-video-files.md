@@ -1,0 +1,1 @@
+- **A video file opens in the browser's own player.** Opened on its own, a video file showed iOS Safari's player tiny and never loading: it was sandboxed, and a sandboxed document's origin does not match `media-src 'self'`. Video files are no longer sandboxed; images still are.

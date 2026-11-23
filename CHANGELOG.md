@@ -9,10 +9,12 @@
 ### Changed
 
 - **One copy of each video.** A video is converted to H.264 at its own size (up to 4K, CRF 18, SDR, AAC), which plays everywhere and is what downloads, or with *keep videos as recorded* ticked, kept exactly as recorded; nothing else is stored. Videos already H.264 are not re-encoded, and a frame of an HDR video is tone-mapped for its thumbnail.
+- **The worker's default memory limit is 4 GiB.** Converting at full size takes about 1.5 GB at 4K and 2 GB from an 8K source, beside the pictures' `PROCESS_MEMORY_BYTES`. A deployment that sets `workerLimits` should allow as much.
 
 ### Fixed
 
 - **A caption stays with its image.** After a caption was typed, moving to the next image in the viewer showed the same text in its caption field; each image's field is now its own, and leaving one saves it at once.
+- **A video file opens in the browser's own player.** Opened on its own, a video file showed iOS Safari's player tiny and never loading: it was sandboxed, and a sandboxed document's origin does not match `media-src 'self'`. Video files are no longer sandboxed; images still are.
 
 ## 0.4.0
 
