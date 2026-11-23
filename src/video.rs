@@ -1416,16 +1416,12 @@ pub mod tests {
             &[
                 "-c:v",
                 "libx265",
+                // Tagged in the stream itself: some builds' x265 ignores
+                // ffmpeg's own colour options.
                 "-x265-params",
-                "log-level=error",
+                "log-level=error:colorprim=bt2020:transfer=arib-std-b67:colormatrix=bt2020nc",
                 "-pix_fmt",
                 "yuv420p10le",
-                "-color_primaries",
-                "bt2020",
-                "-color_trc",
-                "arib-std-b67",
-                "-colorspace",
-                "bt2020nc",
                 "-c:a",
                 "aac",
             ],
