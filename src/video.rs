@@ -59,15 +59,15 @@ pub fn decodable(codec: &str) -> bool {
     DECODERS.split(',').any(|d| d == codec)
 }
 
-/// Whether MP4 holds a video of `codec`, so the original can be remuxed into
-/// it as recorded. One that does not (VP8, Theora, ProRes) keeps only its
-/// playback copy.
+/// Whether MP4 holds a video of `codec`, so it can be kept as recorded. One
+/// that does not (VP8, Theora, ProRes) is converted even when asked to be
+/// kept.
 pub fn fits_mp4(codec: &str) -> bool {
     matches!(codec, "h264" | "hevc" | "av1" | "vp9" | "mpeg4")
 }
 
-/// Tone mapping from PQ or HLG to SDR, before the playback copy's own format:
-/// to linear light, to BT.709 primaries, Hable's curve, back to BT.709.
+/// Tone mapping from PQ or HLG to SDR, before a converted video's or a
+/// frame's own format: to linear light, to BT.709 primaries, Hable's curve, back to BT.709.
 const TONEMAP: &str = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,\
      tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv";
 
@@ -82,7 +82,7 @@ pub struct Tools {
 }
 
 impl Tools {
-    /// The tools `video` names, if they run and can make a playback copy.
+    /// The tools `video` names, if they run and can convert a video.
     /// `None` with videos off, or not found under `auto`; an error when they
     /// are required and missing.
     pub async fn find(video: &crate::config::Video) -> anyhow::Result<Option<Self>> {
@@ -396,8 +396,8 @@ impl Tools {
     }
 
     /// A copy every browser plays: H.264 at its own size, at most
-    /// [`FULL_MAX`] long, 8-bit
-    /// 4:2:0 SDR, at most 60 frames a second, with stereo AAC.
+    /// [`FULL_MAX`] long, 8-bit 4:2:0 SDR, at most 60 frames a second, with
+    /// stereo AAC.
     pub async fn transcode(
         &self,
         container: Container,
@@ -480,9 +480,9 @@ impl Tools {
         // Generous: a slow machine converting 1080p30 runs well below real
         // time, and 4K60 is eight times the pixels a second.
         let (w, h) = probe.shown();
-        let load = (f64::from(w) * f64::from(h) * probe.video.fps.max(1.0)
-            / (1920.0 * 1080.0 * 30.0))
-            .max(1.0);
+        // The frame rate is the file's word, held to what is made.
+        let fps = probe.video.fps.clamp(1.0, 60.0);
+        let load = (f64::from(w) * f64::from(h) * fps / (1920.0 * 1080.0 * 30.0)).max(1.0);
         let limit =
             Duration::from_secs(600) + Duration::from_secs_f64(probe.duration * 20.0 * load);
         let mut each = |line: &str| {
@@ -744,7 +744,8 @@ impl Probe {
     }
 
     /// Whether it is what a conversion would make: H.264, 8-bit 4:2:0, SDR,
-    /// at most [`FULL_MAX`] long, with AAC or MP3 sound or none.
+    /// at most [`FULL_MAX`] long and 60 frames a second, with stereo AAC or
+    /// MP3 sound or none. Its bitrate is kept, however high.
     pub fn compatible(&self) -> bool {
         let v = &self.video;
         let (w, h) = self.shown();
@@ -752,10 +753,11 @@ impl Probe {
             && matches!(v.pix_fmt.as_str(), "yuv420p" | "yuvj420p")
             && !self.hdr()
             && w.max(h) <= FULL_MAX
+            && v.fps <= 61.0
             && self
                 .audio
                 .as_ref()
-                .is_none_or(|a| matches!(a.codec.as_str(), "aac" | "mp3"))
+                .is_none_or(|a| matches!(a.codec.as_str(), "aac" | "mp3") && a.channels <= 2)
     }
 
     /// Output held to the length the file declared, which the length limit

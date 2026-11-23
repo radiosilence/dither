@@ -14,7 +14,7 @@ use std::time::Duration;
 use askama::Template;
 use askama_gettext::Translate as _;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 
@@ -293,34 +293,40 @@ async fn owned(state: &AppState, session: &Session, id: &str) -> AppResult<crate
 
 /// `/albums/<id>`: the album's editor for its owner. Its address is what a
 /// browser's bar shows, so it is what people copy: anyone else is sent to the
-/// page its link shares, unless the album is private, and someone not signed
-/// in to sign-in, which says nothing of whether the album exists.
+/// page its link shares, unless the album is private. Someone not signed in
+/// whose browser has held a session, likely its owner, goes to sign-in, as
+/// does anyone for a private or missing album, which says nothing of whether
+/// it exists.
 pub async fn album(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    uri: Uri,
     headers: HeaderMap,
-) -> Response {
+) -> AppResult<Response> {
     let session = crate::auth::extract::current(&state, &headers).await;
     let found = if crate::id::valid(&id) {
-        state.db.album(&id).await.ok().flatten()
+        state.db.album(&id).await?
     } else {
         None
     };
-    match (session, found) {
+    let page_load = crate::auth::extract::is_page_load(&headers);
+    let lapsed = crate::auth::cookie::session_id(&headers).is_some();
+    let sign_in = || {
+        let path = uri.path_and_query().map_or("/", |p| p.as_str());
+        Redirect::to(&crate::auth::routes::login_url(path)).into_response()
+    };
+    Ok(match (session, found) {
         (Some(session), Some(album)) if album.owner == session.sub => {
-            match editor(&state, &session, album).await {
-                Ok(html) => Html(html).into_response(),
-                Err(e) => e.into_response(),
-            }
+            Html(editor(&state, &session, album).await?).into_response()
         }
+        (None, _) if lapsed && page_load => sign_in(),
         (_, Some(album)) if !album.private => {
             Redirect::to(&format!("{}/a/{}", state.config.public_url, album.id)).into_response()
         }
-        (None, _) => {
-            Redirect::to(&crate::auth::routes::login_url(&format!("/albums/{id}"))).into_response()
-        }
-        (Some(_), _) => AppError::NotFound.into_response(),
-    }
+        (None, _) if page_load => sign_in(),
+        (None, _) => StatusCode::UNAUTHORIZED.into_response(),
+        (Some(_), _) => return Err(AppError::NotFound),
+    })
 }
 
 async fn editor(state: &AppState, session: &Session, album: crate::db::Album) -> AppResult<String> {

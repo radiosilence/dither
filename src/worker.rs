@@ -498,8 +498,8 @@ impl Worker {
         Ok(made)
     }
 
-    /// A video: probed, remuxed without metadata, given a playback copy when
-    /// browsers would not play it, and a frame for its pictures.
+    /// A video: probed, kept as recorded or converted to H.264 (either way
+    /// without metadata), and a frame of it taken for its pictures.
     async fn video(&self, job: &Claimed, stop: watch::Receiver<bool>) -> Result<Made, Problem> {
         // ffmpeg failing on a file it probed, or running past a limit
         // generous to the slowest machine, is the file's doing: retrying
@@ -589,17 +589,27 @@ impl Worker {
                 .map_err(failed("transcoding"))?;
         }
         // What was made is what is stored, plays and downloads: its own size
-        // and length, read back.
-        let stored = tools
-            .probe(Container::Mp4, &made)
-            .await
-            .map_err(|e| Problem::Failed(format!("reading what was made: {e}")))?;
-
+        // and length, read back, or failing that the upload's, which it
+        // shares unless it was scaled down from beyond 4K.
+        let stored = match tools.probe(Container::Mp4, &made).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                tracing::warn!(id, error = %e, "reading back what was made");
+                probe.clone()
+            }
+        };
+        // Kept in HDR, its frame is tone-mapped where the build can; should
+        // that fail, a frame as it is beats no picture at all.
+        let hdr = kept && stored.hdr();
         let at = (stored.duration / 3.0).min(1.0);
-        let png = tools
-            .frame(&made, at, stored.hdr(), &stop)
-            .await
-            .map_err(failed("taking a frame"))?;
+        let png = match tools.frame(&made, at, hdr, &stop).await {
+            Err(e) if hdr && !*stop.borrow() => {
+                tracing::warn!(id, error = %e, "tone-mapping a frame");
+                tools.frame(&made, at, false, &stop).await
+            }
+            done => done,
+        }
+        .map_err(failed("taking a frame"))?;
         let cost = crate::media::cost(&png, png.len() as u64, self.max_pixels)
             .map_err(|e| Problem::Failed(format!("the frame: {e}")))?;
         let still = {

@@ -430,10 +430,10 @@ impl Uploads {
                 Err(why) => return self.reject(&upload, why.into()).await,
             }
         };
-        // A video's original and its playback copy are made beside the
-        // upload before it goes.
+        // A video is made beside its upload before the upload goes, and
+        // H.264 at CRF 18 from a phone's HEVC can be three times its size.
         let needed = if video {
-            upload.size.saturating_mul(2)
+            upload.size.saturating_mul(4)
         } else {
             upload.size
         };

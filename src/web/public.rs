@@ -22,7 +22,7 @@
 //! An animated picture small enough is its own preview, so it plays where
 //! previews do.
 //!
-//! A video's page names its playback copy as `og:video` and a frame as its
+//! A video's page names the file that plays as `og:video` and a frame as its
 //! picture. Every file is served with byte ranges, which seeking a video
 //! needs and Safari requires before it plays one at all.
 

@@ -11,8 +11,9 @@
 //!
 //! A file's `type` is the MIME type its browser gives: a video's is held to
 //! the video limit rather than the image one. `as_recorded` keeps a batch's
-//! videos as they were recorded; otherwise they are converted to H.264. The bytes decide what it is
-//! when it finishes, and a video finishes as processing: its copies follow.
+//! videos as they were recorded; otherwise they are converted to H.264. The
+//! bytes decide what it is when it finishes, and a video finishes as
+//! processing: what is kept of it follows.
 //!
 //! ```text
 //! DELETE /api/uploads/{id}
@@ -157,7 +158,6 @@ pub async fn begin(
             "the disk is nearly full, so nothing more can be stored",
         );
     }
-    let batch_as_recorded = batch.as_recorded;
     let files = batch
         .files
         .into_iter()
@@ -165,7 +165,7 @@ pub async fn begin(
         .collect();
     match state
         .db
-        .begin_uploads(&session.sub, &album, files, batch_as_recorded)
+        .begin_uploads(&session.sub, &album, files, batch.as_recorded)
         .await
     {
         Ok(Some(uploads)) => Json(json!({

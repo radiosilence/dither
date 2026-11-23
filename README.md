@@ -192,7 +192,7 @@ DELETE /api/uploads/{id}
 
 A file's `type`, the browser's MIME type, holds a video to the video limit
 rather than the image one; the bytes decide what a file is when it finishes.
-A video finishes `processing`, and its copies follow.
+A video finishes `processing`, and what is kept of it follows.
 
 Every request needs a session and, if it writes, an `X-Dither` or
 `Datastar-Request` header. A chunk answered 408, 429 or a 5xx other than 507

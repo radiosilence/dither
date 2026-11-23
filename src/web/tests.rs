@@ -1095,6 +1095,20 @@ async fn an_albums_app_address_sends_anyone_but_its_owner_to_its_link() {
     assert_eq!(hidden.status, StatusCode::NOT_FOUND);
     let none = app.get_as("/albums/AAAAAAAAAA", &bob).await;
     assert_eq!(none.status, StatusCode::NOT_FOUND);
+    // A browser whose session has lapsed is likely its owner's: sign-in,
+    // coming back to the address as it was.
+    app.post(
+        &format!("/albums/{album}/meta"),
+        json!({ "private": false }),
+    )
+    .await;
+    let lapsed = app.get_as(&format!("/albums/{album}?x=1"), "expired").await;
+    assert_eq!(lapsed.status, StatusCode::SEE_OTHER);
+    let to = lapsed.header("location");
+    assert!(
+        to.starts_with("/auth/login?next=") && to.contains("x%3D1"),
+        "{to}"
+    );
 }
 
 #[tokio::test]
