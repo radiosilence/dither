@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.2
+
+### Fixed
+
+- **A widely shared image costs the bucket one read.** Requests for an image in neither cache wait for the first to fetch it and share what it found, where each fetched it before: 200 at once for a new thumbnail made 199 reads of the bucket. The disk cache's floor above `MIN_FREE_BYTES` is one largest upload rather than two, which on a small disk left it next to nothing. Range requests that miss now count in `dither_cache_misses_total`, other than a worker's reads of uploads.
+
 ## 0.10.1
 
 ### Added
