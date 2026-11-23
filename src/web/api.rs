@@ -3,10 +3,17 @@
 //!
 //! ```text
 //! POST   /api/albums                 {title?}            → {id}
-//! POST   /api/albums/{id}/uploads    {files: [{name, size}]} → {uploads: [{id}], chunk}
+//! POST   /api/albums/{id}/uploads    {files: [{name, size, type?}]} → {uploads: [{id}], chunk}
 //! PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 //! GET    /api/uploads/{id}                               → {received, size, image?, error?}
-//! POST   /api/uploads/{id}/finish                        → {image: {...}} | {error}
+//! POST   /api/uploads/{id}/finish                        → {image: {..., processing}} | {error}
+//! ```
+//!
+//! A file's `type` is the MIME type its browser gives: a video's is held to
+//! the video limit rather than the image one. The bytes decide what it is
+//! when it finishes, and a video finishes as processing: its copies follow.
+//!
+//! ```text
 //! DELETE /api/uploads/{id}
 //! ```
 
@@ -56,6 +63,37 @@ pub async fn create_album(
 pub struct File {
     name: String,
     size: u64,
+    #[serde(default, rename = "type")]
+    mime: String,
+}
+
+/// The video types dither takes, as browsers name them: the containers
+/// `sanitize::sniff_video` knows.
+pub const VIDEO_TYPES: [&str; 7] = [
+    "video/mp4",
+    "video/quicktime",
+    "video/x-m4v",
+    "video/3gpp",
+    "video/3gpp2",
+    "video/webm",
+    "video/x-matroska",
+];
+
+impl File {
+    /// Whether the browser says it is a video dither takes, or its name does
+    /// when the browser says nothing.
+    fn video(&self) -> bool {
+        let ext = self
+            .name
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_lowercase());
+        VIDEO_TYPES.contains(&self.mime.as_str())
+            || (self.mime.is_empty()
+                && matches!(
+                    ext.as_deref(),
+                    Some("mp4" | "mov" | "m4v" | "3gp" | "webm" | "mkv")
+                ))
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -75,15 +113,36 @@ pub async fn begin(
             format!("send between 1 and {BATCH_MAX} files at a time"),
         );
     }
-    let max = state.config.max_upload_bytes;
-    if let Some(f) = batch.files.iter().find(|f| f.size == 0 || f.size > max) {
+    // A video this server does not take is told so now, not after it has
+    // all arrived.
+    let videos = state.uploads.max_video_bytes();
+    if let Some(f) = batch
+        .files
+        .iter()
+        .find(|f| (f.mime.starts_with("video/") || f.video()) && (videos.is_none() || !f.video()))
+    {
+        let why = if videos.is_none() {
+            format!("{}: this server doesn't take videos", f.name)
+        } else {
+            format!(
+                "{}: MP4, MOV and WebM videos are taken, not {}",
+                f.name, f.mime
+            )
+        };
+        return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, why);
+    }
+    let max = |f: &File| match videos {
+        Some(max) if f.video() => max,
+        _ => state.config.max_upload_bytes,
+    };
+    if let Some(f) = batch.files.iter().find(|f| f.size == 0 || f.size > max(f)) {
         return error(
             StatusCode::PAYLOAD_TOO_LARGE,
             format!(
                 "{} is {}; the limit is {}",
                 f.name,
                 crate::web::human(f.size),
-                crate::web::human(max)
+                crate::web::human(max(f))
             ),
         );
     }
@@ -236,6 +295,7 @@ pub async fn finish(
                     "width": i.width,
                     "height": i.height,
                     "bytes": i.bytes,
+                    "processing": !i.ready(),
                 }}))
                 .into_response()
             }

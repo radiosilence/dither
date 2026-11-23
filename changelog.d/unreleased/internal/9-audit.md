@@ -1,0 +1,1 @@
+- **The security audit runs cargo-audit directly.** The action it replaces failed now and then updating its own check run after a clean audit, failing releases.

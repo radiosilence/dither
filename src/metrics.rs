@@ -22,6 +22,9 @@ static UPLOADS: AtomicU64 = AtomicU64::new(0);
 static UPLOAD_BYTES: AtomicU64 = AtomicU64::new(0);
 static REJECTED: AtomicU64 = AtomicU64::new(0);
 static PROCESS_MS: AtomicU64 = AtomicU64::new(0);
+static VIDEOS: AtomicU64 = AtomicU64::new(0);
+static VIDEO_FAILURES: AtomicU64 = AtomicU64::new(0);
+static VIDEO_MS: AtomicU64 = AtomicU64::new(0);
 static SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
 static SNAPSHOT_FAILURES: AtomicU64 = AtomicU64::new(0);
 static SNAPSHOT_AT: AtomicU64 = AtomicU64::new(0);
@@ -39,10 +42,31 @@ pub fn cache(hit: bool) {
     if hit { &CACHE_HITS } else { &CACHE_MISSES }.fetch_add(1, Relaxed);
 }
 
-pub fn uploaded(bytes: u64, took: std::time::Duration) {
-    UPLOADS.fetch_add(1, Relaxed);
-    UPLOAD_BYTES.fetch_add(bytes, Relaxed);
-    PROCESS_MS.fetch_add(took.as_millis() as u64, Relaxed);
+/// A job a worker ended: made or not, a video or a picture, how long it
+/// took, and its original's size when made.
+/// A refusal is the file's doing; a picture that failed on this side counts
+/// in neither.
+pub fn processed(made: bool, refused: bool, video: bool, took: std::time::Duration, bytes: u64) {
+    let ms = took.as_millis() as u64;
+    match (made, video) {
+        (true, false) => {
+            UPLOADS.fetch_add(1, Relaxed);
+            UPLOAD_BYTES.fetch_add(bytes, Relaxed);
+            PROCESS_MS.fetch_add(ms, Relaxed);
+        }
+        (false, false) => {
+            if refused {
+                REJECTED.fetch_add(1, Relaxed);
+            }
+        }
+        (made, true) => {
+            if made { &VIDEOS } else { &VIDEO_FAILURES }.fetch_add(1, Relaxed);
+            VIDEO_MS.fetch_add(ms, Relaxed);
+            if made {
+                UPLOAD_BYTES.fetch_add(bytes, Relaxed);
+            }
+        }
+    }
 }
 
 pub fn rejected() {
@@ -134,6 +158,24 @@ pub fn render(t: &Totals) -> String {
         "counter",
         "Time spent cleaning and resizing uploads.",
         &one(PROCESS_MS.load(Relaxed)),
+    );
+    metric(
+        "dither_videos_total",
+        "counter",
+        "Videos processed.",
+        &one(VIDEOS.load(Relaxed)),
+    );
+    metric(
+        "dither_video_failures_total",
+        "counter",
+        "Videos whose processing failed or was stopped.",
+        &one(VIDEO_FAILURES.load(Relaxed)),
+    );
+    metric(
+        "dither_video_milliseconds_total",
+        "counter",
+        "Time spent processing videos.",
+        &one(VIDEO_MS.load(Relaxed)),
     );
     metric(
         "dither_snapshots_total",

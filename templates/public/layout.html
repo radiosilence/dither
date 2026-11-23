@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {# A title for the preview: the one a person gave, or what the page holds. #}
-{% macro og_title() %}{% if !og.title.is_empty() %}{{ og.title }}{% else if og.album_count.is_some() %}{{ __n("%{count} image", "%{count} images", og.album_count.unwrap_or_default()) }}{% else %}{{ __("an image") }}{% endif %}{% endmacro %}
+{% macro og_title() %}{% if !og.title.is_empty() %}{{ og.title }}{% else if og.album_count.is_some() %}{{ __n("%{count} image", "%{count} images", og.album_count.unwrap_or_default()) }}{% else if og.video.is_some() %}{{ __("a video") }}{% else %}{{ __("an image") }}{% endif %}{% endmacro %}
 {% block title %}{% call og_title() %}{% endcall %}{% endblock %}
 {% block head %}
 <meta name="robots" content="noindex">
+{% if video %}<script type="module" src="{{ player_js_url() }}"></script>{% endif %}
 <link rel="canonical" href="{{ og.url }}">
-<meta property="og:type" content="website">
+<meta property="og:type" content="{% if og.video.is_some() %}video.other{% else %}website{% endif %}">
 <meta property="og:title" content="{% call og_title() %}{% endcall %}">
 <meta property="og:url" content="{{ og.url }}">
 {% if !og.description.is_empty() %}
@@ -20,6 +21,13 @@
 {% if !img.alt.is_empty() %}<meta property="og:image:alt" content="{{ img.alt }}">{% endif %}
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="{{ img.url }}">
+{% endif %}
+{% if let Some(v) = og.video.as_ref() %}
+<meta property="og:video" content="{{ v.url }}">
+<meta property="og:video:secure_url" content="{{ v.url }}">
+<meta property="og:video:type" content="video/mp4">
+<meta property="og:video:width" content="{{ v.width }}">
+<meta property="og:video:height" content="{{ v.height }}">
 {% endif %}
 <meta name="twitter:title" content="{% call og_title() %}{% endcall %}">
 {% endblock %}

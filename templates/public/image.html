@@ -1,10 +1,15 @@
 {% extends "public/layout.html" %}
+{% import "player.html" as player %}
 {% block main %}
 <main class="mx-auto max-w-[1600px] pb-24">
   <figure class="single">
+    {% if let Some(c) = pic.clip.as_ref() %}
+    {% call player::clip(c) %}{% endcall %}
+    {% else %}
     <a href="{{ pic.file }}">
       <img src="{{ pic.src }}"{% if !pic.srcset.is_empty() %} srcset="{{ pic.srcset }}" sizes="100vw"{% endif %} width="{{ pic.width }}" height="{{ pic.height }}" alt="{{ pic.caption }}" fetchpriority="high" decoding="async">
     </a>
+    {% endif %}
     {% if !pic.caption.is_empty() %}<figcaption class="prose">{{ pic.caption }}</figcaption>{% endif %}
   </figure>
   <p class="mx-auto max-w-[1000px] px-[22px] text-meta text-muted">

@@ -7,7 +7,9 @@
 //! never holds more than a few thousand entries.
 //!
 //! An image's copies are its original, a thumbnail, a display copy when it
-//! is large, and a link preview.
+//! is large, and a link preview. A video's display copy is the one browsers
+//! play, when the original is not; its thumbnail and preview are of a frame.
+//! Videos are written from files and read in ranges, never held whole.
 //!
 //! Reads go through an in-memory cache weighted by size. Thumbnails are what a
 //! grid asks for a hundred at a time; originals are cached up to
@@ -22,7 +24,7 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
 use object_store::path::Path;
-use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
+use object_store::{GetOptions, GetRange, ObjectStore, ObjectStoreExt, PutPayload};
 
 /// Objects larger than this are streamed rather than cached.
 pub const CACHE_ITEM_MAX: u64 = 8 << 20;
@@ -177,6 +179,91 @@ impl Store {
         Ok(())
     }
 
+    /// Store the file at `path` under `key`, streamed rather than read whole
+    /// (a video can be larger than the memory processing may take), and say
+    /// its length and SHA-256, taken in the same pass.
+    pub async fn put_file(&self, key: &Path, path: &FsPath) -> Result<(u64, [u8; 32])> {
+        use sha2::Digest as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        self.cache.remove(key);
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("opening {}", path.display()))?;
+        let mut writer = object_store::buffered::BufWriter::new(self.inner.clone(), key.clone());
+        let mut hash = sha2::Sha256::new();
+        let mut buf = vec![0u8; 1 << 20];
+        let mut len = 0u64;
+        let copied = async {
+            loop {
+                let n = file.read(&mut buf).await?;
+                if n == 0 {
+                    return Ok::<_, std::io::Error>(());
+                }
+                hash.update(&buf[..n]);
+                len += n as u64;
+                writer.write_all(&buf[..n]).await?;
+            }
+        }
+        .await;
+        if let Err(e) = copied {
+            let _ = writer.abort().await;
+            return Err(e).with_context(|| format!("storing {key}"));
+        }
+        writer
+            .shutdown()
+            .await
+            .with_context(|| format!("storing {key}"))?;
+        Ok((len, hash.finalize().into()))
+    }
+
+    /// Part of the object, as `range` asks: what of it there is, or that
+    /// none of it is in the object; `None` when there is no object. One read
+    /// when the range is in the object, as nearly every request's is.
+    pub async fn get_range(
+        &self,
+        key: &Path,
+        range: GetRange,
+    ) -> object_store::Result<Option<Part>> {
+        if let Some(hit) = self.cache.get(key) {
+            crate::metrics::cache(true);
+            let total = hit.len() as u64;
+            return Ok(Some(match bounds(&range, total) {
+                Some(r) => Part::Within {
+                    body: Body::Bytes(hit.slice(r.start as usize..r.end as usize)),
+                    range: r,
+                    total,
+                },
+                None => Part::Outside { total },
+            }));
+        }
+        let options = GetOptions {
+            range: Some(range.clone()),
+            ..GetOptions::default()
+        };
+        match self.inner.get_opts(key, options).await {
+            Ok(result) => {
+                let (r, total) = (result.range.clone(), result.meta.size);
+                Ok(Some(Part::Within {
+                    body: Body::Stream {
+                        size: r.end - r.start,
+                        stream: result.into_stream(),
+                    },
+                    range: r,
+                    total,
+                }))
+            }
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            // Each store words a range outside the object differently, so
+            // its length decides whether that is what this was.
+            Err(e) => match self.inner.head(key).await {
+                Ok(meta) if bounds(&range, meta.size).is_none() => {
+                    Ok(Some(Part::Outside { total: meta.size }))
+                }
+                _ => Err(e),
+            },
+        }
+    }
+
     /// The object, or `None` when there is none.
     pub async fn get(&self, key: &Path) -> object_store::Result<Option<Body>> {
         if let Some(hit) = self.cache.get(key) {
@@ -246,6 +333,28 @@ impl Store {
     pub fn dir(&self) -> Option<&FsPath> {
         self.dir.as_deref()
     }
+}
+
+/// What a ranged read found.
+pub enum Part {
+    Within {
+        body: Body,
+        range: std::ops::Range<u64>,
+        total: u64,
+    },
+    /// None of the range is in an object of `total` bytes.
+    Outside { total: u64 },
+}
+
+/// The bytes `range` names in an object of `len`, or `None` when it names
+/// none of them.
+pub fn bounds(range: &GetRange, len: u64) -> Option<std::ops::Range<u64>> {
+    let r = match range {
+        GetRange::Bounded(r) => r.start..r.end.min(len),
+        GetRange::Offset(start) => *start..len,
+        GetRange::Suffix(n) => len.saturating_sub(*n)..len,
+    };
+    (r.start < r.end).then_some(r)
 }
 
 /// Bytes free to an unprivileged writer, and the size, of the filesystem
@@ -386,6 +495,86 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn a_file_is_stored_whole_and_read_back_in_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("clip");
+        let bytes: Vec<u8> = (0..(3 << 20)).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let store = Store::memory();
+        let k = key(Variant::Original, "abcdefghij");
+        let (len, sha) = store.put_file(&k, &path).await.unwrap();
+        assert_eq!(len, bytes.len() as u64);
+        assert_eq!(
+            sha,
+            <[u8; 32]>::from(<sha2::Sha256 as sha2::Digest>::digest(&bytes))
+        );
+        assert_eq!(store.read(&k).await.unwrap().as_deref(), Some(&bytes[..]));
+        let read = |body: Body| async {
+            match body {
+                Body::Bytes(b) => b.to_vec(),
+                Body::Stream { stream, .. } => stream
+                    .map(|c| c.unwrap().to_vec())
+                    .collect::<Vec<_>>()
+                    .await
+                    .concat(),
+            }
+        };
+        let within = |part: Option<Part>| match part {
+            Some(Part::Within { body, range, total }) => (body, range, total),
+            _ => panic!("expected part of the object"),
+        };
+        let (body, range, total) = within(
+            store
+                .get_range(&k, GetRange::Bounded(1000..2000))
+                .await
+                .unwrap(),
+        );
+        assert_eq!((range, total), (1000..2000, bytes.len() as u64));
+        assert_eq!(read(body).await, &bytes[1000..2000]);
+        let (body, range, _) = within(store.get_range(&k, GetRange::Suffix(10)).await.unwrap());
+        assert_eq!(range.start, bytes.len() as u64 - 10);
+        assert_eq!(read(body).await, &bytes[bytes.len() - 10..]);
+        let past = bytes.len() as u64 + 5;
+        assert!(matches!(
+            store.get_range(&k, GetRange::Offset(past)).await.unwrap(),
+            Some(Part::Outside { total }) if total == bytes.len() as u64
+        ));
+        // A cached object is sliced from memory.
+        let t = key(Variant::Thumb, "abcdefghij");
+        store
+            .put(&t, Bytes::from_static(b"0123456789"))
+            .await
+            .unwrap();
+        let (body, range, total) =
+            within(store.get_range(&t, GetRange::Bounded(2..5)).await.unwrap());
+        assert_eq!(
+            (read(body).await, range, total),
+            (b"234".to_vec(), 2..5, 10)
+        );
+        assert!(matches!(
+            store.get_range(&t, GetRange::Offset(10)).await.unwrap(),
+            Some(Part::Outside { total: 10 })
+        ));
+        assert!(
+            store
+                .get_range(&key(Variant::Original, "nothing"), GetRange::Offset(0))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ranges_fall_within_the_object_or_outside_it() {
+        assert_eq!(bounds(&GetRange::Bounded(0..100), 50), Some(0..50));
+        assert_eq!(bounds(&GetRange::Offset(10), 50), Some(10..50));
+        assert_eq!(bounds(&GetRange::Offset(50), 50), None);
+        assert_eq!(bounds(&GetRange::Suffix(500), 50), Some(0..50));
+        assert_eq!(bounds(&GetRange::Suffix(0), 50), None);
+        assert_eq!(bounds(&GetRange::Bounded(49..1000), 50), Some(49..50));
     }
 
     #[test]

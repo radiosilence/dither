@@ -1,35 +1,49 @@
+{% import "player.html" as player %}
+{% import "app/macros.html" as m %}
 <div id="viewer-body" class="viewer-body" data-image="{{ id }}">
   <div class="viewer-bar">
     <span class="text-meta text-muted">{{ __("%{n} of %{total}").with("n", position).with("total", total) }}</span>
     <span class="flex-1"></span>
-    <a class="icon-button" href="{{ file }}" download="{{ download }}" aria-label="{{ __("download") }}">{{ icon("download", 18.0)|safe }}</a>
+    {% if progress.is_none() && failure.is_none() %}<a class="icon-button" href="{{ file }}" download="{{ download }}" aria-label="{{ __("download") }}">{{ icon("download", 18.0)|safe }}</a>{% endif %}
     <button class="icon-button" data-close aria-label="{{ __p("Button: close the viewer", "close") }}">{{ icon("close", 18.0)|safe }}</button>
   </div>
   <div class="stage">
+    {% if let Some(c) = clip.as_ref() %}
+    {% call player::clip(c) %}{% endcall %}
+    {% else if let Some(done) = progress %}
+    <div class="stage-wait"><p>{{ __("Processing. It can be shared once it's done.") }}</p><progress class="meter" data-progress-of="{{ id }}" max="1000" value="{{ done }}"></progress></div>
+    {% else if let Some(why) = failure.as_ref() %}
+    <div class="stage-wait bad">{{ icon("warning", 22.0)|safe }}<p>{% call m::failure(why) %}{% endcall %}</p></div>
+    {% else %}
     <img src="{{ src }}" width="{{ width }}" height="{{ height }}" alt="{{ caption }}" decoding="async" draggable="false">
+    {% endif %}
     {% if let Some(p) = prev.as_ref() %}<button class="nav prev" aria-label="{{ __("previous image") }}" data-key="ArrowLeft" data-on:click="@get('/images/{{ p }}/view')">{{ icon("chevron-left", 22.0)|safe }}</button>{% endif %}
     {% if let Some(n) = next.as_ref() %}<button class="nav next" aria-label="{{ __("next image") }}" data-key="ArrowRight" data-on:click="@get('/images/{{ n }}/view')">{{ icon("chevron-right", 22.0)|safe }}</button>{% endif %}
   </div>
   <div class="viewer-panel">
     <textarea class="text-field" rows="2" placeholder="{{ __("Add a caption") }}" aria-label="{{ __("caption") }}" maxlength="20000"
       data-on:input__debounce.600ms="@post('/images/{{ id }}/caption', {payload: {caption: el.value}})">{{ caption }}</textarea>
+    {% if progress.is_none() && failure.is_none() %}
     <dl class="links">
       <dt>{{ __p("Share link: the image's page", "page") }}</dt>
       <dd><input readonly value="{{ links.page }}" aria-label="{{ __("link to the image's page") }}" data-select><button class="icon-button" data-copy="{{ links.page }}" aria-label="{{ __("copy the link to the image's page") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
       <dt>{{ __p("Share link: the image file", "image") }}</dt>
       <dd><input readonly value="{{ links.file }}" aria-label="{{ __("link to the image file") }}" data-select><button class="icon-button" data-copy="{{ links.file }}" aria-label="{{ __("copy the link to the image file") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
+      {% if !video %}
       <dt>{{ __p("Share link: the image in Markdown", "markdown") }}</dt>
       <dd><input readonly value="{{ links.markdown }}" aria-label="{{ __("the image in Markdown") }}" data-select><button class="icon-button" data-copy="{{ links.markdown }}" aria-label="{{ __("copy the Markdown") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
       <dt>{{ __p("Share link: the image in forum BBCode", "bbcode") }}</dt>
       <dd><input readonly value="{{ links.bbcode }}" aria-label="{{ __("the image in BBCode") }}" data-select><button class="icon-button" data-copy="{{ links.bbcode }}" aria-label="{{ __("copy the BBCode") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
+      {% endif %}
       <dt>{{ __p("Share link: the image in HTML", "html") }}</dt>
       <dd><input readonly value="{{ links.html }}" aria-label="{{ __("the image in HTML") }}" data-select><button class="icon-button" data-copy="{{ links.html }}" aria-label="{{ __("copy the HTML") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
     </dl>
+    {% endif %}
     <div class="flex flex-wrap gap-2">
       <button{% if is_cover %} disabled{% endif %} data-on:click="@post('/albums/{{ album }}/cover', {payload: {image: '{{ id }}'}})">{% if is_cover %}{{ __("album cover") }}{% else %}{{ __("make cover") }}{% endif %}</button>
       <button data-move-one="{{ id }}">{{ icon("album", 13.0)|safe }} {{ __p("Button: move images to another album", "move") }}</button>
       <button class="bad" data-delete-one="{{ id }}">{{ icon("trash", 13.0)|safe }} {{ __p("Button", "delete") }}</button>
     </div>
-    <p class="m-0 text-fine break-all text-muted">{{ name }} · {{ width_full }}×{{ height_full }} · {{ size }}{% if animated %} · {{ __("animated") }}{% endif %}</p>
+    <p class="m-0 text-fine break-all text-muted">{{ name }}{% if progress.is_none() && failure.is_none() %} · {{ width_full }}×{{ height_full }}{% endif %}{% if let Some(length) = length.as_ref() %} · {{ length }}{% endif %} · {{ size }}{% if animated %} · {{ __("animated") }}{% endif %}</p>
   </div>
 </div>

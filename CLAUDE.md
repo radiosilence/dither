@@ -4,10 +4,11 @@ An image host: axum, askama, Datastar and Tailwind, with images in an object sto
 
 ## Rules that hold the design together
 
-- Nothing an upload carries reaches the store without passing through `sanitize::clean`; `media::process` is the only caller that writes originals, and it reads the cleaned bytes back to prove they decode.
+- Nothing an upload carries reaches the store without passing through `sanitize::clean` (in `media::process`, which reads the cleaned bytes back to prove they decode) or, for a video, ffmpeg's remux without metadata (`video::Tools::remux`). Only the worker (`worker.rs`) writes copies; the web process decodes nothing. Every ffmpeg run goes through `Tools::run` with `Tools::input`'s limits.
+- The database is the queue: a job is an image row in state `processing`, claimed with a lease. The socket between the web process and a worker (`jobs.rs`) only says what happened; whatever it misses, the rows still say what is waiting, made or failed. A write the worker makes is announced to the web process (`FromWorker::Ended`), which redraws pages and prompts a snapshot (`Db::announce`).
 - Every database write that a person can cause takes the owner and checks it in the same statement. Handlers never check ownership themselves and then write.
 - Routes behind sign-in go in the `protected` router in `web/mod.rs`; public routes take no session and must work on the public domain, which has no cookies.
-- The public pages carry no script. Image files are served with `CSP: default-src 'none'; sandbox`.
+- The public pages carry no script but the video player's (`browser/player.ts`), loaded only on a page with a video. Image files are served with `CSP: default-src 'none'; sandbox`; video files also allow `media-src 'self'`, for the player a browser makes of one opened on its own.
 - Store keys are built by `store::key` from ids checked by `id::valid`; nothing a client sends becomes part of a path otherwise.
 
 ## Git
@@ -37,7 +38,7 @@ just css     # after changing styles/, a template or class strings in src/
 
 ## Frontend
 
-- Tailwind v4, standalone CLI from mise, with `@radiosilence/theme` for the tokens. Class names written in Rust or `browser/app.ts` must be literal strings so Tailwind's `@source` finds them.
+- Tailwind v4, standalone CLI from mise, with `@radiosilence/theme` for the tokens. Class names written in Rust or `browser/*.ts` must be literal strings so Tailwind's `@source` finds them.
 - The CSP has no `unsafe-inline`: no `style=""` and no inline scripts. The script may set styles through the CSSOM (`el.style`, `el.animate`), which the CSP allows.
 - The script is TypeScript, typechecked by `just js` and stripped by `build.rs` (oxc) into what the binary embeds. Keep it erasable syntax only (no enums, namespaces or parameter properties), which `erasableSyntaxOnly` enforces.
 - Every word a page or the script shows is a gettext message in a template (`__`, `__p` for a context, `__n` for plurals), never a string in Rust or the script. The script reads its words from the layout's `<template id="copy">` by key, a counted line once per plural form (`data-n`). `just i18n` after changing a template's words.

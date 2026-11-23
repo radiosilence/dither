@@ -28,6 +28,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   IMAGE: ghcr.io/${{ github.repository }}
+  # The ffmpeg build the image ships (Dockerfile): the tests run against it.
+  FFMPEG_IMAGE: mwader/static-ffmpeg:9.0.2-1@sha256:f5d100184884eb3e82b0eb14bb5ebf98da99826ac824989720297fb9ef21c822
 
 # A pull request's newer push cancels its older run; on main, a newer push
 # cancels an older one that releases nothing. A run that may release is in a
@@ -237,7 +239,17 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: test
           cache-on-failure: true
+      - name: ffmpeg, as the image ships it
+        run: |
+          id=$(docker create "$FFMPEG_IMAGE")
+          sudo docker cp "$id:/ffmpeg" /usr/local/bin/ffmpeg
+          sudo docker cp "$id:/ffprobe" /usr/local/bin/ffprobe
+          docker rm "$id"
+          ffmpeg -hide_banner -version | head -1
+      # Video tests fail here rather than skip when ffmpeg is missing.
       - run: cargo test --workspace --locked
+        env:
+          DITHER_REQUIRE_FFMPEG: "1"
 
   lint:
     name: Lint
@@ -282,17 +294,14 @@ jobs:
     # Blocking. The advisories already in the lockfile are acknowledged in
     # .cargo/audit.toml, when there are any, so this fails on anything new.
     #
-    # The action reports through a GitHub check run, an API write, which the
-    # workflow's read-only token does not allow. Naming any permission drops
-    # the rest to none, so `contents: read` is spelled out.
-    permissions:
-      contents: read
-      checks: write
+    # cargo-audit's exit status is the result: no check run to report through.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # main, post-v2.0.0: node24 runtime
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          toolchain: stable
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
 
   chart:
     name: Chart

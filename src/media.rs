@@ -35,7 +35,6 @@ pub const PREVIEW_BYTES: usize = 300_000;
 const PREVIEW_QUALITIES: [u8; 6] = [82, 72, 62, 50, 40, 30];
 
 pub struct Processed {
-    pub kind: Kind,
     /// As shown: after the orientation is applied.
     pub width: u32,
     pub height: u32,
@@ -59,7 +58,10 @@ pub enum Reject {
 }
 
 fn decoder(bytes: &[u8], kind: Kind) -> Result<impl ImageDecoder + '_, Reject> {
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), kind.image_format());
+    let format = kind
+        .image_format()
+        .ok_or(Reject::Unsupported("a video is not an image"))?;
+    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
     // A 100-megapixel picture at 16 bits a channel, and a little over.
     limits.max_alloc = Some(1 << 30);
@@ -103,6 +105,67 @@ pub fn cost(head: &[u8], size: u64, max_pixels: u64) -> Result<u64, Reject> {
     Ok(2 * size + decoder.total_bytes().max(eight) + eight + copies + preview)
 }
 
+/// What sizing a picture reads before anything else: every header dither
+/// takes ends well within it.
+pub const HEAD: u64 = 4 << 20;
+
+/// The first `n` bytes of the file at `path`, or all of a shorter one.
+pub async fn read_head(path: &std::path::Path, n: u64) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt as _;
+    let mut head = Vec::new();
+    tokio::fs::File::open(path)
+        .await?
+        .take(n)
+        .read_to_end(&mut head)
+        .await?;
+    Ok(head)
+}
+
+/// Why a file could not be sized.
+#[derive(Debug)]
+pub enum Unsized {
+    /// The file is not one dither takes, or is too large to.
+    Refused(Reject),
+    /// It could not be read whole, or is shorter than `size`.
+    Unread(std::io::Error),
+}
+
+/// [`cost`] for the `size`-byte file at `path`: from its first [`HEAD`]
+/// bytes, so a file waiting for the budget is not held in memory, or from
+/// the whole file when its header runs past them.
+pub async fn cost_of(path: &std::path::Path, size: u64, max_pixels: u64) -> Result<u64, Unsized> {
+    let head = read_head(path, HEAD).await.map_err(Unsized::Unread)?;
+    if (head.len() as u64) < size.min(HEAD) {
+        return Err(Unsized::Unread(std::io::ErrorKind::UnexpectedEof.into()));
+    }
+    match cost(&head, size, max_pixels) {
+        Err(Reject::Broken(_)) if (head.len() as u64) < size => {
+            let all = tokio::fs::read(path).await.map_err(Unsized::Unread)?;
+            cost(&all, size, max_pixels).map_err(Unsized::Refused)
+        }
+        other => other.map_err(Unsized::Refused),
+    }
+}
+
+/// A video's thumbnail and link preview, from a frame of it: what
+/// [`process`] makes of a picture, without the original or a display copy,
+/// which a video has of its own.
+pub struct Stills {
+    pub thumb: Vec<u8>,
+    pub preview: Vec<u8>,
+}
+
+pub fn stills(frame: &[u8], max_pixels: u64) -> Result<Stills, Reject> {
+    let kind = sanitize::sniff(frame).map_err(Reject::Unsupported)?;
+    let (img, icc) = decoded(frame, kind, max_pixels, None)?;
+    let (width, height) = (img.width(), img.height());
+    let thumb = resize(&img, thumb_size(width, height));
+    Ok(Stills {
+        preview: jpeg_preview(&img, preview_size(width, height, false), icc.as_deref()),
+        thumb: webp(&thumb, THUMB_QUALITY, icc.as_deref()),
+    })
+}
+
 pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
     let kind = sanitize::sniff(bytes).map_err(Reject::Unsupported)?;
     let orientation = decoder(bytes, kind)?
@@ -132,7 +195,6 @@ pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
     );
     Ok(Processed {
         preview,
-        kind,
         width,
         height,
         animated: clean.animated,
@@ -406,7 +468,6 @@ mod tests {
     fn a_large_photo_gets_a_display_copy_and_a_thumbnail() {
         let p = process(&jpeg(3000, 2000), 100_000_000).unwrap();
         assert_eq!((p.width, p.height), (3000, 2000));
-        assert_eq!(p.kind, Kind::Jpeg);
         assert!(!p.animated);
         assert_eq!(
             dims(p.display.as_ref().expect("a display copy")),
@@ -511,7 +572,6 @@ mod tests {
             p.display.is_none(),
             "a display copy would stop the animation"
         );
-        assert_eq!(p.kind, Kind::Gif);
         assert_eq!(dims(&p.thumb), (1440, 24));
         let still = image::load_from_memory(&p.preview).unwrap();
         assert_eq!((still.width(), still.height()), (1200, 20));

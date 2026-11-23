@@ -10,6 +10,7 @@
 pub mod api;
 pub mod app;
 pub mod assets;
+pub mod clip;
 pub mod public;
 
 use std::convert::Infallible;
@@ -111,7 +112,16 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             security_headers,
         ))
-        .layer(tower_http::compression::CompressionLayer::new())
+        // Video is compressed already, and a compressed range would not be
+        // the range asked for.
+        .layer(
+            tower_http::compression::CompressionLayer::new().compress_when(
+                tower_http::compression::Predicate::and(
+                    tower_http::compression::DefaultPredicate::new(),
+                    tower_http::compression::predicate::NotForContentType::const_new("video/"),
+                ),
+            ),
+        )
         .with_state(state)
 }
 
@@ -191,6 +201,10 @@ pub trait Helpers {
 
     fn app_js_url(&self) -> &'static str {
         assets::app_js_url()
+    }
+
+    fn player_js_url(&self) -> &'static str {
+        assets::player_js_url()
     }
 
     fn icon(&self, name: &str, px: f32) -> String {

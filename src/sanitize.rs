@@ -22,6 +22,18 @@ pub enum Kind {
     Png,
     Gif,
     Webp,
+    /// A video, remuxed into MP4 whatever it arrived as (see `video`).
+    Mp4,
+}
+
+/// The container a video arrives in, from its signature: what ffmpeg is told
+/// to read it as, so it never guesses from the bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Container {
+    /// MP4, MOV, M4V and 3GP: the ISO base media file format.
+    Mp4,
+    /// Matroska and WebM.
+    Matroska,
 }
 
 impl Kind {
@@ -31,6 +43,7 @@ impl Kind {
             Kind::Png => "image/png",
             Kind::Gif => "image/gif",
             Kind::Webp => "image/webp",
+            Kind::Mp4 => "video/mp4",
         }
     }
 
@@ -42,6 +55,7 @@ impl Kind {
             Kind::Png => "png",
             Kind::Gif => "gif",
             Kind::Webp => "webp",
+            Kind::Mp4 => "mp4",
         }
     }
 
@@ -52,6 +66,7 @@ impl Kind {
             Kind::Png => "png",
             Kind::Gif => "gif",
             Kind::Webp => "webp",
+            Kind::Mp4 => "mp4",
         }
     }
 
@@ -61,6 +76,7 @@ impl Kind {
             "png" => Kind::Png,
             "gif" => Kind::Gif,
             "webp" => Kind::Webp,
+            "mp4" => Kind::Mp4,
             _ => return None,
         })
     }
@@ -71,13 +87,19 @@ impl Kind {
         ext == self.ext() || (self == Kind::Jpeg && ext == "jpeg")
     }
 
-    pub fn image_format(self) -> image::ImageFormat {
-        match self {
+    pub fn is_video(self) -> bool {
+        self == Kind::Mp4
+    }
+
+    /// The format the image crate reads it as; `None` for a video.
+    pub fn image_format(self) -> Option<image::ImageFormat> {
+        Some(match self {
             Kind::Jpeg => image::ImageFormat::Jpeg,
             Kind::Png => image::ImageFormat::Png,
             Kind::Gif => image::ImageFormat::Gif,
             Kind::Webp => image::ImageFormat::WebP,
-        }
+            Kind::Mp4 => return None,
+        })
     }
 }
 
@@ -103,8 +125,11 @@ pub fn sniff(bytes: &[u8]) -> Result<Kind, &'static str> {
             b"heic" | b"heix" | b"hevc" | b"heim" | b"heis" | b"mif1" | b"msf1" => {
                 "HEIC isn't supported yet: export it as JPEG (on an iPhone, sharing from Photos does this)"
             }
-            _ => "that looks like a video, and dither only hosts images",
+            _ => "this server doesn't take videos",
         });
+    }
+    if sniff_video(bytes).is_some() {
+        return Err("this server doesn't take videos");
     }
     let text = bytes
         .strip_prefix(b"\xEF\xBB\xBF")
@@ -117,6 +142,30 @@ pub fn sniff(bytes: &[u8]) -> Result<Kind, &'static str> {
         return Err("BMP and TIFF aren't supported: convert it to PNG or JPEG");
     }
     Err("that isn't an image dither can host: JPEG, PNG, GIF and WebP are")
+}
+
+/// The container `bytes` begin as, when it is one videos come in. Image
+/// formats built on the same containers (HEIC and AVIF are ISO base media
+/// files too) are not videos.
+pub fn sniff_video(bytes: &[u8]) -> Option<Container> {
+    if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some(Container::Matroska);
+    }
+    let atom = bytes.get(4..8)?;
+    if atom == b"ftyp" {
+        let brand = bytes.get(8..12)?;
+        let image = matches!(
+            brand,
+            b"avif" | b"avis" | b"heic" | b"heix" | b"hevc" | b"heim" | b"heis" | b"mif1" | b"msf1"
+        );
+        return (!image).then_some(Container::Mp4);
+    }
+    // QuickTime files from before `ftyp` existed open with one of these.
+    matches!(
+        atom,
+        b"moov" | b"mdat" | b"wide" | b"free" | b"skip" | b"pnot"
+    )
+    .then_some(Container::Mp4)
 }
 
 /// A container that could not be parsed. Browsers forgive a great deal; this
@@ -150,6 +199,7 @@ pub fn clean(kind: Kind, bytes: &[u8], orientation: u8) -> Result<Clean, Malform
         Kind::Png => png(bytes, orientation),
         Kind::Gif => gif(bytes),
         Kind::Webp => webp(bytes, orientation),
+        Kind::Mp4 => Err(Malformed("a video is cleaned by remuxing it, not here")),
     }
 }
 
@@ -620,6 +670,29 @@ mod tests {
                 .unwrap_err()
                 .contains("video")
         );
+        assert!(
+            sniff(b"\x1A\x45\xDF\xA3\x01")
+                .unwrap_err()
+                .contains("video")
+        );
+    }
+
+    #[test]
+    fn videos_are_told_from_images_in_the_same_containers() {
+        let ftyp = |brand: &[u8; 4]| [b"\0\0\0\x18ftyp".as_slice(), brand, b"\0\0\0\0"].concat();
+        for brand in [b"isom", b"mp42", b"qt  ", b"M4V ", b"3gp5"] {
+            assert_eq!(sniff_video(&ftyp(brand)), Some(Container::Mp4), "{brand:?}");
+        }
+        for brand in [b"heic", b"avif", b"mif1"] {
+            assert_eq!(sniff_video(&ftyp(brand)), None, "{brand:?}");
+        }
+        assert_eq!(sniff_video(b"\0\0\0\x08wide\0\0"), Some(Container::Mp4));
+        assert_eq!(
+            sniff_video(b"\x1A\x45\xDF\xA3\x9F\x42\x86"),
+            Some(Container::Matroska)
+        );
+        assert_eq!(sniff_video(&plain_jpeg()), None);
+        assert_eq!(sniff_video(b"\0\0"), None);
         assert!(
             sniff(b"  <svg onload=alert(1)>")
                 .unwrap_err()

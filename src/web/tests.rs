@@ -25,24 +25,30 @@ struct App {
     _dir: tempfile::TempDir,
 }
 
-async fn app_with(edit: impl FnOnce(&mut Config)) -> App {
+/// The service as it runs: the web process, and a worker beside it over the
+/// socket, sharing the state directory and the store.
+async fn app_with(edit: impl Fn(&mut Config)) -> App {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::test(dir.path().join("state"));
-    edit(&mut config);
+    let config_for = |dir: &std::path::Path| {
+        let mut config = Config::test(dir.join("state"));
+        edit(&mut config);
+        config
+    };
+    let config = config_for(dir.path());
     std::fs::create_dir_all(&config.state_dir).unwrap();
     let store = Store::memory();
     let db = Db::open(&config.state_dir.join("dither.db")).await.unwrap();
-    let uploads = Arc::new(
-        Uploads::new(
-            db.clone(),
-            store.clone(),
-            &config.state_dir,
-            config.process_memory,
-            config.max_pixels,
-            Some(0),
-        )
-        .unwrap(),
-    );
+    let jobs = Arc::new(crate::jobs::Hub::new(db.clone(), &config.state_dir).unwrap());
+    jobs.listen().unwrap();
+    let uploads = Arc::new(Uploads::new(db.clone(), store.clone(), &config, jobs).unwrap());
+    {
+        let (config, store) = (config_for(dir.path()), store.clone());
+        tokio::spawn(async move {
+            if let Err(e) = crate::worker::run(&config, store).await {
+                tracing::warn!(error = %e, "the test's worker stopped");
+            }
+        });
+    }
     let (stop, stopping) = tokio::sync::watch::channel(false);
     // Kept for the life of the test: a dropped sender reads as stopping.
     std::mem::forget(stop);
@@ -168,6 +174,22 @@ impl App {
     }
 
     async fn upload_to(&self, album: &str, files: &[&[u8]]) -> Vec<Reply> {
+        self.send_files(album, files, true).await
+    }
+
+    /// [`upload`](Self::upload), returning as soon as each file is queued.
+    async fn upload_queued(&self, files: &[&[u8]]) -> (String, Vec<Reply>) {
+        let album = self
+            .post("/api/albums", json!({ "title": "trip" }))
+            .await
+            .json()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (album.clone(), self.send_files(&album, files, false).await)
+    }
+
+    async fn send_files(&self, album: &str, files: &[&[u8]], wait: bool) -> Vec<Reply> {
         let batch = json!({ "files": files.iter().enumerate().map(|(n, f)| json!({ "name": format!("{n}.jpg"), "size": f.len() })).collect::<Vec<_>>() });
         let begun = self
             .post(&format!("/api/albums/{album}/uploads"), batch)
@@ -179,12 +201,21 @@ impl App {
             .zip(begun.json()["uploads"].as_array().unwrap())
         {
             let id = upload["id"].as_str().unwrap();
-            let put = self.chunk(id, file, 0, file.len()).await;
-            assert_eq!(put.status, StatusCode::OK, "{}", put.text());
-            out.push(
-                self.post(&format!("/api/uploads/{id}/finish"), json!({}))
-                    .await,
-            );
+            for start in (0..file.len()).step_by(crate::upload::CHUNK as usize) {
+                let end = (start + crate::upload::CHUNK as usize).min(file.len());
+                let put = self.chunk(id, &file[start..end], start, file.len()).await;
+                assert_eq!(put.status, StatusCode::OK, "{}", put.text());
+            }
+            let finished = self
+                .post(&format!("/api/uploads/{id}/finish"), json!({}))
+                .await;
+            // Queued for the worker: most callers want what it made.
+            if let Some(image) = finished.json()["image"]["id"].as_str()
+                && wait
+            {
+                made(self, image).await;
+            }
+            out.push(finished);
         }
         out
     }
@@ -327,6 +358,12 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
     );
     assert!(html.contains("<meta name=\"robots\" content=\"noindex\">"));
     assert!(!html.contains("<script"), "public pages carry no script");
+    assert!(
+        !page
+            .header("content-security-policy")
+            .contains("script-src"),
+        "nor may they load any"
+    );
     assert_eq!(page.header("x-robots-tag"), "noindex");
 
     let album_page = app.get(&format!("/a/{album}")).await;
@@ -780,4 +817,281 @@ async fn crawlers_are_welcome_and_the_probe_answers() {
         css.header("cache-control"),
         "public, max-age=31536000, immutable"
     );
+}
+
+/// Video `id`'s row once it is no longer processing, waiting up to two
+/// minutes for the worker.
+async fn made(app: &App, id: &str) -> crate::db::Image {
+    for _ in 0..1200 {
+        let (image, _) = app.state.db.image(id).await.unwrap().unwrap();
+        if image.status != crate::db::Status::Processing {
+            return image;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("video {id} was never made");
+}
+
+impl App {
+    async fn get_with(&self, uri: &str, headers: &[(header::HeaderName, &str)]) -> Reply {
+        let mut req = Request::get(uri).header(header::HOST, "app.test");
+        for (name, value) in headers {
+            req = req.header(name, *value);
+        }
+        self.send(req.body(Body::empty()).unwrap()).await
+    }
+}
+
+#[tokio::test]
+async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed() {
+    if crate::video::tests::tools().await.is_none() {
+        return;
+    }
+    let app = app().await;
+    let dir = tempfile::tempdir().unwrap();
+    let phone = std::fs::read(crate::video::tests::phone_clip(dir.path())).unwrap();
+    let (album, done) = app.upload(&[&phone]).await;
+    let id = image_id(&done[0]);
+    assert_eq!(done[0].json()["image"]["processing"], true);
+
+    let image = made(&app, &id).await;
+    assert!(image.ready(), "{}", image.failure);
+    assert_eq!((image.width, image.height), (360, 640));
+    assert!(image.display, "HEVC gets a playback copy");
+    assert!(image.audio);
+    assert!(app.state.uploads.jobs.progress(&id).is_none());
+
+    let whole = app
+        .get_with(
+            &format!("/{id}.mp4"),
+            &[(header::ACCEPT_ENCODING, "gzip, br")],
+        )
+        .await;
+    assert_eq!(whole.status, StatusCode::OK);
+    assert_eq!(whole.header("content-type"), "video/mp4");
+    assert_eq!(whole.header("accept-ranges"), "bytes");
+    assert_eq!(
+        whole.header("content-encoding"),
+        "",
+        "video is never compressed again"
+    );
+    assert_eq!(whole.body.len() as u64, image.bytes);
+    let text = String::from_utf8_lossy(&whole.body);
+    assert!(!text.contains("51.5072") && !text.contains("ISO6709"));
+    let len = whole.body.len();
+
+    let part = app
+        .get_with(&format!("/{id}.mp4"), &[(header::RANGE, "bytes=0-99")])
+        .await;
+    assert_eq!(part.status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(part.header("content-range"), format!("bytes 0-99/{len}"));
+    assert_eq!(part.body, whole.body.slice(0..100));
+    let tail = app
+        .get_with(&format!("/{id}.mp4"), &[(header::RANGE, "bytes=-10")])
+        .await;
+    assert_eq!(tail.body, whole.body.slice(len - 10..));
+    let beyond = app
+        .get_with(
+            &format!("/{id}.mp4"),
+            &[(header::RANGE, &format!("bytes={len}-"))],
+        )
+        .await;
+    assert_eq!(beyond.status, StatusCode::RANGE_NOT_SATISFIABLE);
+    let none = app
+        .get_with(&format!("/{id}.mp4"), &[(header::RANGE, "bytes=-0")])
+        .await;
+    assert_eq!(none.status, StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(beyond.header("content-range"), format!("bytes */{len}"));
+    // A range of a version that is not this one is answered whole.
+    let stale = app
+        .get_with(
+            &format!("/{id}.mp4"),
+            &[(header::RANGE, "bytes=0-9"), (header::IF_RANGE, "\"old\"")],
+        )
+        .await;
+    assert_eq!((stale.status, stale.body.len()), (StatusCode::OK, len));
+
+    let play = app.get(&format!("/d/{id}.mp4")).await;
+    assert_eq!(play.status, StatusCode::OK);
+    assert_eq!(play.header("content-type"), "video/mp4");
+    assert_ne!(play.body, whole.body);
+    assert_eq!(
+        app.get(&format!("/d/{id}.webp")).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let thumb = app.get(&format!("/t/{id}.webp")).await;
+    assert_eq!(thumb.header("content-type"), "image/webp");
+    let frame = image::load_from_memory(&thumb.body).unwrap();
+    assert!(frame.height() > frame.width(), "the frame is upright");
+    let preview = app.get(&format!("/p/{id}.jpg")).await;
+    assert_eq!(preview.header("content-type"), "image/jpeg");
+
+    let page = app.get(&format!("/{id}")).await.text();
+    assert!(page.contains("<video"), "{page}");
+    assert!(
+        page.contains("/assets/player.js?v="),
+        "a video page loads the player"
+    );
+    let csp = app.get(&format!("/{id}")).await;
+    let csp = csp.header("content-security-policy");
+    assert!(
+        csp.contains("script-src 'self'") && csp.contains("media-src 'self'"),
+        "{csp}"
+    );
+    assert!(page.contains("data-player"));
+    assert!(page.contains("<meta property=\"og:type\" content=\"video.other\">"));
+    assert!(page.contains(&format!(
+        "<meta property=\"og:video\" content=\"http://app.test/d/{id}.mp4\">"
+    )));
+    assert!(page.contains(&format!(
+        "<meta property=\"og:image\" content=\"http://app.test/p/{id}.jpg\">"
+    )));
+    assert!(page.contains("· 0:02 ·"), "{page}");
+    let public = app.get(&format!("/a/{album}")).await.text();
+    assert!(public.contains(&format!("src=\"/d/{id}.mp4\"")), "{public}");
+}
+
+#[tokio::test]
+async fn an_image_declared_a_video_is_still_held_to_the_image_limit() {
+    let app = app_with(|c| c.max_upload_bytes = 1000).await;
+    let album = app.post("/api/albums", json!({})).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let file = jpeg(400, 300);
+    assert!(file.len() > 1000);
+    let begun = app
+        .post(
+            &format!("/api/albums/{album}/uploads"),
+            json!({ "files": [{ "name": "a.mp4", "size": file.len(), "type": "video/mp4" }] }),
+        )
+        .await;
+    if app.state.config.video.mode == crate::config::VideoMode::Off {
+        assert_eq!(begun.status, StatusCode::PAYLOAD_TOO_LARGE);
+        return;
+    }
+    let id = begun.json()["uploads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.chunk(&id, &file, 0, file.len()).await;
+    let done = app
+        .post(&format!("/api/uploads/{id}/finish"), json!({}))
+        .await;
+    assert_eq!(done.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        done.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("limit for an image")
+    );
+}
+
+#[tokio::test]
+async fn a_picture_that_cannot_be_made_is_refused_to_its_sender_and_leaves_nothing() {
+    let app = app().await;
+    // Its header reads, so finishing queues it; its data does not.
+    let mut broken = jpeg(300, 200);
+    broken.truncate(broken.len() / 3);
+    let (album, done) = app.upload(&[&broken]).await;
+    assert_eq!(
+        done[0].status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        done[0].text()
+    );
+    assert!(
+        done[0].json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("can't be read")
+    );
+    let images = app.state.db.images(&album).await.unwrap();
+    assert!(images.is_empty(), "{images:?}");
+}
+
+#[tokio::test]
+async fn a_video_dither_does_not_take_is_refused_before_it_is_sent() {
+    let app = app().await;
+    let album = app.post("/api/albums", json!({})).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let begun = app
+        .post(
+            &format!("/api/albums/{album}/uploads"),
+            json!({ "files": [{ "name": "camcorder.mts", "size": 500_000_000u64, "type": "video/mp2t" }] }),
+        )
+        .await;
+    assert_eq!(begun.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(begun.json()["error"].as_str().unwrap().contains("MP4"));
+}
+
+#[tokio::test]
+async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
+    if crate::video::tests::tools().await.is_none() {
+        return;
+    }
+    let app = app().await;
+    let dir = tempfile::tempdir().unwrap();
+    // MPEG-4 Part 2, which no browser plays, so it is transcoded: long
+    // enough to be deleted part way.
+    let path = crate::video::tests::clip(
+        dir.path(),
+        "old.mp4",
+        30,
+        "1280x720",
+        &["-c:v", "mpeg4", "-q:v", "20", "-c:a", "aac"],
+    );
+    let file = std::fs::read(path).unwrap();
+    let (album, done) = app.upload_queued(&[&file]).await;
+    let id = image_id(&done[0]);
+    // Grids and pages show its progress to its owner, and nothing to anyone
+    // else, in a way nothing keeps: its link works once it is made.
+    let early = app.get(&format!("/{id}")).await;
+    assert_eq!(early.status, StatusCode::NOT_FOUND);
+    assert_eq!(early.header("cache-control"), "no-store");
+    assert!(!app.get(&format!("/a/{album}")).await.text().contains(&id));
+    let videos = &app.state.uploads.jobs;
+    for _ in 0..3000 {
+        if videos.progress(&id).is_some_and(|p| p > 110) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        videos.progress(&id).is_some_and(|p| p < 950),
+        "transcoding, and not yet done"
+    );
+    let gone = app
+        .post("/images/delete", json!({ "ids": [id.clone()] }))
+        .await;
+    assert_eq!(gone.json()["deleted"], 1);
+    assert!(videos.progress(&id).is_none());
+    // The worker stops, and tidies what it was working in.
+    let jobs = crate::jobs::dir(&app.state.config.state_dir);
+    let left = || std::fs::read_dir(&jobs).unwrap().count();
+    for _ in 0..1000 {
+        if left() == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(left(), 0, "the worker let it go and tidied up");
+    for v in [
+        Variant::Original,
+        Variant::Display,
+        Variant::Thumb,
+        Variant::Preview,
+    ] {
+        assert!(
+            app.state
+                .store
+                .read(&store::key(v, &id))
+                .await
+                .unwrap()
+                .is_none(),
+            "{v:?} was left behind"
+        );
+    }
 }

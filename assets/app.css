@@ -33,6 +33,7 @@
       --tw-translate-x: 0;
       --tw-translate-y: 0;
       --tw-translate-z: 0;
+      --tw-duration: initial;
     }
   }
 }
@@ -45,6 +46,8 @@
     --font-weight-extralight: 200;
     --font-weight-light: 300;
     --leading-tight: 1.25;
+    --default-transition-duration: .15s;
+    --default-transition-timing-function: cubic-bezier(.4, 0, .2, 1);
     --default-mono-font-family: var(--font-mono);
     --text-fine: 12px;
     --text-meta: 13px;
@@ -60,7 +63,9 @@
     --text-display: 34px;
     --text-display--line-height: 1.1;
     --container-form: 520px;
+    --animate-busy: busy .7s linear infinite;
     --animate-sweep: sweep 1.4s ease-in-out infinite alternate;
+    --animate-fade: fade .6s ease-out forwards;
   }
 }
 
@@ -1258,6 +1263,35 @@
     outline-color: var(--brand);
   }
 
+  .tile-wait {
+    pointer-events: none;
+    align-content: center;
+    justify-items: center;
+    gap: calc(var(--spacing) * 2);
+    padding-inline: calc(var(--spacing) * 3);
+    font-size: var(--text-fine);
+    color: var(--muted);
+    text-transform: lowercase;
+    display: grid;
+    position: absolute;
+    inset: 0;
+  }
+
+  .stage-wait {
+    align-content: center;
+    justify-items: center;
+    gap: calc(var(--spacing) * 3);
+    max-width: 420px;
+    height: fit-content;
+    padding-inline: calc(var(--spacing) * 6);
+    text-align: center;
+    color: var(--muted);
+    margin: auto;
+    display: grid;
+    position: absolute;
+    inset: 0;
+  }
+
   .viewer {
     border-style: var(--tw-border-style);
     background-color: var(--bg);
@@ -1557,6 +1591,349 @@
     font-size: var(--text-body);
     line-height: var(--tw-leading, var(--text-body--line-height));
     padding-inline: 22px;
+  }
+
+  .player {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: manipulation;
+    background-color: #000;
+    width: 100%;
+    margin-inline: auto;
+    display: block;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .player:focus {
+    --tw-outline-style: none;
+    outline-style: none;
+  }
+
+  .player video {
+    object-fit: contain;
+    width: 100%;
+    height: auto;
+    max-height: 85dvh;
+    margin-inline: auto;
+    display: block;
+  }
+
+  .player.full video {
+    height: 100%;
+    max-height: none;
+  }
+
+  .player.idle {
+    cursor: none;
+  }
+
+  .player-start {
+    width: calc(var(--spacing) * 16);
+    height: calc(var(--spacing) * 16);
+    border-style: var(--tw-border-style);
+    border-width: 1px;
+    border-color: var(--ink);
+    place-items: center;
+    margin: auto;
+    display: grid;
+    position: absolute;
+    inset: 0;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .player-start {
+      border-color: color-mix(in oklab, var(--ink) 60%, transparent);
+    }
+  }
+
+  .player-start {
+    background-color: var(--bg);
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .player-start {
+      background-color: color-mix(in oklab, var(--bg) 70%, transparent);
+    }
+  }
+
+  .player-start {
+    color: var(--ink);
+    padding: 0;
+  }
+
+  @media (hover: hover) {
+    .player-start:hover {
+      background-color: var(--bg);
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .player-start:hover {
+        background-color: color-mix(in oklab, var(--bg) 90%, transparent);
+      }
+    }
+  }
+
+  .player.started .player-start {
+    display: none;
+  }
+
+  .player-busy {
+    pointer-events: none;
+    width: calc(var(--spacing) * 7);
+    height: calc(var(--spacing) * 7);
+    animation: var(--animate-busy);
+    border-style: var(--tw-border-style);
+    border-width: 2px;
+    border-color: var(--ink);
+    margin: auto;
+    display: none;
+    position: absolute;
+    inset: 0;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .player-busy {
+      border-color: color-mix(in oklab, var(--ink) 30%, transparent);
+    }
+  }
+
+  .player-busy {
+    border-top-color: var(--ink);
+  }
+
+  .player.busy .player-busy {
+    display: block;
+  }
+
+  .player-jump {
+    pointer-events: none;
+    --tw-translate-y: calc(calc(1 / 2 * 100%) * -1);
+    translate: var(--tw-translate-x) var(--tw-translate-y);
+    background-color: var(--bg);
+    position: absolute;
+    top: 50%;
+    right: 12%;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .player-jump {
+      background-color: color-mix(in oklab, var(--bg) 80%, transparent);
+    }
+  }
+
+  .player-jump {
+    padding-inline: calc(var(--spacing) * 3);
+    padding-block: calc(var(--spacing) * 2);
+    font-size: var(--text-control);
+    line-height: var(--tw-leading, var(--text-control--line-height));
+    color: var(--ink);
+    --tw-numeric-spacing: tabular-nums;
+    font-variant-numeric: var(--tw-ordinal, ) var(--tw-slashed-zero, ) var(--tw-numeric-figure, ) var(--tw-numeric-spacing, ) var(--tw-numeric-fraction, );
+    opacity: 0;
+  }
+
+  .player-jump.back {
+    left: 12%;
+    right: auto;
+  }
+
+  .player-jump.shown {
+    animation: var(--animate-fade);
+  }
+
+  .player-failed {
+    background-color: var(--bg);
+    inset-inline: 0;
+    margin: 0;
+    position: absolute;
+    bottom: 0;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .player-failed {
+      background-color: color-mix(in oklab, var(--bg) 90%, transparent);
+    }
+  }
+
+  .player-failed {
+    padding-inline: calc(var(--spacing) * 4);
+    padding-block: calc(var(--spacing) * 3);
+    font-size: var(--text-fine);
+    color: var(--ink);
+  }
+
+  .player-controls {
+    align-items: center;
+    gap: var(--spacing);
+    background-color: var(--bg);
+    inset-inline: 0;
+    display: flex;
+    position: absolute;
+    bottom: 0;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .player-controls {
+      background-color: color-mix(in oklab, var(--bg) 85%, transparent);
+    }
+  }
+
+  .player-controls {
+    padding-inline: var(--spacing);
+    font-size: var(--text-fine);
+    color: var(--ink);
+    transition-property: opacity;
+    transition-timing-function: var(--tw-ease, var(--default-transition-timing-function));
+    transition-duration: var(--tw-duration, var(--default-transition-duration));
+    --tw-duration: .2s;
+    transition-duration: .2s;
+  }
+
+  .player.full .player-controls {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .player.idle .player-controls {
+    pointer-events: none;
+    opacity: 0;
+  }
+
+  .player-button {
+    width: calc(var(--spacing) * 10);
+    height: calc(var(--spacing) * 10);
+    border-style: var(--tw-border-style);
+    color: var(--ink);
+    text-transform: none;
+    background-color: #0000;
+    border-width: 0;
+    flex-shrink: 0;
+    place-items: center;
+    padding: 0;
+    display: inline-grid;
+  }
+
+  @media (hover: hover) {
+    .player-button:hover {
+      background-color: var(--hover);
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .player-button:hover {
+        background-color: color-mix(in oklab, var(--hover) 30%, transparent);
+      }
+    }
+  }
+
+  .player-button svg + svg, .player.playing [data-act="toggle"] svg:first-child, .player.muted [data-act="mute"] svg:first-child, .player.full [data-act="full"] svg:first-child {
+    display: none;
+  }
+
+  .player.playing [data-act="toggle"] svg + svg, .player.muted [data-act="mute"] svg + svg, .player.full [data-act="full"] svg + svg {
+    display: block;
+  }
+
+  .player-time {
+    padding-inline: var(--spacing);
+    white-space: nowrap;
+    --tw-numeric-spacing: tabular-nums;
+    font-variant-numeric: var(--tw-ordinal, ) var(--tw-slashed-zero, ) var(--tw-numeric-figure, ) var(--tw-numeric-spacing, ) var(--tw-numeric-fraction, );
+    flex-shrink: 0;
+  }
+
+  .player-speed {
+    width: calc(var(--spacing) * 12);
+    --tw-numeric-spacing: tabular-nums;
+    font-variant-numeric: var(--tw-ordinal, ) var(--tw-slashed-zero, ) var(--tw-numeric-figure, ) var(--tw-numeric-spacing, ) var(--tw-numeric-fraction, );
+  }
+
+  @media not all and (min-width: 479px) {
+    .player-speed {
+      display: none;
+    }
+  }
+
+  .player-seek, .player-volume {
+    height: calc(var(--spacing) * 10);
+    cursor: pointer;
+    appearance: none;
+    border-style: var(--tw-border-style);
+    background-color: #0000;
+    background: linear-gradient(var(--brand), var(--brand)) 0 50% / var(--played, 0%) 3px no-repeat, linear-gradient(var(--muted), var(--muted)) 0 50% / var(--buffered, 0%) 3px no-repeat, linear-gradient(var(--rule), var(--rule)) 0 50% / 100% 1px no-repeat;
+    border-width: 0;
+    min-width: 0;
+    padding: 0;
+  }
+
+  .player-seek {
+    flex: 1;
+  }
+
+  .player-volume {
+    width: calc(var(--spacing) * 20);
+    flex-shrink: 0;
+  }
+
+  .player-seek::-webkit-slider-thumb {
+    width: calc(var(--spacing) * 3);
+    height: calc(var(--spacing) * 3);
+    appearance: none;
+    border-style: var(--tw-border-style);
+    background-color: var(--ink);
+    border-width: 0;
+  }
+
+  .player-volume::-webkit-slider-thumb {
+    width: calc(var(--spacing) * 3);
+    height: calc(var(--spacing) * 3);
+    appearance: none;
+    border-style: var(--tw-border-style);
+    background-color: var(--ink);
+    border-width: 0;
+  }
+
+  .player-seek::-moz-range-thumb {
+    width: calc(var(--spacing) * 3);
+    height: calc(var(--spacing) * 3);
+    border-style: var(--tw-border-style);
+    background-color: var(--ink);
+    border-width: 0;
+    border-radius: 0;
+  }
+
+  .player-volume::-moz-range-thumb {
+    width: calc(var(--spacing) * 3);
+    height: calc(var(--spacing) * 3);
+    border-style: var(--tw-border-style);
+    background-color: var(--ink);
+    border-width: 0;
+    border-radius: 0;
+  }
+
+  .stage .player {
+    inset: calc(var(--spacing) * 2);
+    width: auto;
+    height: auto;
+    position: absolute;
+  }
+
+  .stage .player video {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+  }
+
+  .pic .player video {
+    max-height: 80dvh;
+  }
+
+  .pic.tall .player {
+    max-width: min(100%, 620px);
+  }
+
+  .single .player video {
+    max-height: 88dvh;
   }
 }
 
@@ -2009,6 +2386,27 @@
   syntax: "*";
   inherits: false;
   initial-value: 0;
+}
+
+@property --tw-duration {
+  syntax: "*";
+  inherits: false
+}
+
+@keyframes fade {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes busy {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes sweep {

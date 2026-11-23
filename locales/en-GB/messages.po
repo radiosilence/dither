@@ -115,8 +115,35 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
+#: templates/player.html
+msgid "Download it"
+msgstr ""
+
 #: templates/app/layout.html
 msgid "HEIC isn't supported yet: export it as JPEG"
+msgstr ""
+
+#: templates/app/macros.html
+msgid "It can't be read: it may be damaged."
+msgstr ""
+
+#: templates/app/macros.html
+msgid "It couldn't be processed. Delete it and upload it again."
+msgstr ""
+
+#: templates/app/macros.html
+msgid "It's larger than this server takes."
+msgstr ""
+
+#: templates/app/macros.html
+msgid "It's longer than this server takes."
+msgstr ""
+
+#: templates/app/library.html
+msgid ""
+"JPEG, PNG, GIF or WebP up to %{max} each, and videos up to %{video}. Where a "
+"photo or video was taken and what took it are removed before anything is "
+"stored."
 msgstr ""
 
 #: templates/app/library.html
@@ -139,6 +166,10 @@ msgstr ""
 msgid "Nothing here yet."
 msgstr ""
 
+#: templates/app/viewer.html
+msgid "Processing. It can be shared once it's done."
+msgstr ""
+
 #: templates/app/deleted.html
 msgid "This album has been deleted."
 msgstr ""
@@ -147,8 +178,20 @@ msgstr ""
 msgid "This link doesn't lead to anything, or no longer does."
 msgstr ""
 
+#: templates/app/macros.html
+msgid "This server can't process videos."
+msgstr ""
+
+#: templates/player.html
+msgid "This video can't play here."
+msgstr ""
+
 #: templates/app/picker.html
 msgid "a new album"
+msgstr ""
+
+#: templates/public/layout.html
+msgid "a video"
 msgstr ""
 
 #: templates/app/album.html
@@ -203,6 +246,10 @@ msgstr ""
 msgid "copy the link to the image's page"
 msgstr ""
 
+#: templates/app/grid.html
+msgid "couldn't process"
+msgstr ""
+
 #: templates/app/album.html
 msgid "delete album"
 msgstr ""
@@ -223,8 +270,16 @@ msgstr ""
 msgid "drop to upload"
 msgstr ""
 
+#: templates/player.html
+msgid "full screen"
+msgstr ""
+
 #: templates/app/grid.html
 msgid "has a caption"
+msgstr ""
+
+#: templates/player.html
+msgid "leave full screen"
 msgstr ""
 
 #: templates/app/viewer.html
@@ -267,6 +322,10 @@ msgstr ""
 msgid "not a JPEG, PNG, GIF or WebP"
 msgstr ""
 
+#: templates/app/layout.html
+msgid "not a JPEG, PNG, GIF, WebP or video"
+msgstr ""
+
 #: templates/public/missing.html
 msgid "nothing here"
 msgstr ""
@@ -293,6 +352,18 @@ msgstr ""
 
 #: templates/app/layout.html
 msgid "pasted image"
+msgstr ""
+
+#: templates/player.html
+msgid "picture in picture"
+msgstr ""
+
+#: templates/player.html
+msgid "playback speed"
+msgstr ""
+
+#: templates/player.html
+msgid "position in the video"
 msgstr ""
 
 #: templates/app/viewer.html
@@ -369,9 +440,22 @@ msgstr ""
 msgid "uploads"
 msgstr ""
 
+#: templates/app/grid.html
+msgid "video"
+msgstr ""
+
+#: templates/player.html
+msgid "volume"
+msgstr ""
+
 #: templates/app/layout.html
 msgctxt "A copy button, after copying"
 msgid "copied"
+msgstr ""
+
+#: templates/app/grid.html
+msgctxt "An upload's state"
+msgid "processing"
 msgstr ""
 
 #: templates/app/album.html templates/app/layout.html templates/app/viewer.html
@@ -404,6 +488,11 @@ msgctxt "Button: hide the upload tray"
 msgid "close"
 msgstr ""
 
+#: templates/player.html
+msgctxt "Button: let a video be heard"
+msgid "unmute"
+msgstr ""
+
 #: templates/app/album.html
 msgctxt "Button: make the chosen image the album's cover"
 msgid "cover"
@@ -419,9 +508,29 @@ msgctxt "Button: open the album's public page"
 msgid "open"
 msgstr ""
 
+#: templates/player.html
+msgctxt "Button: pause a video"
+msgid "pause"
+msgstr ""
+
+#: templates/player.html
+msgctxt "Button: play a video"
+msgid "play"
+msgstr ""
+
 #: templates/app/layout.html
 msgctxt "Button: send a failed upload again"
 msgid "retry"
+msgstr ""
+
+#: templates/player.html
+msgctxt "Button: silence a video"
+msgid "mute"
+msgstr ""
+
+#: templates/player.html
+msgctxt "Button: start a video"
+msgid "play"
 msgstr ""
 
 #: templates/app/album.html

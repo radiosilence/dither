@@ -26,7 +26,10 @@ use crate::sanitize::Kind;
 
 pub use rusqlite::Result;
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_processing.sql"),
+];
 
 /// Idle connections kept: more than the service's usual concurrency, so the
 /// steady state never opens one.
@@ -250,11 +253,54 @@ pub struct Image {
     pub sha256: Vec<u8>,
     pub name: String,
     pub created_at: i64,
+    /// A video's length; `None` for a picture.
+    pub duration_ms: Option<u64>,
+    /// A video with sound.
+    pub audio: bool,
+    pub status: Status,
+    /// Why its processing failed: a key the pages word (`jobs::FAILED_*`).
+    pub failure: String,
+    /// How many times a worker has claimed it.
+    pub attempts: u32,
+}
+
+/// Whether an image's copies are there to serve. A picture is ready when its
+/// row is added; a video is processing until its copies are made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Ready,
+    Processing,
+    Failed,
+}
+
+impl Status {
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "ready" => Status::Ready,
+            "processing" => Status::Processing,
+            "failed" => Status::Failed,
+            _ => return None,
+        })
+    }
 }
 
 impl Image {
+    pub fn is_video(&self) -> bool {
+        self.kind.is_video()
+    }
+
+    pub fn ready(&self) -> bool {
+        self.status == Status::Ready
+    }
+
+    /// How long a video runs, in seconds.
+    pub fn seconds(&self) -> f64 {
+        self.duration_ms.unwrap_or_default() as f64 / 1000.0
+    }
+
     fn from_row(r: &Row) -> Result<Self> {
         let kind: String = r.get("kind")?;
+        let status: String = r.get("state")?;
         Ok(Self {
             id: r.get("id")?,
             album: r.get("album")?,
@@ -275,6 +321,17 @@ impl Image {
             sha256: r.get("sha256")?,
             name: r.get("name")?,
             created_at: r.get("created_at")?,
+            duration_ms: r.get::<_, Option<i64>>("duration_ms")?.map(|d| d as u64),
+            audio: r.get("audio")?,
+            status: Status::parse(&status).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    format!("unknown state {status}").into(),
+                )
+            })?,
+            failure: r.get("failure")?,
+            attempts: r.get("attempts")?,
         })
     }
 
@@ -331,17 +388,33 @@ impl Upload {
     }
 }
 
-/// What a finished upload adds.
+/// An upload that finished and waits to be processed: what is known of it
+/// before a worker reads it whole.
 #[derive(Debug, Clone)]
-pub struct NewImage {
+pub struct NewJob {
     pub id: String,
     pub kind: Kind,
+    pub bytes: u64,
+}
+
+/// What a worker made of a job: what its row records once it is ready.
+#[derive(Debug, Clone, Default)]
+pub struct Made {
     pub width: u32,
     pub height: u32,
     pub bytes: u64,
     pub animated: bool,
     pub display: bool,
     pub sha256: Vec<u8>,
+    pub duration_ms: Option<u64>,
+    pub audio: bool,
+}
+
+/// A job a worker has claimed: the image to make and whose it is.
+#[derive(Debug, Clone)]
+pub struct Claimed {
+    pub image: Image,
+    pub owner: String,
 }
 
 /// Fields of an album a person can change, each only when given.
@@ -439,7 +512,7 @@ impl Db {
                     "SELECT a.*, \
                        (SELECT COUNT(*) FROM images WHERE album = a.id) AS count, \
                        (SELECT COALESCE(SUM(bytes), 0) FROM images WHERE album = a.id) AS total, \
-                       COALESCE(a.cover, (SELECT id FROM images WHERE album = a.id ORDER BY position, created_at LIMIT 1)) AS cover_id \
+                       COALESCE(a.cover, (SELECT id FROM images WHERE album = a.id AND state = 'ready' ORDER BY position, created_at LIMIT 1)) AS cover_id \
                      FROM albums a WHERE a.owner = ?1 ORDER BY a.created_at DESC",
                 )?
                 .query_map([&owner], |r| {
@@ -565,7 +638,7 @@ impl Db {
         self.run_as(owner, move |c| {
             c.execute(
                 "UPDATE albums SET cover = ?1, updated_at = ?2 WHERE id = ?3 AND owner = ?4 \
-                 AND (?1 IS NULL OR EXISTS (SELECT 1 FROM images WHERE id = ?1 AND album = ?3))",
+                 AND (?1 IS NULL OR EXISTS (SELECT 1 FROM images WHERE id = ?1 AND album = ?3 AND state = 'ready'))",
                 params![image, now(), album, o],
             )
             .map(|n| n == 1)
@@ -759,12 +832,11 @@ impl Db {
         .await
     }
 
-    /// The upload's image, added where its upload reserved, claiming the
-    /// copies [`add_stray`](Self::add_stray) recorded. False when the upload
-    /// is gone (its album was deleted while the file was on its way), is not
-    /// `owner`'s, or ended another way first (it was cancelled), or when the
-    /// sweep took the copies' record first.
-    pub async fn finish_upload(&self, owner: &str, upload: &str, image: NewImage) -> Result<bool> {
+    /// The upload's image, added as processing where its upload reserved:
+    /// the job a worker takes up. False when the upload is gone (its album
+    /// was deleted while the file was on its way), is not `owner`'s, or
+    /// ended another way first (it was cancelled).
+    pub async fn begin_job(&self, owner: &str, upload: &str, job: NewJob) -> Result<bool> {
         let (o, upload) = (owner.to_string(), upload.to_string());
         self.write_as(owner, move |tx| {
             let Some((album, position, name)) = tx
@@ -779,38 +851,192 @@ impl Db {
             else {
                 return Ok(false);
             };
-            // Whoever removes the record first has the copies: the sweep, to
-            // delete them, or this, to keep them.
-            if tx.execute("DELETE FROM strays WHERE id = ?1", [&image.id])? == 0 {
-                return Ok(false);
-            }
             tx.execute(
-                "INSERT INTO images (id, album, position, kind, width, height, bytes, animated, display, sha256, name, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT INTO images (id, album, position, kind, width, height, bytes, sha256, name, created_at, state) \
+                 VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, X'', ?6, ?7, 'processing')",
                 params![
-                    image.id,
+                    job.id,
                     album,
                     position,
-                    image.kind.as_str(),
-                    image.width,
-                    image.height,
-                    image.bytes as i64,
-                    image.animated,
-                    image.display,
-                    image.sha256,
+                    job.kind.as_str(),
+                    job.bytes as i64,
                     name,
-                    now()
+                    now(),
                 ],
             )?;
             tx.execute(
                 "UPDATE uploads SET image = ?1 WHERE id = ?2 AND owner = ?3",
-                params![image.id, upload, o],
+                params![job.id, upload, o],
             )?;
             tx.execute(
                 "UPDATE albums SET updated_at = ?1 WHERE id = ?2 AND owner = ?3",
                 params![now(), album, o],
             )?;
             Ok(true)
+        })
+        .await
+    }
+
+    /// Claim the oldest job no worker holds, of videos or of images, for
+    /// `worker` until `until`. Quiet: a claim changes nothing anyone sees.
+    pub async fn claim(&self, worker: &str, video: bool, until: i64) -> Result<Option<Claimed>> {
+        let worker = worker.to_string();
+        self.run_quiet(move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let image = tx
+                .query_row(
+                    "UPDATE images SET lease_until = ?1, claimed_by = ?2, attempts = attempts + 1 \
+                     WHERE id = (SELECT id FROM images WHERE state = 'processing' \
+                       AND (lease_until IS NULL OR lease_until < ?3) AND (kind = 'mp4') = ?4 \
+                       AND claimed_by IS NOT ?2 \
+                       ORDER BY created_at LIMIT 1) \
+                     RETURNING *",
+                    params![until, worker, now(), video],
+                    Image::from_row,
+                )
+                .optional()?;
+            let claimed = match image {
+                Some(image) => {
+                    let owner = tx.query_row(
+                        "SELECT owner FROM albums WHERE id = ?1",
+                        [&image.album],
+                        |r| r.get(0),
+                    )?;
+                    Some(Claimed { image, owner })
+                }
+                None => None,
+            };
+            tx.commit()?;
+            Ok(claimed)
+        })
+        .await
+    }
+
+    /// Keep `worker`'s claim on job `id` until `until`. False when it no
+    /// longer holds it: the job was deleted, or its lease lapsed and another
+    /// took it.
+    pub async fn renew(&self, worker: &str, id: &str, until: i64) -> Result<bool> {
+        let (worker, id) = (worker.to_string(), id.to_string());
+        self.run_quiet(move |c| {
+            c.execute(
+                "UPDATE images SET lease_until = ?1 \
+                 WHERE id = ?2 AND claimed_by = ?3 AND state = 'processing'",
+                params![until, id, worker],
+            )
+            .map(|n| n == 1)
+        })
+        .await
+    }
+
+    /// Give job `id` back, for any worker to take after `after`.
+    pub async fn release(&self, worker: &str, id: &str, after: i64) -> Result<()> {
+        let (worker, id) = (worker.to_string(), id.to_string());
+        self.run_quiet(move |c| {
+            c.execute(
+                "UPDATE images SET lease_until = ?1, claimed_by = NULL \
+                 WHERE id = ?2 AND claimed_by = ?3 AND state = 'processing'",
+                params![after, id, worker],
+            )
+            .map(drop)
+        })
+        .await
+    }
+
+    /// Give back every job `worker` holds, refunding their attempts: a worker
+    /// stopping.
+    pub async fn release_all(&self, worker: &str) -> Result<()> {
+        let worker = worker.to_string();
+        self.run_quiet(move |c| {
+            c.execute(
+                "UPDATE images SET lease_until = 0, claimed_by = NULL, attempts = MAX(0, attempts - 1) \
+                 WHERE claimed_by = ?1 AND state = 'processing'",
+                [worker],
+            )
+            .map(drop)
+        })
+        .await
+    }
+
+    /// Mark job `id`, which `worker` holds, ready with what its copies came
+    /// to, claiming the copies [`add_stray`](Self::add_stray) recorded.
+    /// False when `worker` no longer holds it: deleted while its copies were
+    /// made, or its lease lapsed and another took it.
+    pub async fn finish_job(
+        &self,
+        owner: &str,
+        worker: &str,
+        id: &str,
+        made: Made,
+    ) -> Result<bool> {
+        let (o, worker, id) = (owner.to_string(), worker.to_string(), id.to_string());
+        self.write_as(owner, move |tx| {
+            let n = tx.execute(
+                "UPDATE images SET state = 'ready', width = ?1, height = ?2, bytes = ?3, animated = ?4, \
+                   display = ?5, sha256 = ?6, duration_ms = ?7, audio = ?8, lease_until = NULL, claimed_by = NULL \
+                 WHERE id = ?9 AND state = 'processing' AND claimed_by = ?11 \
+                   AND album IN (SELECT id FROM albums WHERE owner = ?10)",
+                params![
+                    made.width,
+                    made.height,
+                    made.bytes as i64,
+                    made.animated,
+                    made.display,
+                    made.sha256,
+                    made.duration_ms.map(|d| d as i64),
+                    made.audio,
+                    id,
+                    o,
+                    worker
+                ],
+            )?;
+            if n == 0 {
+                return Ok(false);
+            }
+            tx.execute("DELETE FROM strays WHERE id = ?1", [&id])?;
+            Ok(true)
+        })
+        .await
+    }
+
+    /// Mark job `id`, which `worker` holds, failed, with a key for why
+    /// (`jobs::FAILED`, …). False when `worker` no longer holds it.
+    pub async fn fail_job(&self, owner: &str, worker: &str, id: &str, why: &str) -> Result<bool> {
+        let (o, worker, id, why) = (
+            owner.to_string(),
+            worker.to_string(),
+            id.to_string(),
+            why.to_string(),
+        );
+        self.run_as(owner, move |c| {
+            c.execute(
+                "UPDATE images SET state = 'failed', failure = ?1, bytes = 0, lease_until = NULL, claimed_by = NULL \
+                 WHERE id = ?2 AND state = 'processing' AND claimed_by = ?4 \
+                   AND album IN (SELECT id FROM albums WHERE owner = ?3)",
+                params![why, id, o, worker],
+            )
+            .map(|n| n == 1)
+        })
+        .await
+    }
+
+    /// Tell what watches this database that `owner`'s albums changed in
+    /// another process (a worker's): their pages redraw, and the snapshotter
+    /// takes a copy.
+    pub fn announce(&self, owner: &str) {
+        self.0.writes.send_modify(|n| *n += 1);
+        let _ = self.0.changes.send(owner.into());
+    }
+
+    /// Record that a finished upload's image was refused once made: the
+    /// upload ends with why, naming no image.
+    pub async fn refuse_upload(&self, owner: &str, id: &str, error: &str) -> Result<()> {
+        let (owner, id, error) = (owner.to_string(), id.to_string(), error.to_string());
+        self.run(move |c| {
+            c.execute(
+                "UPDATE uploads SET image = NULL, error = ?1 WHERE id = ?2 AND owner = ?3",
+                params![error, id, owner],
+            )
+            .map(drop)
         })
         .await
     }
@@ -894,11 +1120,11 @@ impl Db {
         .await
     }
 
-    /// How many images an album holds.
+    /// How many images an album shows to anyone with its link.
     pub async fn count(&self, album: &str) -> Result<u64> {
         let album = album.to_string();
         self.run(move |c| {
-            c.prepare_cached("SELECT COUNT(*) FROM images WHERE album = ?1")?
+            c.prepare_cached("SELECT COUNT(*) FROM images WHERE album = ?1 AND state = 'ready'")?
                 .query_row([album], |r| r.get::<_, i64>(0))
                 .map(|n| n as u64)
         })
@@ -981,25 +1207,28 @@ fn images_by_id(c: &Connection, ids: &[String]) -> Result<Vec<Image>> {
 pub mod tests {
     use super::*;
 
-    pub fn new_image(id: &str) -> NewImage {
-        NewImage {
-            id: id.to_string(),
+    /// Finish an upload as the service does: queued, its copies recorded,
+    /// then made.
+    pub async fn finish(db: &Db, owner: &str, upload: &str, image: &str) -> bool {
+        let job = NewJob {
+            id: image.to_string(),
             kind: Kind::Jpeg,
+            bytes: 1234,
+        };
+        if !db.begin_job(owner, upload, job).await.unwrap() {
+            return false;
+        }
+        db.add_stray(image).await.unwrap();
+        let made = Made {
             width: 400,
             height: 300,
             bytes: 1234,
-            animated: false,
-            display: false,
             sha256: vec![1; 32],
-        }
-    }
-
-    /// Finish an upload as the service does: its copies recorded first.
-    pub async fn finish(db: &Db, owner: &str, upload: &str, image: &str) -> bool {
-        db.add_stray(image).await.unwrap();
-        db.finish_upload(owner, upload, new_image(image))
-            .await
-            .unwrap()
+            ..Made::default()
+        };
+        let claimed = db.claim("w", false, now() + 60_000).await.unwrap().unwrap();
+        assert_eq!(claimed.image.id, image);
+        db.finish_job(owner, "w", image, made).await.unwrap()
     }
 
     /// An album of `owner` holding `n` images, added through uploads as
@@ -1275,28 +1504,155 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn the_sweep_and_a_finishing_upload_never_both_have_the_copies() {
+    async fn a_jobs_copies_are_never_swept_while_it_is_made() {
         let db = Db::temp().await;
         let album = db.create_album("ann", "").await.unwrap();
         let uploads = db
-            .begin_uploads("ann", &album.id, vec![("a".into(), 1), ("b".into(), 1)])
+            .begin_uploads("ann", &album.id, vec![("a".into(), 1)])
             .await
             .unwrap()
             .unwrap();
-        // The sweep took this one's record first: the upload cannot claim
-        // copies being deleted.
-        db.add_stray("SLOWSLOW00").await.unwrap();
-        assert_eq!(db.claim_strays(now() + 1).await.unwrap(), ["SLOWSLOW00"]);
+        let job = NewJob {
+            id: "MAKING0000".into(),
+            kind: Kind::Jpeg,
+            bytes: 1,
+        };
+        assert!(db.begin_job("ann", &uploads[0].id, job).await.unwrap());
+        // Recorded before they are written, and the row stands: the sweep
+        // leaves them.
+        db.add_stray("MAKING0000").await.unwrap();
+        assert!(db.claim_strays(now() + 1).await.unwrap().is_empty());
+        // Deleted meanwhile: the worker's finish fails and the sweep has them.
+        db.delete_images("ann", vec!["MAKING0000".into()])
+            .await
+            .unwrap();
         assert!(
-            !db.finish_upload("ann", &uploads[0].id, new_image("SLOWSLOW00"))
+            !db.finish_job("ann", "w", "MAKING0000", Made::default())
                 .await
                 .unwrap()
         );
-        // This one finished first: the sweep never claims an image's copies,
-        // even should a record of them be left.
-        assert!(finish(&db, "ann", &uploads[1].id, "FASTFAST00").await);
-        db.add_stray("FASTFAST00").await.unwrap();
-        assert!(db.claim_strays(now() + 1).await.unwrap().is_empty());
+        assert_eq!(db.claim_strays(now() + 1).await.unwrap(), ["MAKING0000"]);
+    }
+
+    /// An album of ann's with a job of each kind queued.
+    async fn queued(db: &Db) -> (String, String) {
+        let album = db.create_album("ann", "").await.unwrap();
+        let uploads = db
+            .begin_uploads(
+                "ann",
+                &album.id,
+                vec![("a.jpg".into(), 1), ("b.mp4".into(), 1)],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        for (upload, id, kind) in [
+            (&uploads[0], "PICTURE000", Kind::Jpeg),
+            (&uploads[1], "VIDEO00000", Kind::Mp4),
+        ] {
+            let job = NewJob {
+                id: id.into(),
+                kind,
+                bytes: 1,
+            };
+            assert!(db.begin_job("ann", &upload.id, job).await.unwrap());
+        }
+        ("PICTURE000".into(), "VIDEO00000".into())
+    }
+
+    #[tokio::test]
+    async fn a_job_is_claimed_once_until_its_lease_lapses() {
+        let db = Db::temp().await;
+        let (picture, video) = queued(&db).await;
+        let later = now() + 60_000;
+        let claimed = db.claim("w1", false, later).await.unwrap().unwrap();
+        assert_eq!(
+            (claimed.image.id.as_str(), claimed.owner.as_str()),
+            (picture.as_str(), "ann")
+        );
+        assert_eq!(claimed.image.status, Status::Processing);
+        // Pictures and videos are claimed apart, and a held one is not offered.
+        assert!(db.claim("w2", false, later).await.unwrap().is_none());
+        assert_eq!(
+            db.claim("w2", true, later).await.unwrap().unwrap().image.id,
+            video
+        );
+        assert!(db.renew("w1", &picture, later).await.unwrap());
+        assert!(
+            !db.renew("w2", &picture, later).await.unwrap(),
+            "only its holder renews it"
+        );
+        // A lapsed lease is anyone's.
+        assert!(db.renew("w1", &picture, now() - 1).await.unwrap());
+        let again = db.claim("w3", false, later).await.unwrap().unwrap();
+        assert_eq!(
+            (again.image.id.as_str(), again.image.status),
+            (picture.as_str(), Status::Processing)
+        );
+        assert!(
+            !db.renew("w1", &picture, later).await.unwrap(),
+            "w1 lost it"
+        );
+        // Put back to wait a while, then taken up again.
+        db.release("w3", &picture, now() + 60_000).await.unwrap();
+        assert!(db.claim("w4", false, later).await.unwrap().is_none());
+        db.release("w3", &picture, 0).await.unwrap();
+        assert!(
+            db.claim("w4", false, later).await.unwrap().is_none(),
+            "w3 no longer held it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_made_job_is_ready_and_a_failed_one_says_why() {
+        let db = Db::temp().await;
+        let (picture, video) = queued(&db).await;
+        let made = Made {
+            width: 640,
+            height: 360,
+            bytes: 99,
+            sha256: vec![7; 32],
+            duration_ms: Some(4200),
+            audio: true,
+            display: true,
+            ..Made::default()
+        };
+        db.claim("w", true, now() + 60_000).await.unwrap().unwrap();
+        db.claim("w", false, now() + 60_000).await.unwrap().unwrap();
+        assert!(
+            !db.finish_job("ann", "other", &video, made.clone())
+                .await
+                .unwrap(),
+            "only its holder finishes it"
+        );
+        assert!(db.finish_job("ann", "w", &video, made).await.unwrap());
+        let (v, _) = db.image(&video).await.unwrap().unwrap();
+        assert_eq!(
+            (v.status, v.width, v.duration_ms, v.audio, v.display),
+            (Status::Ready, 640, Some(4200), true, true)
+        );
+        assert!(
+            !db.finish_job("bob", "w", &picture, Made::default())
+                .await
+                .unwrap(),
+            "not bob's"
+        );
+        assert!(
+            !db.fail_job("ann", "other", &picture, "unreadable")
+                .await
+                .unwrap()
+        );
+        assert!(
+            db.fail_job("ann", "w", &picture, "unreadable")
+                .await
+                .unwrap()
+        );
+        let (p, _) = db.image(&picture).await.unwrap().unwrap();
+        assert_eq!(
+            (p.status, p.failure.as_str()),
+            (Status::Failed, "unreadable")
+        );
+        assert!(db.claim("w", false, now() + 1000).await.unwrap().is_none());
     }
 
     #[tokio::test]

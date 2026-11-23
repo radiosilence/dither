@@ -8,7 +8,11 @@
 <div class="dropzone" data-dropzone>
   <button class="primary" data-pick>{{ __("choose images") }}</button>
   <p class="m-0 text-meta text-muted">{{ __("or drop them anywhere, or paste. Each batch becomes an album.") }}</p>
+  {% if shell.max_video.is_some() %}
+  <p class="m-0 text-fine text-muted">{{ __("JPEG, PNG, GIF or WebP up to %{max} each, and videos up to %{video}. Where a photo or video was taken and what took it are removed before anything is stored.").with("max", shell.max_label()).with("video", shell.max_video_label()) }}</p>
+  {% else %}
   <p class="m-0 text-fine text-muted">{{ __("JPEG, PNG, GIF or WebP, up to %{max} each. Where a photo was taken and what took it are removed before anything is stored.").with("max", shell.max_label()) }}</p>
+  {% endif %}
 </div>
 <div data-init="@get('/stream')"></div>
 {{ albums|safe }}

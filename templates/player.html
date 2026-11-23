@@ -1,0 +1,21 @@
+{# A video, playable with the browser's own controls and no script. browser/player.ts swaps those for the bar below,
+   which it unhides; every word it shows is here, a toggle's other label in `data-alt`. A short silent clip loops like
+   a GIF. Datastar leaves a player it redraws alone (`data-ignore-morph`), so the same video keeps playing, and its id
+   keeps it from being reshaped into another video's. #}
+{% macro clip(c) %}<div id="player-{{ c.id }}" class="player{% if c.looping %} looping{% endif %}" data-player data-ignore-morph data-length="{{ c.seconds }}" data-title="{{ c.title }}">
+  <video src="{{ c.src }}" poster="{{ c.poster }}" width="{{ c.width }}" height="{{ c.height }}" preload="metadata" playsinline controls{% if c.looping %} muted loop{% endif %}></video>
+  <button type="button" class="player-start" data-act="play" aria-label="{{ __p("Button: start a video", "play") }}" hidden>{{ icon("play", 30.0)|safe }}</button>
+  <span class="player-busy" aria-hidden="true"></span>
+  <span class="player-jump" aria-hidden="true"></span>
+  <p class="player-failed" hidden>{{ __("This video can't play here.") }} <a href="{{ c.file }}" download>{{ __("Download it") }}</a></p>
+  <div class="player-controls" data-player-controls hidden>
+    <button type="button" class="player-button" data-act="toggle" aria-label="{{ __p("Button: play a video", "play") }}" data-alt="{{ __p("Button: pause a video", "pause") }}">{{ icon("play", 18.0)|safe }}{{ icon("pause", 18.0)|safe }}</button>
+    <span class="player-time"><span data-now>0:00</span><span class="text-muted"> / {{ c.duration() }}</span></span>
+    <input type="range" class="player-seek" data-seek min="0" max="{{ c.seconds }}" step="any" value="0" aria-label="{{ __("position in the video") }}">
+    {% if c.audio %}<button type="button" class="player-button" data-act="mute" aria-label="{{ __p("Button: silence a video", "mute") }}" data-alt="{{ __p("Button: let a video be heard", "unmute") }}">{{ icon("volume", 18.0)|safe }}{{ icon("muted", 18.0)|safe }}</button>
+    <input type="range" class="player-volume" data-volume min="0" max="1" step="0.05" value="1" aria-label="{{ __("volume") }}">{% endif %}
+    <button type="button" class="player-button player-speed" data-act="speed" aria-label="{{ __("playback speed") }}"><span data-speed>1×</span></button>
+    <button type="button" class="player-button" data-act="pip" aria-label="{{ __("picture in picture") }}" hidden>{{ icon("picture-in-picture", 18.0)|safe }}</button>
+    <button type="button" class="player-button" data-act="full" aria-label="{{ __("full screen") }}" data-alt="{{ __("leave full screen") }}">{{ icon("full-screen", 18.0)|safe }}{{ icon("leave-full-screen", 18.0)|safe }}</button>
+  </div>
+</div>{% endmacro %}

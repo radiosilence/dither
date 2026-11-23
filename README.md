@@ -1,6 +1,6 @@
 # dither
 
-An image host: albums of images with captions, uploaded behind a sign-in and
+An image host: albums of images and videos with captions, uploaded behind a sign-in and
 shared by unlisted links that preview anywhere a link can. It has no feed, no
 accounts of its own, no ads and no tracking.
 
@@ -12,8 +12,9 @@ binary on each release, and a Pulumi component in `deploy/pulumi`
 
 An album is a page of its images stacked in order, each with its caption, at
 `/a/<id>`; each image has a page of its own at `/<id>` and is the file itself
-at `/<id>.jpg` (or `.png`, `.gif`, `.webp`). The pages are plain HTML and CSS
-with no script. They carry Open Graph and Twitter card tags, so a link posted
+at `/<id>.jpg` (or `.png`, `.gif`, `.webp`, `.mp4`). The pages are plain HTML
+and CSS; a page with a video also loads the player's script, which enhances a
+`<video>` that plays without it. They carry Open Graph and Twitter card tags, so a link posted
 to Reddit, WhatsApp, Discord, iMessage, Slack or X previews as the picture, and
 the direct file address works anywhere an image link does. The preview's
 picture is a JPEG at most 1200 pixels wide and 300 KB, made at upload:
@@ -49,6 +50,39 @@ JPEG, PNG (including APNG), GIF and WebP are accepted, up to 64 MB and 100
 megapixels by default. HEIC, AVIF, SVG (which can carry script), BMP and TIFF
 are refused with the reason. An iPhone converts HEIC to JPEG when uploading
 from Photos through the browser.
+
+### Videos
+
+MP4, MOV (as phones record), M4V and WebM or Matroska are accepted when the
+server has ffmpeg (the image ships a static build), up to 1 GB and 30 minutes
+by default. The original is remuxed into MP4 without re-encoding, keeping its
+first video and audio streams and nothing else: phones write where a video
+was taken into the container's metadata and into timed metadata tracks, as
+they do into a photo's EXIF, and none of it is kept. The rotation a phone
+records is part of the video track and survives.
+
+Browsers do not all play what phones record, so a video that is not already
+H.264, 8-bit, SDR, at most 1920 pixels long, at most 60 frames a second and
+under 12 Mbit/s gets a playback copy that is (x264 at CRF 23, stereo AAC),
+tone-mapped from HDR (PQ or HLG) to SDR. The original stays downloadable as
+recorded. A frame of the playback copy becomes the thumbnail and the link
+preview, and a page's `og:video` names the playback copy, for the sites that
+play one inline.
+
+The worker (see *Processing*) makes a video's copies, showing its progress
+on the album page, and marks it ready, or failed with the reason: unreadable,
+too long or too large. Until it is ready a video is its owner's alone.
+
+ffmpeg parses untrusted files, so it runs as a process of its own, with none
+of the environment: told the container it reads rather than left to probe,
+limited to the file protocol and to the decoders phones and cameras need, on
+`VIDEO_THREADS` threads (filters included) at a lower priority, and with a
+time limit. A video whose codec MP4 cannot hold (VP8, Theora, ProRes) keeps
+only its playback copy.
+
+Every file is served with byte ranges, which seeking needs and Safari requires
+before it plays a video at all; video is never compressed again on the way
+out.
 
 ## Storage
 
@@ -100,15 +134,40 @@ not the file. Chunks are small enough to arrive within Traefik's default
 60-second read timeout on a slow connection. A batch keeps the order its
 files were picked in, whatever order they finish in.
 
-Processing (cleaning, decoding, resizing, encoding) runs under a budget of
-memory (`PROCESS_MEMORY_BYTES`), which is what bounds what a batch of hundreds
-of photos can take. Each image's share is worked out from its header, read
-from the file's first few megabytes before the file is read whole, in bytes
-rather than pixels: a 16-bit PNG decodes to twice an 8-bit one's size, and a
-photo turning upright needs a second copy. An image that needs more than the
-whole budget is refused with the reason. Processing runs in a task the
+Finishing an upload checks what its first few megabytes can tell (what it
+is, how large, and for a picture its pixels and the memory it needs), so a
+file that will be refused is refused while its sender waits. Then it is
+queued: its image's row is added as processing, at once visible in the
+album, and its file moved to `STATE_DIR/jobs`. Finishing runs in a task the
 request only waits on, so a client that disconnects does not stop it, and
 asking again reads how it ended.
+
+### Processing
+
+A worker, `dither worker`, makes uploads' copies: the web process decodes
+nothing. In Kubernetes it is a second container in the pod, sharing the
+state directory and the store, holding the store's keys but not the sign-in
+secret, with its own resource limits. `just dev` runs one beside the server.
+
+The queue is the database. A worker claims a job with a lease it renews while
+it works, so a worker that stops leaves its jobs for the next once their
+leases lapse (a minute), and one stopped by a signal gives them back at
+once. A job that fails on this side is tried again later, three times; one
+whose file is at fault fails at once. Pictures are made several at a time
+(`PICTURE_WORKERS`) under a budget of memory (`PROCESS_MEMORY_BYTES`), each
+one's share worked out from its header in bytes rather than pixels: a 16-bit
+PNG decodes to twice an 8-bit one's size, and a photo turning upright needs a
+second copy. Videos are made one at a time (`VIDEO_WORKERS`).
+
+The two processes talk over a Unix socket in the state directory, a line of
+JSON each way: the web process says a job is waiting, so the worker need not
+poll, and that images were deleted, so a worker making one stops; the worker
+says how far along a job is, which the album page shows as it happens, and
+that a job ended, which redraws its owner's pages and prompts a copy of the
+database. A worker opens the database only once the web process listens,
+since the web process may first replace a database that is behind the
+store's copy, and stops when the web process goes away, to be started again
+with it.
 
 The database counts the bytes that arrived and the file on disk holds them.
 Where the two disagree (a disk restored without an upload's file, or a crash
@@ -119,12 +178,16 @@ The same JSON API serves anything else that wants to upload:
 
 ```text
 POST   /api/albums                 {title?}                 → {id}
-POST   /api/albums/{id}/uploads    {files: [{name, size}]}  → {uploads: [{id}], chunk}
+POST   /api/albums/{id}/uploads    {files: [{name, size, type?}]} → {uploads: [{id}], chunk}
 PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 GET    /api/uploads/{id}                                    → {received, size, image?, error?}
-POST   /api/uploads/{id}/finish                             → {image: {id, page, file, thumb, …}} | {error}
+POST   /api/uploads/{id}/finish                             → {image: {id, page, file, thumb, processing, …}} | {error}
 DELETE /api/uploads/{id}
 ```
+
+A file's `type`, the browser's MIME type, holds a video to the video limit
+rather than the image one; the bytes decide what a file is when it finishes.
+A video finishes `processing`, and its copies follow.
 
 Every request needs a session and, if it writes, an `X-Dither` or
 `Datastar-Request` header. A chunk answered 408, 429 or a 5xx other than 507
@@ -178,7 +241,10 @@ name out of public repositories, closes both.
 - Image files are served with their sniffed type, `nosniff` and
   `Content-Security-Policy: default-src 'none'; sandbox`, so no browser treats
   one as a document. Pages forbid inline script and style; public pages allow
-  no script at all.
+  only the player's own script, and load it only where there is a video.
+- ffmpeg, which parses uploaded videos, runs as a separate process told the
+  container it reads, limited to the file protocol and a list of decoders,
+  at a lower priority, with a time limit (see *Videos*).
 - A file's type is decided by its signature, never by its name or the type
   the browser claims. Decoding is limited in pixels and allocation.
 - Files in an album that is not private are cached by browsers for a year and
@@ -204,8 +270,13 @@ startup.
 | `STATE_DIR` | `data/state` | The database and uploads in progress, on a local disk. |
 | `MIN_FREE_BYTES` | 15% of each disk | Uploads are refused below this much free space on a disk they write to. |
 | `MAX_UPLOAD_BYTES`, `MAX_PIXELS` | 64 000 000, 100 000 000 | Per image. |
-| `PROCESS_MEMORY_BYTES` | 1 GiB | Memory processing takes at once, across all uploads. An image that needs more alone is refused. |
+| `PROCESS_MEMORY_BYTES` | 1 GiB | Memory a worker's pictures take at once. A picture that needs more alone is refused when its upload finishes. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |
+| `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
+| `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
+| `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
+| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. |
+| `PICTURE_WORKERS`, `VIDEO_WORKERS` | 4, 1 | Jobs a worker makes at once. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 
 ## Development
