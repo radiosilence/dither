@@ -207,8 +207,10 @@ since its owner looks at it next. It fills only while the state disk keeps
 `MIN_FREE_BYTES` free, so that setting leaves room for it, and an upload short
 of room takes its room back from the cache.
 
-Requests for an image not in memory wait for the first to fetch it, rather
-than each fetching it, so a link shared widely costs the bucket one read.
+Requests for an image in neither cache wait for the first to fetch it,
+rather than each fetching it, so a link shared widely costs the bucket one
+read. A video is read in ranges and not held in memory: it is served from
+the disk cache, which takes a new one as it is made, or else from the bucket.
 
 ### Moving to another bucket
 

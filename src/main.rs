@@ -80,15 +80,19 @@ async fn serve() -> anyhow::Result<()> {
     if store.signs() && config.disk_cache_bytes > 0 {
         let dir = config.state_dir.join("cache");
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        // Above the floor uploads keep. An upload short of room takes it back
-        // from the cache as it arrives (`Uploads::room_for`), so none is
-        // reserved for them here: that reserve, twice the largest upload,
-        // left a small disk next to nothing to cache.
-        let floor = config.min_free_bytes.unwrap_or_else(|| {
+        // Above the floor uploads keep, by room for the largest upload: what a
+        // worker on the same disk writes while making one, since it cannot
+        // ask this process's cache for room. An upload here takes room back
+        // from the cache as it arrives (`Uploads::room_for`).
+        let uploads = config.min_free_bytes.unwrap_or_else(|| {
             store::disk(&dir).map_or(0, |(_, total)| {
                 (total as f64 * store::DEFAULT_FREE_SHARE) as u64
             })
         });
+        let largest = config
+            .max_upload_bytes
+            .max(config.max_video_bytes().unwrap_or(0));
+        let floor = uploads + largest;
         let budget = config.disk_cache_bytes;
         let disk = tokio::task::spawn_blocking(move || disk::Disk::open(&dir, budget, floor))
             .await?
