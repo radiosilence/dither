@@ -12,6 +12,7 @@ pub mod app;
 pub mod assets;
 pub mod clip;
 pub mod public;
+pub mod work;
 
 use std::convert::Infallible;
 use std::sync::Arc;

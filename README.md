@@ -151,29 +151,34 @@ asking again reads how it ended.
 ### Processing
 
 A worker, `dither worker`, makes uploads' copies: the web process decodes
-nothing. In Kubernetes it is a second container in the pod, sharing the
-state directory and the store, holding the store's keys but not the sign-in
-secret, with its own resource limits. `just dev` runs one beside the server.
+nothing. Workers form a pool. Any number may run, on any machine that
+reaches the web process's worker API, and all pull from one queue, so the
+work goes to whichever has room. A worker holds neither the database nor
+the store, nor any secret but the API's token: it asks for a job, fetches
+the upload, makes it, sends back what it made and says how the job ended,
+and the web process records it. In Kubernetes one worker is a second
+container in dither's pod, reading uploads where they wait in the shared
+state directory; others run as Deployments on other nodes (`pool` in the
+Pulumi component). `just dev` runs one beside the server.
+
+The worker API (`web::work`) is served on a port of its own
+(`WORKER_ADDR`), never through the ingress. It listens on loopback unless
+workers run elsewhere, and then requires `WORKER_TOKEN`, which workers
+present. A worker asking for a job is held until one is waiting, so a
+queued job starts at once without polling.
 
 The queue is the database. A worker claims a job with a lease it renews while
 it works, so a worker that stops leaves its jobs for the next once their
 leases lapse (a minute), and one stopped by a signal gives them back at
-once. A job that fails on this side is tried again later, three times; one
+once. A worker reports a job's progress every second as it moves, which the
+album page shows as it happens, and each report renews the lease; a renewal
+refused (the image was deleted, or the lease lapsed and another worker took
+the job) stops it. A job that fails on this side is tried again later, three times; one
 whose file is at fault fails at once. Pictures are made several at a time
 (`PICTURE_WORKERS`) under a budget of memory (`PROCESS_MEMORY_BYTES`), each
 one's share worked out from its header in bytes rather than pixels: a 16-bit
 PNG decodes to twice an 8-bit one's size, and a photo turning upright needs a
 second copy. Videos are made one at a time (`VIDEO_WORKERS`).
-
-The two processes talk over a Unix socket in the state directory, a line of
-JSON each way: the web process says a job is waiting, so the worker need not
-poll, and that images were deleted, so a worker making one stops; the worker
-says how far along a job is, which the album page shows as it happens, and
-that a job ended, which redraws its owner's pages and prompts a copy of the
-database. A worker opens the database only once the web process listens,
-since the web process may first replace a database that is behind the
-store's copy, and stops when the web process goes away, to be started again
-with it.
 
 The database counts the bytes that arrived and the file on disk holds them.
 Where the two disagree (a disk restored without an upload's file, or a crash
@@ -282,7 +287,10 @@ startup.
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
 | `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. A conversion also takes about 1.5 GB of memory at 4K, 2 GB from an 8K source, beside `PROCESS_MEMORY_BYTES`. |
-| `PICTURE_WORKERS`, `VIDEO_WORKERS` | 4, 1 | Jobs a worker makes at once. |
+| `PICTURE_WORKERS`, `VIDEO_WORKERS` | 4, 1 | Jobs a worker makes at once. `VIDEO_WORKERS=0` leaves videos to other workers. |
+| `WORKER_ADDR` | `127.0.0.1:8081` | Where the web process serves the worker API. Anything but loopback requires `WORKER_TOKEN`. |
+| `WORKER_TOKEN` | none | What workers present to the worker API. |
+| `QUEUE_URL` | `http://127.0.0.1:8081` | Where a worker reaches the worker API. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 
 ## Development

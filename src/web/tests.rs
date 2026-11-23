@@ -38,14 +38,25 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
     std::fs::create_dir_all(&config.state_dir).unwrap();
     let store = Store::memory();
     let db = Db::open(&config.state_dir.join("dither.db")).await.unwrap();
-    let jobs = Arc::new(crate::jobs::Hub::new(db.clone(), &config.state_dir).unwrap());
-    jobs.listen().unwrap();
+    let jobs = Arc::new(crate::jobs::Hub::new(db.clone(), store.clone(), &config).unwrap());
     let hub = jobs.clone();
     let uploads = Arc::new(Uploads::new(db.clone(), store.clone(), &config, jobs).unwrap());
+    // The worker API on a port of its own, as it is served, and a worker
+    // reaching it there.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let queue = format!("http://{}", listener.local_addr().unwrap());
+    let work = super::work::router(super::work::Work {
+        hub: hub.clone(),
+        token: config.worker_token.as_deref().map(super::work::digest),
+    });
+    tokio::spawn(async move { axum::serve(listener, work).await });
     {
-        let (config, store) = (config_for(dir.path()), store.clone());
+        let mut config = config_for(dir.path());
+        config.queue_url = queue;
+        // A worker on another machine: a state directory of its own.
+        config.state_dir = dir.path().join("worker");
         tokio::spawn(async move {
-            if let Err(e) = crate::worker::run(&config, store).await {
+            if let Err(e) = crate::worker::run(&config).await {
                 tracing::warn!(error = %e, "the test's worker stopped");
             }
         });

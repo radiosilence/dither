@@ -405,7 +405,7 @@ pub struct NewJob {
 }
 
 /// What a worker made of a job: what its row records once it is ready.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Made {
     pub width: u32,
     pub height: u32,
@@ -1035,14 +1035,6 @@ impl Db {
             .map(|n| n == 1)
         })
         .await
-    }
-
-    /// Tell what watches this database that `owner`'s albums changed in
-    /// another process (a worker's): their pages redraw, and the snapshotter
-    /// takes a copy.
-    pub fn announce(&self, owner: &str) {
-        self.0.writes.send_modify(|n| *n += 1);
-        let _ = self.0.changes.send(owner.into());
     }
 
     /// Record that a finished upload's image was refused once made: the

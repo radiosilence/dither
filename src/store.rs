@@ -179,30 +179,31 @@ impl Store {
         Ok(())
     }
 
-    /// Store the file at `path` under `key`, streamed rather than read whole
+    /// Store what `body` yields under `key`, streamed rather than held whole
     /// (a video can be larger than the memory processing may take), and say
     /// its length and SHA-256, taken in the same pass.
-    pub async fn put_file(&self, key: &Path, path: &FsPath) -> Result<(u64, [u8; 32])> {
+    pub async fn put_stream<E>(
+        &self,
+        key: &Path,
+        mut body: impl futures_util::Stream<Item = std::result::Result<Bytes, E>> + Unpin,
+    ) -> Result<(u64, [u8; 32])>
+    where
+        E: std::error::Error + Send + Sync + 'static,
+    {
         use sha2::Digest as _;
-        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::io::AsyncWriteExt as _;
         self.cache.remove(key);
-        let mut file = tokio::fs::File::open(path)
-            .await
-            .with_context(|| format!("opening {}", path.display()))?;
         let mut writer = object_store::buffered::BufWriter::new(self.inner.clone(), key.clone());
         let mut hash = sha2::Sha256::new();
-        let mut buf = vec![0u8; 1 << 20];
         let mut len = 0u64;
         let copied = async {
-            loop {
-                let n = file.read(&mut buf).await?;
-                if n == 0 {
-                    return Ok::<_, std::io::Error>(());
-                }
-                hash.update(&buf[..n]);
-                len += n as u64;
-                writer.write_all(&buf[..n]).await?;
+            while let Some(chunk) = body.next().await {
+                let chunk = chunk.map_err(anyhow::Error::from)?;
+                hash.update(&chunk);
+                len += chunk.len() as u64;
+                writer.write_all(&chunk).await?;
             }
+            Ok::<_, anyhow::Error>(())
         }
         .await;
         if let Err(e) = copied {
@@ -499,13 +500,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_file_is_stored_whole_and_read_back_in_ranges() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("clip");
         let bytes: Vec<u8> = (0..(3 << 20)).map(|i| (i % 251) as u8).collect();
-        std::fs::write(&path, &bytes).unwrap();
+        let chunks = bytes
+            .chunks(700_000)
+            .map(|c| Ok::<_, std::io::Error>(Bytes::copy_from_slice(c)))
+            .collect::<Vec<_>>();
         let store = Store::memory();
         let k = key(Variant::Original, "abcdefghij");
-        let (len, sha) = store.put_file(&k, &path).await.unwrap();
+        let (len, sha) = store
+            .put_stream(&k, futures_util::stream::iter(chunks))
+            .await
+            .unwrap();
         assert_eq!(len, bytes.len() as u64);
         assert_eq!(
             sha,

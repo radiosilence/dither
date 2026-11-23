@@ -21,6 +21,9 @@ export type Deployed = { routes: Route[]; oidc?: OidcClient };
 const NAME = "dither";
 const PORT = 8080;
 const METRICS_PORT = 9464;
+/** The worker API's port: inside the cluster only, never through the ingress. */
+const WORK_PORT = 8081;
+const WORKER = `${NAME}-worker`;
 /** The uid the image runs as. */
 const UID = 65532;
 const SECRETS = "dither-secrets";
@@ -88,24 +91,49 @@ export type DitherArgs = {
   /** The worker container's: the processing budget (1 GiB by default) and one ffmpeg beside it. */
   workerLimits?: { cpu: string; memory: string };
   workerRequests?: { cpu: string; memory: string };
+  /** Threads the pod's own worker gives ffmpeg (2 by default): the CPUs it may use. */
+  videoThreads?: number;
+  /**
+   * Workers on other nodes, pulling from the same queue as the pod's own
+   * over the worker API: each a Deployment pinned to its node, with a
+   * scratch disk for what it makes. They need `workerToken`.
+   */
+  pool?: PoolWorker[];
+  /** What workers present to the worker API. Required with `pool`. */
+  workerToken?: pulumi.Input<string>;
+};
+
+export type PoolWorker = {
+  /** The node it runs on, by hostname. */
+  node: string;
+  limits?: { cpu: string; memory: string };
+  requests?: { cpu: string; memory: string };
+  /** Threads ffmpeg uses (2 by default): the CPUs it may use. */
+  videoThreads?: number;
+  /** Pictures made at once (4 by default); 0 leaves them to the rest. */
+  pictures?: number;
+  /** Videos made at once (1 by default). */
+  videos?: number;
+  /** Room for uploads and what is made of them (16Gi by default). */
+  scratch?: string;
 };
 
 /**
- * The worker's environment, apart from the bucket's keys: the store and the
- * limits it processes to, and none of the sign-in. Exported for its test.
+ * A worker's environment, apart from its token: where the queue is, what it
+ * makes and with how much. It holds neither the store's keys nor the
+ * sign-in; the web process stores what it makes. Exported for its test.
  */
-export function workerEnvironment(args: DitherArgs) {
+export function workerEnvironment(
+  args: Pick<DitherArgs, "video">,
+  worker: { queue: pulumi.Input<string>; videoThreads?: number; pictures?: number; videos?: number },
+) {
   return [
     { name: "STATE_DIR", value: "/data/state" },
-    { name: "STORAGE", value: args.bucket ? args.bucket.url : "file:///data/objects" },
-    ...(args.bucket
-      ? [
-          { name: "AWS_ENDPOINT", value: args.bucket.endpoint },
-          { name: "AWS_REGION", value: args.bucket.region ?? "auto" },
-        ]
-      : []),
+    { name: "QUEUE_URL", value: worker.queue },
     ...(args.video === false ? [{ name: "VIDEO", value: "off" }] : []),
-    ...(args.maxVideoSeconds ? [{ name: "MAX_VIDEO_SECONDS", value: String(args.maxVideoSeconds) }] : []),
+    ...(worker.videoThreads ? [{ name: "VIDEO_THREADS", value: String(worker.videoThreads) }] : []),
+    ...(worker.pictures !== undefined ? [{ name: "PICTURE_WORKERS", value: String(worker.pictures) }] : []),
+    ...(worker.videos !== undefined ? [{ name: "VIDEO_WORKERS", value: String(worker.videos) }] : []),
     { name: "RUST_LOG", value: "info" },
   ];
 }
@@ -131,6 +159,8 @@ export function environment(args: DitherArgs) {
     ...(args.video === false ? [{ name: "VIDEO", value: "off" }] : []),
     ...(args.maxVideoBytes ? [{ name: "MAX_VIDEO_BYTES", value: String(args.maxVideoBytes) }] : []),
     ...(args.maxVideoSeconds ? [{ name: "MAX_VIDEO_SECONDS", value: String(args.maxVideoSeconds) }] : []),
+    // Reached from other nodes only when there is a pool, and then with a token.
+    { name: "WORKER_ADDR", value: `${args.pool?.length ? "0.0.0.0" : "127.0.0.1"}:${WORK_PORT}` },
     { name: "OIDC_ISSUER", value: args.oidc.issuer },
     { name: "OIDC_CLIENT_ID", value: args.oidc.clientId },
     ...(args.oidc.backchannel ? [{ name: "OIDC_TOKEN_URL", value: `${args.oidc.backchannel.url}/oauth2/token` }] : []),
@@ -176,6 +206,11 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
   const labels = { app: NAME };
   const state = args.statePath ?? "/var/lib/dither";
   const secretRef = (key: string) => ({ valueFrom: { secretKeyRef: { name: SECRETS, key } } });
+  const pool = args.pool ?? [];
+  if (pool.length && !args.workerToken) {
+    throw new Error("dither: a worker pool needs workerToken");
+  }
+  const tokenEnv = args.workerToken ? [{ name: "WORKER_TOKEN", ...secretRef("worker-token") }] : [];
 
   const secret = new k8s.core.v1.Secret(
     SECRETS,
@@ -183,6 +218,7 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
       metadata: { name: SECRETS, namespace },
       stringData: {
         "oidc-client-secret": pulumi.output(args.oidc.clientSecret),
+        ...(args.workerToken && { "worker-token": pulumi.output(args.workerToken) }),
         ...(args.bucket && {
           "s3-access-key-id": pulumi.output(args.bucket.accessKeyId),
           "s3-secret-access-key": pulumi.output(args.bucket.secretAccessKey),
@@ -250,9 +286,11 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
                 ports: [
                   { name: "http", containerPort: PORT },
                   { name: "metrics", containerPort: METRICS_PORT },
+                  { name: "work", containerPort: WORK_PORT },
                 ],
                 env: [
                   ...environment(args),
+                  ...tokenEnv,
                   { name: "OIDC_CLIENT_SECRET", ...secretRef("oidc-client-secret") },
                   ...(args.bucket
                     ? [
@@ -280,25 +318,23 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
                 },
                 volumeMounts: [{ name: "state", mountPath: "/data" }],
               },
-              // Makes uploads into images and videos, from the queue in the
-              // shared database, told what to do over a socket in the state
-              // directory. It holds the store's keys but not the sign-in
-              // secret, and its own limits bound what processing can take:
-              // the budget pictures are made under (1 GiB by default) and
-              // one ffmpeg of a few hundred megabytes on two threads.
+              // Makes uploads into images and videos, from the queue over
+              // the worker API on the pod's loopback, reading uploads where
+              // they wait in the shared state directory. It holds neither
+              // the store's keys nor the sign-in secret, and its own limits
+              // bound what processing can take: the budget pictures are made
+              // under (1 GiB by default) and one ffmpeg.
               {
                 name: "worker",
                 image: VERSIONS.dither,
                 imagePullPolicy: "IfNotPresent",
                 args: ["worker"],
                 env: [
-                  ...workerEnvironment(args),
-                  ...(args.bucket
-                    ? [
-                        { name: "AWS_ACCESS_KEY_ID", ...secretRef("s3-access-key-id") },
-                        { name: "AWS_SECRET_ACCESS_KEY", ...secretRef("s3-secret-access-key") },
-                      ]
-                    : []),
+                  ...workerEnvironment(args, {
+                    queue: `http://127.0.0.1:${WORK_PORT}`,
+                    videoThreads: args.videoThreads,
+                  }),
+                  ...tokenEnv,
                 ],
                 resources: {
                   // A conversion takes about 1.5 GB at 4K, 2 GB from an 8K
@@ -343,6 +379,10 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
     options,
   );
 
+  if (pool.length) {
+    createPool(provider, namespace, args, pool, secret, secretRef);
+  }
+
   const hosts = [...new Set([args.hostname, args.publicHostname ?? args.hostname])];
   return {
     routes: hosts.map((hostname) => ({ service: NAME, hostname })),
@@ -353,4 +393,108 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
     },
     deployment,
   } satisfies Deployed & Record<string, unknown>;
+}
+
+/**
+ * Workers on other nodes: the worker API published inside the cluster, and a
+ * worker on each node pulling from it. A worker reaches only the cluster's
+ * resolver and the worker API, and holds only the token.
+ */
+function createPool(
+  provider: k8s.Provider,
+  namespace: pulumi.Input<string>,
+  args: DitherArgs,
+  pool: PoolWorker[],
+  secret: k8s.core.v1.Secret,
+  secretRef: (key: string) => object,
+) {
+  const options = { provider };
+  const work = new k8s.core.v1.Service(
+    `${NAME}-work`,
+    {
+      metadata: { name: `${NAME}-work`, namespace },
+      spec: { selector: { app: NAME }, ports: [{ name: "work", port: WORK_PORT, targetPort: WORK_PORT }] },
+    },
+    options,
+  );
+  const queue = pulumi.interpolate`http://${work.metadata.name}.${namespace}.svc.cluster.local:${WORK_PORT}`;
+
+  for (const worker of pool) {
+    const name = `${WORKER}-${worker.node}`;
+    const labels = { app: WORKER, node: worker.node };
+    new k8s.apps.v1.Deployment(
+      name,
+      {
+        metadata: { name, namespace, labels },
+        spec: {
+          replicas: 1,
+          selector: { matchLabels: labels },
+          template: {
+            metadata: { labels },
+            spec: {
+              nodeSelector: { "kubernetes.io/hostname": worker.node },
+              automountServiceAccountToken: false,
+              enableServiceLinks: false,
+              // Stopping gives its claims back for another worker to take up.
+              terminationGracePeriodSeconds: 30,
+              securityContext: {
+                runAsNonRoot: true,
+                runAsUser: UID,
+                runAsGroup: UID,
+                fsGroup: UID,
+                seccompProfile: { type: "RuntimeDefault" },
+              },
+              containers: [
+                {
+                  name: "worker",
+                  image: VERSIONS.dither,
+                  imagePullPolicy: "IfNotPresent",
+                  args: ["worker"],
+                  env: [
+                    ...workerEnvironment(args, { ...worker, queue }),
+                    { name: "WORKER_TOKEN", ...secretRef("worker-token") },
+                  ],
+                  resources: {
+                    limits: worker.limits ?? { cpu: "2", memory: "4Gi" },
+                    requests: worker.requests ?? { cpu: "10m", memory: "64Mi" },
+                  },
+                  securityContext: {
+                    allowPrivilegeEscalation: false,
+                    readOnlyRootFilesystem: true,
+                    capabilities: { drop: ["ALL"] },
+                  },
+                  volumeMounts: [{ name: "scratch", mountPath: "/data" }],
+                },
+              ],
+              volumes: [{ name: "scratch", emptyDir: { sizeLimit: worker.scratch ?? "16Gi" } }],
+            },
+          },
+        },
+      },
+      { ...options, dependsOn: [secret] },
+    );
+  }
+
+  new k8s.networking.v1.NetworkPolicy(
+    `${WORKER}-netpol`,
+    {
+      metadata: { name: WORKER, namespace },
+      spec: {
+        podSelector: { matchLabels: { app: WORKER } },
+        policyTypes: ["Ingress", "Egress"],
+        ingress: [],
+        egress: [
+          {
+            to: [{ namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "kube-system" } } }],
+            ports: [
+              { protocol: "UDP", port: 53 },
+              { protocol: "TCP", port: 53 },
+            ],
+          },
+          { to: [{ podSelector: { matchLabels: { app: NAME } } }], ports: [{ protocol: "TCP", port: WORK_PORT }] },
+        ],
+      },
+    },
+    options,
+  );
 }

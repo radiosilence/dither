@@ -40,16 +40,24 @@ describe("environment", () => {
     expect(e.MAX_VIDEO_SECONDS).toBe("600");
   });
 
-  it("gives the worker the store but none of the sign-in", () => {
+  it("gives a worker the queue and none of the store or the sign-in", () => {
     const w = Object.fromEntries(
-      workerEnvironment({
-        ...base,
-        bucket: { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "a", secretAccessKey: "b" },
-      }).map((e) => [e.name, e.value]),
+      workerEnvironment({ video: false }, { queue: "http://q:8081", videoThreads: 4, pictures: 0 }).map((e) => [
+        e.name,
+        e.value,
+      ]),
     );
-    expect(w.STORAGE).toBe("s3://pics");
-    expect(w.AWS_ENDPOINT).toBe("https://r2.example");
-    expect(Object.keys(w).some((k) => k.startsWith("OIDC"))).toBe(false);
+    expect(w.QUEUE_URL).toBe("http://q:8081");
+    expect(w.VIDEO).toBe("off");
+    expect(w.VIDEO_THREADS).toBe("4");
+    expect(w.PICTURE_WORKERS).toBe("0");
+    expect(w.VIDEO_WORKERS).toBeUndefined();
+    expect(Object.keys(w).some((k) => k.startsWith("OIDC") || k.startsWith("AWS") || k === "STORAGE")).toBe(false);
+  });
+
+  it("opens the worker API beyond the pod only for a pool", () => {
+    expect(env(base).WORKER_ADDR).toBe("127.0.0.1:8081");
+    expect(env({ ...base, pool: [{ node: "lady" }], workerToken: "t" }).WORKER_ADDR).toBe("0.0.0.0:8081");
   });
 
   it("links to the public domain when there is one", () => {
