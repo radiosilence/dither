@@ -437,6 +437,10 @@ impl Tools {
                 "medium",
                 "-crf",
                 CRF,
+                // Half the preset's lookahead: at 4K the default holds
+                // about 1.75 GB, this about 1.35, for no visible loss.
+                "-rc-lookahead",
+                "20",
                 "-profile:v",
                 "high",
                 "-fpsmax",
@@ -473,9 +477,14 @@ impl Tools {
         args.extend(probe.length());
         args.extend(clean_output().iter().map(Into::into));
         args.push(file(to));
-        // Generous: a slow machine transcoding 4K HEVC runs well below real
-        // time.
-        let limit = Duration::from_secs(600) + Duration::from_secs_f64(probe.duration * 20.0);
+        // Generous: a slow machine converting 1080p30 runs well below real
+        // time, and 4K60 is eight times the pixels a second.
+        let (w, h) = probe.shown();
+        let load = (f64::from(w) * f64::from(h) * probe.video.fps.max(1.0)
+            / (1920.0 * 1080.0 * 30.0))
+            .max(1.0);
+        let limit =
+            Duration::from_secs(600) + Duration::from_secs_f64(probe.duration * 20.0 * load);
         let mut each = |line: &str| {
             if let Some(us) = line
                 .strip_prefix("out_time_us=")

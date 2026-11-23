@@ -280,7 +280,7 @@ startup.
 | `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
-| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. |
+| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. A 4K conversion also takes about 1.5 GB of memory, beside `PROCESS_MEMORY_BYTES`. |
 | `PICTURE_WORKERS`, `VIDEO_WORKERS` | 4, 1 | Jobs a worker makes at once. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 
