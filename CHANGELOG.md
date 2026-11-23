@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+
+### Added
+
+- **The app shows its version.** The signed-in pages end with the running version, linking to its release notes; the public pages do not say what they run.
+
 ## 0.10.0
 
 ### Changed
