@@ -73,8 +73,9 @@ export type DitherArgs = {
     secretAccessKey: pulumi.Input<string>;
     /**
      * The store's pods, when it runs in the cluster (Garage, MinIO): the
-     * egress policy lets dither reach them on `port`, and an `http://`
-     * endpoint is allowed.
+     * egress policy lets dither reach them on `port`, the pods' own port
+     * (not a Service's), and an `http://` endpoint is allowed. Without it,
+     * the endpoint must be `https://`.
      */
     peer?: { podLabels: Record<string, string>; port: number; namespace?: string };
   };
@@ -155,6 +156,9 @@ export function workerEnvironment(args: DitherWorkerArgs) {
 
 /** The container's environment, apart from the secrets. Exported for its test. */
 export function environment(args: DitherArgs) {
+  if (args.bucket && !args.bucket.peer && !args.bucket.endpoint.startsWith("https://")) {
+    throw new Error("dither: a bucket outside the cluster must be reached over https");
+  }
   const publicHost = args.publicHostname ?? args.hostname;
   return [
     { name: "BIND_ADDR", value: `0.0.0.0:${PORT}` },
@@ -167,7 +171,10 @@ export function environment(args: DitherArgs) {
       ? [
           { name: "AWS_ENDPOINT", value: args.bucket.endpoint },
           { name: "AWS_REGION", value: args.bucket.region ?? "auto" },
-          ...(args.bucket.endpoint.startsWith("http://") ? [{ name: "AWS_ALLOW_HTTP", value: "true" }] : []),
+          // Plain HTTP only to a store inside the cluster, never across the internet.
+          ...(args.bucket.peer && args.bucket.endpoint.startsWith("http://")
+            ? [{ name: "AWS_ALLOW_HTTP", value: "true" }]
+            : []),
         ]
       : []),
     ...(args.diskCacheBytes ? [{ name: "DISK_CACHE_BYTES", value: String(args.diskCacheBytes) }] : []),

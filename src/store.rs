@@ -181,9 +181,28 @@ impl Store {
         self
     }
 
-    /// The disk cache's file for `key`, when it holds one.
-    fn on_disk(&self, key: &Path) -> Option<(std::path::PathBuf, u64)> {
+    /// The disk cache's file for `key`, its length and the mark of this
+    /// use, when it holds one.
+    fn on_disk(&self, key: &Path) -> Option<(std::path::PathBuf, u64, u64)> {
         self.disk.as_ref()?.get(key.as_ref())
+    }
+
+    /// Room for `needed` bytes more above `min_free`, given back by the disk
+    /// cache if it must be: what an upload asks for before it is refused.
+    pub fn yield_room(&self, needed: u64, min_free: Option<u64>) {
+        if let Some(disk) = &self.disk {
+            disk.yield_room(needed, min_free);
+        }
+    }
+
+    /// Mark `key` as being fetched into the disk cache, before the read
+    /// from the store that would fetch it, so a change to it meanwhile makes
+    /// what is read stale. `None` without a cache, or when it is already
+    /// being fetched.
+    fn claim(&self, key: &Path) -> Option<Fetching> {
+        let disk = self.disk.clone()?;
+        disk.start(key.as_ref())
+            .then(|| Fetching(disk, key.to_string()))
     }
 
     /// Run `f` on the disk cache, on the blocking threads: it touches the
@@ -203,7 +222,7 @@ impl Store {
         key: &Path,
         body: impl AsyncFnOnce(&FsPath, u64) -> std::io::Result<T>,
     ) -> Option<T> {
-        let (path, size) = self.on_disk(key)?;
+        let (path, size, used) = self.on_disk(key)?;
         match body(&path, size).await {
             Ok(read) => {
                 crate::metrics::cache(true);
@@ -212,40 +231,33 @@ impl Store {
             Err(e) => {
                 tracing::warn!(%key, error = %e, "a copy kept on disk could not be read");
                 let gone = key.to_string();
-                self.on_cache(move |disk| disk.forget(&gone)).await;
+                self.on_cache(move |disk| disk.forget_if(&gone, used)).await;
                 None
             }
         }
     }
 
-    /// Fetch `key`, `size` bytes, into the disk cache in the background,
-    /// unless it is too large, already on its way, or too many fetches are:
-    /// a later miss tries again. With `bytes`, what a caller already read,
-    /// nothing is fetched.
-    fn fill(&self, key: &Path, size: u64, bytes: Option<Bytes>) {
-        let Some(disk) = self.disk.clone() else {
+    /// Keep `key`, `size` bytes, in the disk cache, as `fetching` claimed
+    /// it: `bytes` when the caller has them, or fetched in the background.
+    /// Nothing is fetched when it is too large, the disk has no room above
+    /// the cache's floor, or too many fetches are under way; a later miss
+    /// tries again.
+    fn fill(&self, fetching: Fetching, key: &Path, size: u64, bytes: Option<Bytes>) {
+        let disk = fetching.0.clone();
+        if !disk.admits(size) || !disk.has_room(size) {
             return;
+        }
+        let permit = match bytes {
+            Some(_) => None,
+            None => match self.fetches.clone().try_acquire_owned() {
+                Ok(permit) => Some(permit),
+                Err(_) => return,
+            },
         };
-        if !disk.admits(size) {
-            return;
-        }
-        let Ok(permit) = self.fetches.clone().try_acquire_owned() else {
-            return;
-        };
-        if !disk.start(key.as_ref()) {
-            return;
-        }
-        /// Ends the fetch however the task does, a panic included.
-        struct Fetching(Arc<crate::disk::Disk>, String);
-        impl Drop for Fetching {
-            fn drop(&mut self) {
-                self.0.done(&self.1);
-            }
-        }
         let (inner, key) = (self.inner.clone(), key.clone());
         tokio::spawn(async move {
             let _permit = permit;
-            let _fetching = Fetching(disk.clone(), key.to_string());
+            let _fetching = fetching;
             let aside = disk.aside();
             let written = async {
                 use tokio::io::AsyncWriteExt as _;
@@ -450,10 +462,13 @@ impl Store {
             range: Some(range.clone()),
             ..GetOptions::default()
         };
+        let fetching = self.claim(key);
         match self.inner.get_opts(key, options).await {
             Ok(result) => {
                 let (r, total) = (result.range.clone(), result.meta.size);
-                self.fill(key, total, None);
+                if let Some(fetching) = fetching {
+                    self.fill(fetching, key, total, None);
+                }
                 Ok(Some(Part::Within {
                     body: Body::Stream {
                         size: r.end - r.start,
@@ -498,6 +513,7 @@ impl Store {
             return Ok(Some(body));
         }
         crate::metrics::cache(false);
+        let fetching = self.claim(key);
         let result = match self.inner.get(key).await {
             Ok(r) => r,
             Err(object_store::Error::NotFound { .. }) => return Ok(None),
@@ -507,10 +523,14 @@ impl Store {
         if size <= CACHE_ITEM_MAX {
             let bytes = result.bytes().await?;
             self.cache.insert(key.clone(), bytes.clone());
-            self.fill(key, size, Some(bytes.clone()));
+            if let Some(fetching) = fetching {
+                self.fill(fetching, key, size, Some(bytes.clone()));
+            }
             Ok(Some(Body::Bytes(bytes)))
         } else {
-            self.fill(key, size, None);
+            if let Some(fetching) = fetching {
+                self.fill(fetching, key, size, None);
+            }
             Ok(Some(Body::Stream {
                 size,
                 stream: result.into_stream(),
@@ -643,6 +663,16 @@ pub async fn discard(store: &Store, db: &crate::db::Db, ids: Vec<String>) {
     }
     if let Err(e) = db.settle_strays(gone).await {
         tracing::warn!(error = %e, "forgetting deleted copies failed; the sweep will find them gone");
+    }
+}
+
+/// A fetch into the disk cache, claimed: ended however what holds it ends,
+/// a panic included.
+struct Fetching(Arc<crate::disk::Disk>, String);
+
+impl Drop for Fetching {
+    fn drop(&mut self) {
+        self.0.done(&self.1);
     }
 }
 
@@ -831,7 +861,7 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        let (path, size) = disk.get(k.as_ref()).expect("kept on disk");
+        let (path, size, _) = disk.get(k.as_ref()).expect("kept on disk");
         assert_eq!(size, bytes.len() as u64);
         assert_eq!(std::fs::read(path).unwrap(), bytes);
         // Then served from there: the store's copy can go and it still reads.

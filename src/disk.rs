@@ -15,7 +15,9 @@
 //! modification times stand in for use.
 //!
 //! Its methods that write touch the filesystem and block: callers on the
-//! async runtime call them on its blocking threads.
+//! async runtime call them on its blocking threads. A read waits on the
+//! index for a few milliseconds at most, and is a miss past that, so a long
+//! eviction never holds up the requests reading it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
@@ -32,6 +34,9 @@ pub struct Disk {
     /// The free space it leaves its disk.
     floor: u64,
     index: Mutex<Index>,
+    /// Keys being fetched now, and whether the key changed since. Its lock
+    /// is taken alone, or inside the index's.
+    filling: Mutex<HashMap<String, bool>>,
 }
 
 #[derive(Default)]
@@ -41,8 +46,6 @@ struct Index {
     order: BTreeMap<u64, String>,
     total: u64,
     clock: u64,
-    /// Keys being fetched now, and whether the key changed since.
-    filling: HashMap<String, bool>,
 }
 
 struct Entry {
@@ -51,14 +54,15 @@ struct Entry {
 }
 
 impl Index {
-    fn touch(&mut self, key: &str) -> Option<u64> {
+    /// `key`'s size, and when it was used now.
+    fn touch(&mut self, key: &str) -> Option<(u64, u64)> {
         self.clock += 1;
         let clock = self.clock;
         let entry = self.entries.get_mut(key)?;
         self.order.remove(&entry.used);
         entry.used = clock;
         self.order.insert(clock, key.to_string());
-        Some(entry.size)
+        Some((entry.size, clock))
     }
 
     fn insert(&mut self, key: &str, size: u64) {
@@ -77,13 +81,6 @@ impl Index {
         self.order.remove(&entry.used);
         self.total -= entry.size;
         true
-    }
-
-    /// `key`'s object changed: a fetch of it under way is stale.
-    fn changed(&mut self, key: &str) {
-        if let Some(stale) = self.filling.get_mut(key) {
-            *stale = true;
-        }
     }
 }
 
@@ -109,6 +106,7 @@ impl Disk {
             item_max: budget / 4,
             floor,
             index: Mutex::default(),
+            filling: Mutex::default(),
         };
         let mut found = Vec::new();
         let mut pending = vec![dir.to_path_buf()];
@@ -159,10 +157,27 @@ impl Disk {
         size <= self.item_max
     }
 
-    /// The file holding `key`, and its length, when it is here.
-    pub fn get(&self, key: &str) -> Option<(PathBuf, u64)> {
-        let size = self.index.lock().touch(key)?;
-        Some((self.path(key), size))
+    /// The file holding `key`, its length, and a mark of this use for
+    /// [`forget_if`](Self::forget_if), when it is here.
+    pub fn get(&self, key: &str) -> Option<(PathBuf, u64, u64)> {
+        let mut index = self
+            .index
+            .try_lock_for(std::time::Duration::from_millis(5))?;
+        let (size, used) = index.touch(key)?;
+        Some((self.path(key), size, used))
+    }
+
+    /// Whether `size` more bytes fit above the floor.
+    pub fn has_room(&self, size: u64) -> bool {
+        crate::store::disk(&self.dir)
+            .is_none_or(|(free, _)| free >= self.floor.saturating_add(size))
+    }
+
+    /// `key`'s object changed: a fetch of it under way is stale.
+    fn changed(&self, key: &str) {
+        if let Some(stale) = self.filling.lock().get_mut(key) {
+            *stale = true;
+        }
     }
 
     /// Somewhere to write an object before it is whole.
@@ -173,17 +188,17 @@ impl Disk {
     /// Start fetching `key` into the cache: false when it is already being
     /// fetched.
     pub fn start(&self, key: &str) -> bool {
-        let mut index = self.index.lock();
-        if index.filling.contains_key(key) {
+        let mut filling = self.filling.lock();
+        if filling.contains_key(key) {
             return false;
         }
-        index.filling.insert(key.to_string(), false);
+        filling.insert(key.to_string(), false);
         true
     }
 
     /// The fetch of `key` has ended, kept or not.
     pub fn done(&self, key: &str) {
-        self.index.lock().filling.remove(key);
+        self.filling.lock().remove(key);
     }
 
     /// Take `written`, `size` bytes written aside, as `key`: `fetched` into
@@ -192,14 +207,14 @@ impl Disk {
     pub fn keep(&self, key: &str, written: &Path, size: u64, fetched: bool) -> io::Result<()> {
         let doomed = {
             let mut index = self.index.lock();
-            let stale = fetched && index.filling.get(key).copied().unwrap_or(true);
+            let stale = fetched && self.filling.lock().get(key).copied().unwrap_or(true);
             if stale || !self.admits(size) {
                 drop(index);
                 let _ = std::fs::remove_file(written);
                 return Ok(());
             }
             if !fetched {
-                index.changed(key);
+                self.changed(key);
             }
             let to = self.path(key);
             let moved = to
@@ -221,19 +236,58 @@ impl Disk {
     /// `key` is no longer what the store holds.
     pub fn forget(&self, key: &str) {
         let mut index = self.index.lock();
-        index.changed(key);
+        self.changed(key);
         if index.remove(key) {
-            let _ = std::fs::remove_file(self.path(key));
+            self.remove(&self.path(key));
+        }
+    }
+
+    /// `key` could not be read as it was found at `used`: forgotten, unless
+    /// it was used or replaced since, when it is not what failed.
+    pub fn forget_if(&self, key: &str, used: u64) {
+        let mut index = self.index.lock();
+        if index.entries.get(key).is_some_and(|e| e.used == used) {
+            index.remove(key);
+            self.remove(&self.path(key));
+        }
+    }
+
+    /// Give back what is needed for `needed` bytes more to fit above
+    /// `min_free` (the uploads' floor), the least recently used first: an
+    /// upload never waits on the cache.
+    pub fn yield_room(&self, needed: u64, min_free: Option<u64>) {
+        let mut index = self.index.lock();
+        while crate::store::room(&self.dir, min_free).is_some_and(|room| room < needed) {
+            let Some((_, oldest)) = index.order.pop_first() else {
+                break;
+            };
+            if let Some(entry) = index.entries.remove(&oldest) {
+                index.total -= entry.size;
+            }
+            // Removed now rather than moved aside: the room is wanted at once.
+            self.remove(&self.path(&oldest));
+        }
+    }
+
+    /// Remove the file at `path`, and the directories it leaves empty.
+    fn remove(&self, path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let mut at = path.parent();
+        while let Some(dir) = at {
+            if dir == self.dir || std::fs::remove_dir(dir).is_err() {
+                break;
+            }
+            at = dir.parent();
         }
     }
 
     /// The store moved `from` to `to`: what is here of it moves too.
     pub fn rename(&self, from: &str, to: &str) {
         let mut index = self.index.lock();
-        index.changed(from);
-        index.changed(to);
+        self.changed(from);
+        self.changed(to);
         if index.remove(to) {
-            let _ = std::fs::remove_file(self.path(to));
+            self.remove(&self.path(to));
         }
         let Some(size) = index.entries.get(from).map(|e| e.size) else {
             return;
@@ -245,10 +299,22 @@ impl Disk {
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|()| std::fs::rename(self.path(from), &target));
         match moved {
-            Ok(()) => index.insert(to, size),
-            Err(_) => {
-                let _ = std::fs::remove_file(self.path(from));
+            Ok(()) => {
+                index.insert(to, size);
+                self.remove_dirs(&self.path(from));
             }
+            Err(_) => self.remove(&self.path(from)),
+        }
+    }
+
+    /// Remove the directories `path` leaves empty, now it has gone.
+    fn remove_dirs(&self, path: &Path) {
+        let mut at = path.parent();
+        while let Some(dir) = at {
+            if dir == self.dir || std::fs::remove_dir(dir).is_err() {
+                break;
+            }
+            at = dir.parent();
         }
     }
 
@@ -268,8 +334,10 @@ impl Disk {
             index.total -= entry.size;
             free = free.map(|f| f + entry.size);
             let away = self.aside();
-            if std::fs::rename(self.path(&oldest), &away).is_ok() {
+            let path = self.path(&oldest);
+            if std::fs::rename(&path, &away).is_ok() {
                 doomed.push(away);
+                self.remove_dirs(&path);
             }
         }
         doomed
@@ -288,7 +356,7 @@ impl Disk {
 
     #[cfg(test)]
     pub fn filling(&self) -> bool {
-        !self.index.lock().filling.is_empty()
+        !self.filling.lock().is_empty()
     }
 }
 
@@ -361,6 +429,7 @@ mod tests {
         assert_eq!(disk.total(), 4, "only whole objects are taken up");
         disk.rename("work/a/w/original", "o/aa/a");
         assert!(disk.get("work/a/w/original").is_none());
+        assert!(!dir.path().join("work").exists(), "empty directories go");
         assert_eq!(
             std::fs::read(disk.get("o/aa/a").unwrap().0).unwrap(),
             b"made"
@@ -402,5 +471,19 @@ mod tests {
         disk.keep("o/bb/b", &aside, 1, true).unwrap();
         disk.done("o/bb/b");
         assert!(disk.get("o/bb/b").is_some());
+    }
+
+    #[test]
+    fn a_failed_read_does_not_drop_a_newer_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let disk = open(dir.path(), 1000);
+        write(&disk, "o/aa/a", b"old");
+        let (_, _, used) = disk.get("o/aa/a").unwrap();
+        write(&disk, "o/aa/a", b"new");
+        disk.forget_if("o/aa/a", used);
+        assert!(disk.get("o/aa/a").is_some());
+        let (_, _, used) = disk.get("o/aa/a").unwrap();
+        disk.forget_if("o/aa/a", used);
+        assert!(disk.get("o/aa/a").is_none());
     }
 }

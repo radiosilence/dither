@@ -173,11 +173,18 @@ impl Uploads {
     /// starts evicting at 10% free, and the machine's other services share
     /// the disk.
     pub fn room_for(&self, needed: u64) -> bool {
-        let disks = [Some(self.dir.as_path()), self.store.dir()];
-        disks
-            .into_iter()
-            .flatten()
-            .all(|dir| store::room(dir, self.min_free).is_none_or(|room| room >= needed))
+        let fits = || {
+            [Some(self.dir.as_path()), self.store.dir()]
+                .into_iter()
+                .flatten()
+                .all(|dir| store::room(dir, self.min_free).is_none_or(|room| room >= needed))
+        };
+        // A disk cache beside the uploads gives back what it must first:
+        // rare, so done here, on the caller's thread.
+        fits() || {
+            self.store.yield_room(needed, self.min_free);
+            fits()
+        }
     }
 
     /// Append a chunk that starts at `start` and is `len` bytes long. Returns
