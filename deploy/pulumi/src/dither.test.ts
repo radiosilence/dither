@@ -5,6 +5,7 @@ const base = {
   hostname: "dither.example",
   node: "box",
   oidc: { issuer: "https://auth.example", clientId: "dither", clientSecret: "s" },
+  workerToken: "t",
 };
 
 const env = (args: Parameters<typeof environment>[0]) =>
@@ -42,22 +43,19 @@ describe("environment", () => {
 
   it("gives a worker the queue and none of the store or the sign-in", () => {
     const w = Object.fromEntries(
-      workerEnvironment({ video: false }, { queue: "http://q:8081", videoThreads: 4, pictures: 0 }).map((e) => [
-        e.name,
-        e.value,
-      ]),
+      workerEnvironment({ name: "lady", queue: "http://q:8081", token: "t", videoThreads: 4, pictures: 0 }).map(
+        (e) => [e.name, e.value],
+      ),
     );
     expect(w.QUEUE_URL).toBe("http://q:8081");
-    expect(w.VIDEO).toBe("off");
     expect(w.VIDEO_THREADS).toBe("4");
     expect(w.PICTURE_WORKERS).toBe("0");
     expect(w.VIDEO_WORKERS).toBeUndefined();
     expect(Object.keys(w).some((k) => k.startsWith("OIDC") || k.startsWith("AWS") || k === "STORAGE")).toBe(false);
   });
 
-  it("opens the worker API beyond the pod only for a pool", () => {
-    expect(env(base).WORKER_ADDR).toBe("127.0.0.1:8081");
-    expect(env({ ...base, pool: [{ node: "lady" }], workerToken: "t" }).WORKER_ADDR).toBe("0.0.0.0:8081");
+  it("serves the worker API to workers on other nodes", () => {
+    expect(env(base).WORKER_ADDR).toBe("0.0.0.0:8081");
   });
 
   it("links to the public domain when there is one", () => {
@@ -76,7 +74,7 @@ describe("environment", () => {
       ...base,
       bucket: { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "KEY", secretAccessKey: "SECRET" },
     });
-    expect(JSON.stringify(e)).not.toMatch(/KEY|SECRET|"s"/);
+    expect(JSON.stringify(e)).not.toMatch(/KEY|SECRET|"s"|"t"/);
   });
 });
 

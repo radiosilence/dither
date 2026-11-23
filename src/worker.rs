@@ -1,12 +1,11 @@
-//! `dither worker`: the process that makes uploads' copies. It may run
-//! anywhere that reaches the web process's worker API (`web::work`): beside
-//! it, or on another machine, as many as there are machines to spare. It
-//! holds none of the web process's secrets, and neither the database nor the
-//! store: it asks for a job, fetches the upload, makes it, sends what it made
-//! and says how it ended.
+//! `dither worker`: the process that makes uploads' copies. It runs wherever
+//! it reaches the web process's worker API (`web::work`), as many as there
+//! are machines to spare. It holds none of the web process's secrets, and
+//! neither the database nor the store: it asks for a job, fetches the upload,
+//! makes it, sends what it made and says how it ended.
 //!
-//! Beside the web process, sharing its state directory, it reads an upload
-//! where it waits rather than fetching a copy.
+//! One sharing the web process's state directory, as `just dev` runs it,
+//! reads an upload where it waits rather than fetching a copy.
 //!
 //! A job is held with a lease, renewed while the job is made; a renewal that
 //! is refused means the job was deleted or taken by another worker, and this

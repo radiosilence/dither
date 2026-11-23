@@ -156,15 +156,15 @@ reaches the web process's worker API, and all pull from one queue, so the
 work goes to whichever has room. A worker holds neither the database nor
 the store, nor any secret but the API's token: it asks for a job, fetches
 the upload, makes it, sends back what it made and says how the job ended,
-and the web process records it. In Kubernetes one worker is a second
-container in dither's pod, reading uploads where they wait in the shared
-state directory; others run as Deployments on other nodes (`pool` in the
-Pulumi component). `just dev` runs one beside the server.
+and the web process records it. In Kubernetes each worker is a Deployment of
+its own (`createDitherWorker` in the Pulumi component), placed on whichever
+node should do the work; without one, uploads queue and wait. `just dev` runs
+one beside the server, sharing its state directory, where it reads uploads
+in place rather than fetching them.
 
 The worker API (`web::work`) is served on a port of its own
-(`WORKER_ADDR`), never through the ingress. It listens on loopback unless
-workers run elsewhere, and then requires `WORKER_TOKEN`, which workers
-present. A worker asking for a job is held until one is waiting, so a
+(`WORKER_ADDR`), never through the ingress. Anywhere but loopback it
+requires `WORKER_TOKEN`, which workers present. A worker asking for a job is held until one is waiting, so a
 queued job starts at once without polling.
 
 The queue is the database. A worker claims a job with a lease it renews while
