@@ -1,10 +1,13 @@
-//! Where images live: one object store, a directory on disk or an S3 bucket
-//! (Cloudflare R2, Hetzner, MinIO), chosen by `STORAGE`'s scheme.
+//! Where images live: one S3 bucket (Garage or MinIO in the cluster,
+//! Cloudflare R2, Hetzner), chosen by `STORAGE`, or memory, in development
+//! and tests.
 //!
-//! The database and every image go through the same store, so moving to a
-//! bucket is a copy of one tree (`dither copy-store`) and a changed setting.
-//! Keys are sharded by the id's first two characters, so a directory on disk
-//! never holds more than a few thousand entries.
+//! The database's copies, every image, and each upload waiting for a worker
+//! go through the same store, so moving between buckets is a copy of one
+//! tree (`dither copy-store`) and a changed setting. A bucket signs URLs, so
+//! a worker fetches an upload and puts what it makes without the web process
+//! carrying the bytes and without holding the bucket's keys. Keys are
+//! sharded by the id's first two characters.
 //!
 //! An image's copies are its original, a thumbnail, a display copy when it
 //! is large, and a link preview. A video's display copy is the one browsers
@@ -19,7 +22,7 @@
 //! written recently, kept whole, which spares the round trip and serves
 //! while the store is unreachable.
 
-use std::path::{Path as FsPath, PathBuf};
+use std::path::Path as FsPath;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -97,8 +100,8 @@ pub struct Store {
     /// Fetches into the disk cache at once: a cold page of thumbnails
     /// starts no more than this, alongside the reads it serves.
     fetches: Arc<tokio::sync::Semaphore>,
-    /// The directory, when the store is one: what free space is measured on.
-    dir: Option<PathBuf>,
+    /// The bucket, to sign URLs for, and the prefix its keys sit under.
+    signer: Option<(Arc<dyn object_store::signer::Signer>, String)>,
     /// What the store is, for logs, with no credential in it.
     label: String,
 }
@@ -120,44 +123,37 @@ impl Store {
     pub fn open(url: &str, cache_bytes: u64) -> Result<Self> {
         let parsed =
             url::Url::parse(url).with_context(|| format!("STORAGE is not a URL: {url}"))?;
-        let (inner, dir): (Arc<dyn ObjectStore>, Option<PathBuf>) = match parsed.scheme() {
-            "file" => {
-                let dir = parsed
-                    .to_file_path()
-                    .map_err(|()| anyhow::anyhow!("STORAGE must be an absolute file:// path"))?;
-                std::fs::create_dir_all(&dir)
-                    .with_context(|| format!("creating {}", dir.display()))?;
-                let fs = object_store::local::LocalFileSystem::new_with_prefix(&dir)?
-                    .with_automatic_cleanup(true);
-                (Arc::new(fs), Some(dir))
-            }
+        let (inner, signer): (Arc<dyn ObjectStore>, _) = match parsed.scheme() {
             "s3" => {
-                let s3 = object_store::aws::AmazonS3Builder::from_env()
-                    .with_url(url)
-                    .build()
-                    .context("configuring the S3 store")?;
+                let s3 = Arc::new(
+                    object_store::aws::AmazonS3Builder::from_env()
+                        .with_url(url)
+                        .build()
+                        .context("configuring the S3 store")?,
+                );
                 // The builder takes the bucket from the URL and ignores its
                 // path, which is how one bucket holds more than one dither.
-                let prefix = parsed.path().trim_matches('/');
-                let s3: Arc<dyn ObjectStore> = if prefix.is_empty() {
-                    Arc::new(s3)
+                let prefix = parsed.path().trim_matches('/').to_string();
+                let store: Arc<dyn ObjectStore> = if prefix.is_empty() {
+                    s3.clone()
                 } else {
-                    Arc::new(object_store::prefix::PrefixStore::new(s3, prefix))
+                    Arc::new(object_store::prefix::PrefixStore::new(
+                        s3.clone(),
+                        prefix.as_str(),
+                    ))
                 };
-                (s3, None)
+                let signer: Arc<dyn object_store::signer::Signer> = s3;
+                (store, Some((signer, prefix)))
             }
-            "memory" => (Arc::new(object_store::memory::InMemory::new()), None),
-            other => anyhow::bail!("STORAGE must be file://, s3:// or memory://, not {other}://"),
+            "memory" => (Arc::new(object_store::memory::InMemory::new()) as _, None),
+            other => anyhow::bail!("STORAGE must be s3:// or memory://, not {other}://"),
         };
-        Ok(Self::with(inner, dir, cache_bytes, redact(&parsed)))
+        let mut store = Self::with(inner, cache_bytes, redact(&parsed));
+        store.signer = signer;
+        Ok(store)
     }
 
-    fn with(
-        inner: Arc<dyn ObjectStore>,
-        dir: Option<PathBuf>,
-        cache_bytes: u64,
-        label: String,
-    ) -> Self {
+    fn with(inner: Arc<dyn ObjectStore>, cache_bytes: u64, label: String) -> Self {
         // quick_cache wants an estimate of how many entries; thumbnails are
         // the common case at around 40 KB.
         let estimate = (cache_bytes / 40_000).clamp(64, 1 << 20) as usize;
@@ -170,7 +166,7 @@ impl Store {
             )),
             disk: None,
             fetches: Arc::new(tokio::sync::Semaphore::new(4)),
-            dir,
+            signer: None,
             label,
         }
     }
@@ -200,6 +196,9 @@ impl Store {
     /// what is read stale. `None` without a cache, or when it is already
     /// being fetched.
     fn claim(&self, key: &Path) -> Option<Fetching> {
+        if !cacheable(key) {
+            return None;
+        }
         let disk = self.disk.clone()?;
         disk.start(key.as_ref())
             .then(|| Fetching(disk, key.to_string()))
@@ -306,7 +305,6 @@ impl Store {
     pub fn memory() -> Self {
         Self::with(
             Arc::new(object_store::memory::InMemory::new()),
-            None,
             64 << 20,
             "memory://".into(),
         )
@@ -357,7 +355,7 @@ impl Store {
         let mut len = 0u64;
         // A copy goes to the disk cache as it is stored: what was just
         // uploaded is what its owner looks at next.
-        let mut copy = match &self.disk {
+        let mut copy = match self.disk.as_ref().filter(|_| cacheable(key)) {
             Some(disk) => {
                 let aside = disk.aside();
                 tokio::fs::File::create(&aside)
@@ -595,14 +593,85 @@ impl Store {
         gone
     }
 
-    /// Bytes free on the disk under a file store; `None` for a bucket.
-    pub fn free_bytes(&self) -> Option<u64> {
-        disk(self.dir.as_deref()?).map(|(free, _)| free)
+    /// A URL that lets whoever holds it `method` (GET or PUT) `key` for
+    /// `expires`, with none of the bucket's keys: `None` for a store that
+    /// does not sign (memory).
+    pub async fn sign(
+        &self,
+        method: axum::http::Method,
+        key: &Path,
+        expires: std::time::Duration,
+    ) -> Option<url::Url> {
+        let (signer, prefix) = self.signer.as_ref()?;
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            Path::from(format!("{prefix}/{key}"))
+        };
+        match signer.signed_url(method, &path, expires).await {
+            Ok(url) => Some(url),
+            Err(e) => {
+                tracing::warn!(%key, error = %e, "signing a URL failed");
+                None
+            }
+        }
     }
 
-    /// The directory, for a file store.
-    pub fn dir(&self) -> Option<&FsPath> {
-        self.dir.as_deref()
+    /// Whether it is a bucket, which signs URLs, rather than memory.
+    pub fn signs(&self) -> bool {
+        self.signer.is_some()
+    }
+
+    /// The object's length, or `None` when there is none.
+    pub async fn size(&self, key: &Path) -> object_store::Result<Option<u64>> {
+        match self.inner.head(key).await {
+            Ok(meta) => Ok(Some(meta.size)),
+            Err(object_store::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Store the file at `path` under `key`, streamed.
+    pub async fn put_file(&self, key: &Path, path: &FsPath) -> Result<(u64, [u8; 32])> {
+        let file = tokio::fs::File::open(path)
+            .await
+            .with_context(|| format!("opening {}", path.display()))?;
+        let chunks = futures_util::stream::unfold(file, |mut file| async move {
+            use tokio::io::AsyncReadExt as _;
+            let mut buf = vec![0u8; 1 << 20];
+            match file.read(&mut buf).await {
+                Ok(0) => None,
+                Ok(n) => {
+                    buf.truncate(n);
+                    Some((Ok(Bytes::from(buf)), file))
+                }
+                Err(e) => Some((Err(e), file)),
+            }
+        });
+        self.put_stream(key, Box::pin(chunks)).await
+    }
+
+    /// Keys under `prefix` last written before `before`, in milliseconds
+    /// since the epoch.
+    pub async fn older(&self, prefix: &str, before: i64) -> object_store::Result<Vec<Path>> {
+        let mut found = Vec::new();
+        let mut listing = self.inner.list(Some(&Path::from(prefix)));
+        while let Some(meta) = listing.next().await {
+            let meta = meta?;
+            if meta.last_modified.timestamp_millis() < before {
+                found.push(meta.location);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Warm the disk cache with `key`, `size` bytes, in the background: a
+    /// copy a worker put straight into the bucket, which its owner looks at
+    /// next.
+    pub fn warm(&self, key: &Path, size: u64) {
+        if let Some(fetching) = self.claim(key) {
+            self.fill(fetching, key, size, None);
+        }
     }
 }
 
@@ -664,6 +733,12 @@ pub async fn discard(store: &Store, db: &crate::db::Db, ids: Vec<String>) {
     if let Err(e) = db.settle_strays(gone).await {
         tracing::warn!(error = %e, "forgetting deleted copies failed; the sweep will find them gone");
     }
+}
+
+/// Whether `key` is worth keeping on disk: not an upload waiting for a
+/// worker, which is read once.
+fn cacheable(key: &Path) -> bool {
+    !key.as_ref().starts_with("upload/")
 }
 
 /// A fetch into the disk cache, claimed: ended however what holds it ends,
@@ -760,6 +835,46 @@ pub async fn copy(from: &Store, to: &Store) -> Result<(u64, u64)> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_bucket_signs_urls_under_its_prefix() {
+        let s3: Arc<dyn object_store::signer::Signer> = Arc::new(
+            object_store::aws::AmazonS3Builder::new()
+                .with_bucket_name("dither")
+                .with_endpoint("http://garage:3900")
+                .with_region("garage")
+                .with_access_key_id("GK0123456789abcdef")
+                .with_secret_access_key("secret")
+                .with_allow_http(true)
+                .build()
+                .unwrap(),
+        );
+        let mut store = Store::memory();
+        store.signer = Some((s3, "pre".into()));
+        let k = key(Variant::Original, "abcdefghij");
+        let url = store
+            .sign(
+                axum::http::Method::PUT,
+                &k,
+                std::time::Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+        assert_eq!(url.host_str(), Some("garage"));
+        assert_eq!(url.path(), "/dither/pre/o/ab/abcdefghij");
+        assert!(url.query().unwrap().contains("X-Amz-Signature="), "{url}");
+        assert!(!url.as_str().contains("secret"));
+        assert!(
+            Store::memory()
+                .sign(
+                    axum::http::Method::GET,
+                    &k,
+                    std::time::Duration::from_secs(60)
+                )
+                .await
+                .is_none()
+        );
+    }
+
     #[test]
     fn keys_are_sharded_by_the_id() {
         assert_eq!(
@@ -807,18 +922,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_file_store_works_on_disk_and_reports_free_space() {
-        let dir = tempfile::tempdir().unwrap();
-        let url = url::Url::from_directory_path(dir.path()).unwrap();
-        let store = Store::open(url.as_str(), 1 << 20).unwrap();
-        let k = key(Variant::Original, "abcdefghij");
-        store.put(&k, Bytes::from_static(b"jpeg")).await.unwrap();
-        assert!(dir.path().join("o/ab/abcdefghij").is_file());
-        assert!(store.free_bytes().unwrap() > 0);
-        assert_eq!(store.read(&k).await.unwrap().as_deref(), Some(&b"jpeg"[..]));
-    }
-
-    #[tokio::test]
     async fn copy_moves_every_object_and_resumes() {
         let (a, b) = (Store::memory(), Store::memory());
         for id in ["aaaaaaaaaa", "bbbbbbbbbb"] {
@@ -847,7 +950,7 @@ mod tests {
             .await
             .unwrap();
         let disk = crate::disk::Disk::open(dir.path(), 4 << 20, 0).unwrap();
-        let store = Store::with(Arc::new(inner), None, 0, "test".into()).with_disk(disk);
+        let store = Store::with(Arc::new(inner), 0, "test".into()).with_disk(disk);
         // A miss is served from the store and fetched to disk behind it.
         let first = store
             .get_range(&k, GetRange::Bounded(10..20))

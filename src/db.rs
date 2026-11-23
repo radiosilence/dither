@@ -1732,7 +1732,7 @@ pub mod tests {
     }
 
     /// An album of ann's with a job of each kind queued.
-    async fn queued(db: &Db) -> (String, String) {
+    pub(crate) async fn queued(db: &Db) -> (String, String) {
         let album = db.create_album("ann", "").await.unwrap();
         let uploads = db
             .begin_uploads(

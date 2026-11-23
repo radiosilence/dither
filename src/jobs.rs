@@ -48,21 +48,31 @@ const ALIVE: Duration = Duration::from_secs(60);
 /// of a transcode between reports.
 const STALE: Duration = Duration::from_secs(300);
 
-/// Where jobs' files wait, and are worked on.
+/// Where a worker works on its jobs.
 pub fn dir(state_dir: &Path) -> PathBuf {
     state_dir.join("jobs")
-}
-
-/// Job `id`'s upload. Ids are checked by [`crate::id`] or made by it, so this
-/// names nothing outside the directory.
-pub fn source(state_dir: &Path, id: &str) -> PathBuf {
-    dir(state_dir).join(id)
 }
 
 /// Where a worker works on job `id`.
 pub fn work(state_dir: &Path, id: &str) -> PathBuf {
     dir(state_dir).join(format!("{id}.work"))
 }
+
+/// Job `id`'s upload in the store, until the job ends. Ids are checked by
+/// [`crate::id`] or made by it.
+pub fn upload(id: &str) -> object_store::path::Path {
+    object_store::path::Path::from(format!("upload/{id}"))
+}
+
+/// Where worker `name` puts job `id`'s copy of `variant` before it is moved
+/// into place.
+fn aside(id: &str, name: &str, variant: store::Variant) -> object_store::path::Path {
+    object_store::path::Path::from(format!("work/{id}/{name}/{}", variant.name()))
+}
+
+/// How long a signed URL a worker is given lasts: longer than any one fetch
+/// or put of a job's files takes.
+const SIGNED: Duration = Duration::from_secs(3600);
 
 /// A job, as a worker is given it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -76,6 +86,10 @@ pub struct Job {
     /// The web process's limits, which a worker holds the job to.
     pub max_pixels: u64,
     pub max_seconds: u64,
+    /// A signed URL to fetch the upload from the store directly; without
+    /// one, the worker API serves it.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// How a job ended, as its worker says.
@@ -137,7 +151,6 @@ struct Report {
 pub struct Hub {
     db: Db,
     store: Store,
-    state_dir: PathBuf,
     max_pixels: u64,
     max_seconds: u64,
     /// The last word of each job's progress.
@@ -186,11 +199,9 @@ fn until() -> i64 {
 
 impl Hub {
     pub fn new(db: Db, store: Store, config: &crate::config::Config) -> std::io::Result<Self> {
-        std::fs::create_dir_all(dir(&config.state_dir))?;
         Ok(Self {
             db,
             store,
-            state_dir: config.state_dir.clone(),
             max_pixels: config.max_pixels,
             max_seconds: config.video.max_seconds,
             progress: Default::default(),
@@ -201,8 +212,8 @@ impl Hub {
         })
     }
 
-    pub fn state_dir(&self) -> &Path {
-        &self.state_dir
+    pub fn store(&self) -> &Store {
+        &self.store
     }
 
     /// Worker `name` was heard from, saying what it makes when it asks for
@@ -321,12 +332,19 @@ impl Hub {
                     continue;
                 }
                 self.started(&claimed.owner, &image.id);
-                // The upload's length is its file's: the row's becomes the
-                // original's once a worker has stored one.
-                let bytes = tokio::fs::metadata(source(&self.state_dir, &image.id))
+                // The upload's length is its object's: the row's becomes
+                // the original's once a worker has stored one.
+                let bytes = match self.store.size(&upload(&image.id)).await {
+                    Ok(Some(size)) => size,
+                    _ => image.bytes,
+                };
+                let source = self
+                    .store
+                    .sign(axum::http::Method::GET, &upload(&image.id), SIGNED)
                     .await
-                    .map_or(image.bytes, |m| m.len());
+                    .map(String::from);
                 return Ok(Some(Job {
+                    source,
                     video: image.is_video(),
                     bytes,
                     as_recorded: image.as_recorded,
@@ -407,13 +425,9 @@ impl Hub {
         Ok(true)
     }
 
-    /// Job `id`'s copy of `variant`, from worker `name`: stored, and for its
-    /// original, its length and SHA-256 recorded on its row for when it is
-    /// made. False when the job is not the worker's.
-    ///
-    /// It is written aside and moved into place only if the job is still the
-    /// worker's once it has arrived, so a worker that lost the job while
-    /// sending cannot replace what the one that took it stored.
+    /// Job `id`'s copy of `variant`, from worker `name`, sent through the
+    /// worker API: stored aside, then placed. False when the job is not the
+    /// worker's.
     pub async fn put<E>(
         &self,
         name: &str,
@@ -427,8 +441,63 @@ impl Hub {
         if !self.renew(name, id, None).await? {
             return Ok(false);
         }
-        let aside = object_store::path::Path::from(format!("work/{id}/{name}/{}", variant.name()));
+        let aside = aside(id, name, variant);
         let (bytes, sha256) = self.store.put_stream(&aside, body).await?;
+        self.place(name, id, variant, bytes, sha256).await
+    }
+
+    /// A signed URL for worker `name` to put job `id`'s copy of `variant`
+    /// straight into the store, aside: `Ok(None)` when the store does not
+    /// sign, and `Err` when the job is not the worker's.
+    pub async fn put_url(
+        &self,
+        name: &str,
+        id: &str,
+        variant: store::Variant,
+    ) -> anyhow::Result<Result<Option<String>, ()>> {
+        if !self.renew(name, id, None).await? {
+            return Ok(Err(()));
+        }
+        let url = self
+            .store
+            .sign(axum::http::Method::PUT, &aside(id, name, variant), SIGNED)
+            .await;
+        Ok(Ok(url.map(String::from)))
+    }
+
+    /// Worker `name` put job `id`'s copy of `variant` straight into the
+    /// store, `bytes` long with `sha256`: placed, once the store holds that
+    /// length. The SHA-256 is the worker's word, as the copy is; the length
+    /// is checked. False when the job is not the worker's.
+    pub async fn put_done(
+        &self,
+        name: &str,
+        id: &str,
+        variant: store::Variant,
+        bytes: u64,
+        sha256: [u8; 32],
+    ) -> anyhow::Result<bool> {
+        let held = self.store.size(&aside(id, name, variant)).await?;
+        if held != Some(bytes) {
+            anyhow::bail!("the store holds {held:?} bytes of it, not {bytes}");
+        }
+        self.place(name, id, variant, bytes, sha256).await
+    }
+
+    /// Move job `id`'s copy of `variant` from where worker `name` put it
+    /// into place, only if the job is still the worker's once it has
+    /// arrived, so a worker that lost the job cannot replace what the one
+    /// that took it stored. An original's length and SHA-256 go on the
+    /// job's row for when it is made.
+    async fn place(
+        &self,
+        name: &str,
+        id: &str,
+        variant: store::Variant,
+        bytes: u64,
+        sha256: [u8; 32],
+    ) -> anyhow::Result<bool> {
+        let aside = aside(id, name, variant);
         let still = self.renew(name, id, None).await?
             && (variant != store::Variant::Original
                 || self.db.record_original(name, id, bytes, sha256).await?);
@@ -436,7 +505,10 @@ impl Hub {
             let _ = self.store.delete(&aside).await;
             return Ok(false);
         }
-        self.store.rename(&aside, &store::key(variant, id)).await?;
+        let key = store::key(variant, id);
+        self.store.rename(&aside, &key).await?;
+        // On this machine's disk too, if it caches: its owner looks next.
+        self.store.warm(&key, bytes);
         Ok(true)
     }
 
@@ -563,7 +635,7 @@ impl Hub {
     /// Job `id` has ended, or its image is gone: its upload goes, and its
     /// copies with it unless they were `kept`.
     async fn gone(&self, id: &str, kept: bool) {
-        let _ = tokio::fs::remove_file(source(&self.state_dir, id)).await;
+        let _ = self.store.delete(&upload(id)).await;
         if !kept {
             store::discard(&self.store, &self.db, vec![id.to_string()]).await;
         }
@@ -583,7 +655,7 @@ impl Hub {
     pub async fn forget(&self, ids: &[String]) {
         for id in ids {
             self.progress.lock().remove(id);
-            let _ = tokio::fs::remove_file(source(&self.state_dir, id)).await;
+            let _ = self.store.delete(&upload(id)).await;
         }
     }
 
@@ -600,36 +672,28 @@ impl Hub {
         self.ticks.subscribe()
     }
 
-    /// Remove what jobs left in the directory once nothing is being made of
-    /// them: a crash between finishing and tidying, or a row deleted while
-    /// its file waited. A day's grace, as uploads get.
+    /// Remove what jobs left in the store a day ago and nothing is being
+    /// made of: an upload whose job ended without tidying it (a crash in
+    /// between, or a row deleted while it waited), and copies a worker put
+    /// aside and never had placed.
     pub async fn sweep(&self) {
-        let Ok(mut entries) = tokio::fs::read_dir(dir(&self.state_dir)).await else {
-            return;
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // `<id>`, or `<id>.<worker>.work`.
-            let id = name.split('.').next().unwrap_or(&name);
-            let stale = entry
-                .metadata()
-                .await
-                .ok()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.elapsed().ok())
-                .is_some_and(|age| age > Duration::from_secs(24 * 3600));
-            if !stale {
-                continue;
+        let before = crate::db::now() - 24 * 3600 * 1000;
+        if let Ok(uploads) = self.store.older("upload/", before).await {
+            for key in uploads {
+                let id = key.filename().unwrap_or_default().to_string();
+                let waiting = match self.db.image(&id).await {
+                    Ok(Some((image, _))) => image.status == crate::db::Status::Processing,
+                    Ok(None) => false,
+                    Err(_) => true,
+                };
+                if !waiting {
+                    let _ = self.store.delete(&key).await;
+                }
             }
-            let keep = match self.db.image(id).await {
-                Ok(Some((image, _))) => image.status == crate::db::Status::Processing,
-                Ok(None) => false,
-                Err(_) => true,
-            };
-            if !keep {
-                let path = entry.path();
-                let _ = tokio::fs::remove_dir_all(&path).await;
-                let _ = tokio::fs::remove_file(&path).await;
+        }
+        if let Ok(aside) = self.store.older("work/", before).await {
+            for key in aside {
+                let _ = self.store.delete(&key).await;
             }
         }
     }
@@ -638,6 +702,87 @@ impl Hub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_copy_put_straight_into_the_store_is_checked_and_placed() {
+        use sha2::Digest as _;
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::temp().await;
+        let store = Store::memory();
+        let hub = Hub::new(
+            db.clone(),
+            store.clone(),
+            &crate::config::Config::test(dir.path().to_path_buf()),
+        )
+        .unwrap();
+        let (picture, _) = crate::db::tests::queued(&db).await;
+        let want = Want {
+            pictures: true,
+            videos: false,
+            makes_pictures: true,
+            makes_videos: false,
+            making: vec![],
+        };
+        let job = hub
+            .claim("w1", want, Duration::ZERO)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.id, picture);
+        assert_eq!(job.source, None, "memory signs nothing");
+        // Memory signs nothing, so a worker is told to send it through the API.
+        assert_eq!(
+            hub.put_url("w1", &picture, store::Variant::Original)
+                .await
+                .unwrap(),
+            Ok(None)
+        );
+        let bytes = bytes::Bytes::from_static(b"cleaned picture");
+        let sha256: [u8; 32] = sha2::Sha256::digest(&bytes).into();
+        store
+            .put(
+                &aside(&picture, "w1", store::Variant::Original),
+                bytes.clone(),
+            )
+            .await
+            .unwrap();
+        // A length the store does not hold is refused.
+        assert!(
+            hub.put_done("w1", &picture, store::Variant::Original, 3, sha256)
+                .await
+                .is_err()
+        );
+        assert!(
+            hub.put_done(
+                "w1",
+                &picture,
+                store::Variant::Original,
+                bytes.len() as u64,
+                sha256
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(
+            store
+                .read(&store::key(store::Variant::Original, &picture))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(&bytes[..])
+        );
+        let (image, _) = db.image(&picture).await.unwrap().unwrap();
+        assert_eq!(
+            (image.bytes, image.sha256),
+            (bytes.len() as u64, sha256.to_vec())
+        );
+        // Another worker's word places nothing.
+        assert!(
+            hub.put_done("w2", &picture, store::Variant::Thumb, 1, sha256)
+                .await
+                .is_err()
+        );
+    }
 
     #[test]
     fn outcomes_are_tagged_json() {

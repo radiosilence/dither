@@ -76,7 +76,7 @@ async fn serve() -> anyhow::Result<()> {
     std::fs::create_dir_all(&config.state_dir)
         .with_context(|| format!("creating {}", config.state_dir.display()))?;
     let mut store = Store::open(&config.storage, config.cache_bytes)?;
-    if store.dir().is_none() && config.disk_cache_bytes > 0 {
+    if store.signs() && config.disk_cache_bytes > 0 {
         let dir = config.state_dir.join("cache");
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         // Above the floor uploads keep, by room for the largest upload twice
@@ -170,7 +170,7 @@ async fn serve() -> anyhow::Result<()> {
                     albums,
                     images,
                     bytes,
-                    free: state.store.free_bytes(),
+                    free: store::disk(&state.config.state_dir).map(|(free, _)| free),
                 })
             }),
         );

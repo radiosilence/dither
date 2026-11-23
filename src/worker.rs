@@ -1,11 +1,14 @@
 //! `dither worker`: the process that makes uploads' copies. It runs wherever
 //! it reaches the web process's worker API (`web::work`), as many as there
 //! are machines to spare. It holds none of the web process's secrets, and
-//! neither the database nor the store: it asks for a job, fetches the upload,
-//! makes it, sends what it made and says how it ended.
+//! neither the database nor the store's keys: it asks for a job, fetches the
+//! upload, makes it, sends what it made and says how it ended.
 //!
-//! One sharing the web process's state directory, as `just dev` runs it,
-//! reads an upload where it waits rather than fetching a copy.
+//! When the store signs URLs (a bucket), the upload is fetched from it, and
+//! what is made put into it, directly, with URLs the web process signs for
+//! that job alone: a worker beside the store moves nothing across the
+//! network to the web process. Otherwise (memory, in development) the worker
+//! API carries the bytes.
 //!
 //! A job is held with a lease, renewed while the job is made; a renewal that
 //! is refused means the job was deleted or taken by another worker, and this
@@ -88,6 +91,28 @@ impl Making {
 
     fn stopped(&self) -> bool {
         *self.stop.borrow()
+    }
+}
+
+/// What a worker sends of a job: bytes it holds, or a file it made.
+enum Copy {
+    Bytes(Bytes),
+    File(PathBuf),
+}
+
+/// The SHA-256 of the file at `path`.
+async fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
+    use sha2::Digest as _;
+    use tokio::io::AsyncReadExt as _;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hash = sha2::Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(hash.finalize().into());
+        }
+        hash.update(&buf[..n]);
     }
 }
 
@@ -245,22 +270,106 @@ impl Worker {
         }
     }
 
-    /// Send job `id`'s copy of `variant`.
-    async fn put(&self, id: &str, variant: Variant, body: reqwest::Body) -> Result<(), Problem> {
+    /// Send job `id`'s copy of `variant`: straight into the store when it
+    /// signs a URL for it, otherwise through the worker API.
+    async fn put(&self, id: &str, variant: Variant, copy: Copy) -> Result<(), Problem> {
         let name = variant.name();
+        let fail = |e: String| Problem::Failed(format!("sending its {name}: {e}"));
+        let asked = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/work/{id}/files/{name}/url"),
+            )
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| fail(e.to_string()))?;
+        match asked.status() {
+            reqwest::StatusCode::OK => {
+                #[derive(serde::Deserialize)]
+                struct Signed {
+                    url: String,
+                }
+                let Signed { url } = asked.json().await.map_err(|e| fail(e.to_string()))?;
+                let (bytes, sha256) = self.put_signed(&url, copy).await.map_err(fail)?;
+                let hex: String = sha256.iter().map(|b| format!("{b:02x}")).collect();
+                let done = self
+                    .request(
+                        reqwest::Method::POST,
+                        &format!("/work/{id}/files/{name}/done"),
+                    )
+                    .json(&serde_json::json!({ "bytes": bytes, "sha256": hex }))
+                    .timeout(Duration::from_secs(120))
+                    .send()
+                    .await
+                    .map_err(|e| fail(e.to_string()))?;
+                return match done.status() {
+                    reqwest::StatusCode::NO_CONTENT => Ok(()),
+                    reqwest::StatusCode::GONE => Err(Problem::Stopped),
+                    status => Err(fail(format!("the queue answered {status}"))),
+                };
+            }
+            // The store does not sign: the worker API carries it.
+            reqwest::StatusCode::NOT_FOUND => {}
+            reqwest::StatusCode::GONE => return Err(Problem::Stopped),
+            status => return Err(fail(format!("the queue answered {status}"))),
+        }
+        let body = match copy {
+            Copy::Bytes(bytes) => reqwest::Body::from(bytes),
+            Copy::File(path) => tokio::fs::File::open(&path)
+                .await
+                .map_err(|e| fail(e.to_string()))?
+                .into(),
+        };
         let response = self
             .request(reqwest::Method::PUT, &format!("/work/{id}/files/{name}"))
             .body(body)
             .send()
             .await
-            .map_err(|e| Problem::Failed(format!("sending its {name}: {e}")))?;
+            .map_err(|e| fail(e.to_string()))?;
         match response.status() {
             reqwest::StatusCode::NO_CONTENT => Ok(()),
             reqwest::StatusCode::GONE => Err(Problem::Stopped),
-            status => Err(Problem::Failed(format!(
-                "sending its {name}: the queue answered {status}"
-            ))),
+            status => Err(fail(format!("the queue answered {status}"))),
         }
+    }
+
+    /// Put `copy` at a signed URL: its length and SHA-256, for the web
+    /// process to check and record.
+    async fn put_signed(&self, url: &str, copy: Copy) -> Result<(u64, [u8; 32]), String> {
+        use sha2::Digest as _;
+        let (len, sha256, body) = match copy {
+            Copy::Bytes(bytes) => (
+                bytes.len() as u64,
+                sha2::Sha256::digest(&bytes).into(),
+                reqwest::Body::from(bytes),
+            ),
+            Copy::File(path) => {
+                // Read twice, once to hash and once to send: a local file,
+                // and the hash must be known when it is reported.
+                let sha256 = hash_file(&path).await.map_err(|e| e.to_string())?;
+                let len = tokio::fs::metadata(&path)
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .len();
+                let file = tokio::fs::File::open(&path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                (len, sha256, reqwest::Body::from(file))
+            }
+        };
+        let response = self
+            .http
+            .put(url)
+            .header(reqwest::header::CONTENT_LENGTH, len)
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if !response.status().is_success() {
+            return Err(format!("the store answered {}", response.status()));
+        }
+        Ok((len, sha256))
     }
 
     /// Say how job `id` ended, until the web process hears it: it may be
@@ -382,13 +491,6 @@ impl Worker {
     /// fetch cut short stopped.
     async fn fetch(&self, job: &Job, making: &Making) -> Result<PathBuf, Problem> {
         use tokio::io::AsyncWriteExt as _;
-        let local = jobs::source(&self.state_dir, &job.id);
-        if tokio::fs::metadata(&local)
-            .await
-            .is_ok_and(|m| m.len() == job.bytes)
-        {
-            return Ok(local);
-        }
         let work = self.work(&job.id);
         let _ = tokio::fs::remove_dir_all(&work).await;
         tokio::fs::create_dir_all(&work)
@@ -401,8 +503,12 @@ impl Worker {
         let mut have = 0u64;
         let mut last = String::new();
         for _ in 0..5 {
-            let response = self
-                .request(reqwest::Method::GET, &format!("/work/{}/source", job.id))
+            // From the store at the URL signed for it, or else the worker API.
+            let request = match &job.source {
+                Some(url) => self.http.get(url.as_str()),
+                None => self.request(reqwest::Method::GET, &format!("/work/{}/source", job.id)),
+            };
+            let response = request
                 .header(reqwest::header::RANGE, format!("bytes={have}-"))
                 .send()
                 .await;
@@ -537,7 +643,7 @@ impl Worker {
             puts.push((Variant::Display, Bytes::from(d)));
         }
         for (variant, bytes) in puts {
-            self.put(id, variant, bytes.into()).await?;
+            self.put(id, variant, Copy::Bytes(bytes)).await?;
         }
         Ok(made)
     }
@@ -673,14 +779,16 @@ impl Worker {
         };
         making.report(960);
 
-        let video = tokio::fs::File::open(&made)
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?;
-        self.put(id, Variant::Original, video.into()).await?;
-        self.put(id, Variant::Thumb, Bytes::from(still.thumb).into())
+        self.put(id, Variant::Original, Copy::File(made.clone()))
             .await?;
-        self.put(id, Variant::Preview, Bytes::from(still.preview).into())
+        self.put(id, Variant::Thumb, Copy::Bytes(Bytes::from(still.thumb)))
             .await?;
+        self.put(
+            id,
+            Variant::Preview,
+            Copy::Bytes(Bytes::from(still.preview)),
+        )
+        .await?;
         making.report(1000);
         let (width, height) = stored.shown();
         Ok(Made {

@@ -58,7 +58,8 @@ pub struct Config {
     /// The SQLite database and uploads in progress. A local disk: SQLite over
     /// a network filesystem loses its locking.
     pub state_dir: PathBuf,
-    /// The object store, by URL: `file:///abs/dir` or `s3://bucket[/prefix]`.
+    /// The object store, by URL: `s3://bucket[/prefix]`, or `memory:///` for
+    /// development, which forgets everything when the process stops.
     pub storage: String,
     /// `None` only with `INSECURE_NO_AUTH=1`, for local development.
     pub oidc: Option<Oidc>,
@@ -169,12 +170,9 @@ impl Config {
         let queue_url = queue_url.trim_end_matches('/').to_string();
         let storage = match var("STORAGE") {
             Some(s) => s,
-            None => {
-                let dir = std::path::absolute("data/objects").context("resolving data/objects")?;
-                url::Url::from_directory_path(&dir)
-                    .map_err(|()| anyhow::anyhow!("{} is not an absolute path", dir.display()))?
-                    .to_string()
-            }
+            // A worker touches no store but through the worker API.
+            None if worker => "memory:///".into(),
+            None => bail!("STORAGE is required: s3://bucket, or memory:/// for development"),
         };
         Ok(Self {
             bind_addr,

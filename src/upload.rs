@@ -80,7 +80,6 @@ pub struct Uploads {
     db: Db,
     store: Store,
     dir: PathBuf,
-    state_dir: PathBuf,
     /// The memory a worker may take processing: a picture that needs more
     /// is refused here.
     budget_bytes: u64,
@@ -132,7 +131,6 @@ impl Uploads {
             db,
             store,
             dir,
-            state_dir: config.state_dir.clone(),
             jobs,
             budget_bytes: config.process_memory,
             max_pixels: config.max_pixels,
@@ -173,12 +171,7 @@ impl Uploads {
     /// starts evicting at 10% free, and the machine's other services share
     /// the disk.
     pub fn room_for(&self, needed: u64) -> bool {
-        let fits = || {
-            [Some(self.dir.as_path()), self.store.dir()]
-                .into_iter()
-                .flatten()
-                .all(|dir| store::room(dir, self.min_free).is_none_or(|room| room >= needed))
-        };
+        let fits = || store::room(&self.dir, self.min_free).is_none_or(|room| room >= needed);
         // A disk cache beside the uploads gives back what it must first:
         // rare, so done here, on the caller's thread.
         fits() || {
@@ -430,22 +423,11 @@ impl Uploads {
                 Err(why) => return self.reject(&upload, why.into()).await,
             }
         };
-        // A video is made beside its upload before the upload goes: kept as
-        // recorded, about its size again; converted, H.264 at CRF 18 from a
-        // phone's HEVC can be three times it.
-        let needed = match (video, upload.as_recorded) {
-            (true, true) => upload.size.saturating_mul(2),
-            (true, false) => upload.size.saturating_mul(4),
-            (false, _) => upload.size,
-        };
-        if !self.room_for(needed) {
-            return Outcome::Failed(
-                "the disk is nearly full, so nothing more can be stored".into(),
-            );
-        }
+        // The upload goes to the store, where whichever worker takes it
+        // fetches it: nothing is made of it on this machine.
         let id = crate::id::new();
-        let queued = jobs::source(&self.state_dir, &id);
-        if let Err(e) = tokio::fs::rename(&path, &queued).await {
+        let queued = jobs::upload(&id);
+        if let Err(e) = self.store.put_file(&queued, &path).await {
             tracing::error!(upload = %upload.id, error = %e, "queueing an upload failed");
             return Outcome::Failed("the upload could not be saved; try again".into());
         }
@@ -454,15 +436,15 @@ impl Uploads {
             kind,
             bytes: upload.size,
         };
+        // Not recorded: the stored copy goes, and the file stays to try again.
         let put_back = || async {
-            if let Err(e) = tokio::fs::rename(&queued, &path).await {
-                tracing::warn!(upload = %upload.id, error = %e, "returning an upload's file failed");
-            }
+            let _ = self.store.delete(&queued).await;
         };
         // Heard from before the job can end.
         let ends = self.jobs.ends();
         match self.db.begin_job(&upload.owner, &upload.id, job).await {
             Ok(true) => {
+                let _ = tokio::fs::remove_file(&path).await;
                 tracing::info!(job = %id, bytes = upload.size, video, "queued");
                 self.jobs.wake();
                 // A picture takes seconds: its sender hears how it went, as
@@ -474,7 +456,8 @@ impl Uploads {
             }
             // Ended another way first: cancelled, or its album deleted.
             Ok(false) => {
-                let _ = tokio::fs::remove_file(&queued).await;
+                let _ = self.store.delete(&queued).await;
+                let _ = tokio::fs::remove_file(&path).await;
                 let why = match self.db.upload(&upload.id).await {
                     Ok(Some(u)) => u.error.unwrap_or_else(|| "it ended another way".into()),
                     _ => "its album was deleted while it uploaded".into(),
@@ -652,7 +635,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunks_resume_and_a_complete_file_becomes_a_job() {
-        let (uploads, db, _, dir) = setup().await;
+        let (uploads, db, _, _dir) = setup().await;
         let file = jpeg(300, 200);
         let upload = begin(&db, file.len() as u64).await;
         let half = file.len() / 2;
@@ -686,7 +669,15 @@ mod tests {
             (image.status, image.kind),
             (crate::db::Status::Processing, Kind::Jpeg)
         );
-        assert_eq!(std::fs::read(jobs::source(dir.path(), &id)).unwrap(), file);
+        assert_eq!(
+            uploads
+                .store
+                .read(&jobs::upload(&id))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(&file[..])
+        );
         // Finishing again reads the outcome rather than queueing it twice.
         let again = db.upload(&upload.id).await.unwrap().unwrap();
         assert_eq!(uploads.finish(again).await, Outcome::Done(id));
