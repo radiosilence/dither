@@ -36,17 +36,8 @@ async fn app_with(edit: impl FnOnce(&mut Config)) -> App {
         Uploads::new(
             db.clone(),
             store.clone(),
-            &config.state_dir,
-            config.process_memory,
-            config.max_pixels,
-            Some(0),
-            crate::video::Settings {
-                tools: crate::video::Tools::find(&config.video).await.unwrap(),
-                max_bytes: config.video.max_bytes,
-                max_seconds: config.video.max_seconds,
-                max_pixels: config.max_pixels,
-                memory: config.video.memory,
-            },
+            &config,
+            crate::video::Tools::find(&config.video).await.unwrap(),
         )
         .unwrap(),
     );
@@ -913,6 +904,42 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
     assert!(page.contains("· 0:02 ·"), "{page}");
     let public = app.get(&format!("/a/{album}")).await.text();
     assert!(public.contains(&format!("src=\"/d/{id}.mp4\"")), "{public}");
+}
+
+#[tokio::test]
+async fn an_image_declared_a_video_is_still_held_to_the_image_limit() {
+    let app = app_with(|c| c.max_upload_bytes = 1000).await;
+    let album = app.post("/api/albums", json!({})).await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let file = jpeg(400, 300);
+    assert!(file.len() > 1000);
+    let begun = app
+        .post(
+            &format!("/api/albums/{album}/uploads"),
+            json!({ "files": [{ "name": "a.mp4", "size": file.len(), "type": "video/mp4" }] }),
+        )
+        .await;
+    if !app.state.uploads.videos.enabled() {
+        assert_eq!(begun.status, StatusCode::PAYLOAD_TOO_LARGE);
+        return;
+    }
+    let id = begun.json()["uploads"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    app.chunk(&id, &file, 0, file.len()).await;
+    let done = app
+        .post(&format!("/api/uploads/{id}/finish"), json!({}))
+        .await;
+    assert_eq!(done.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        done.json()["error"]
+            .as_str()
+            .unwrap()
+            .contains("limit for an image")
+    );
 }
 
 #[tokio::test]

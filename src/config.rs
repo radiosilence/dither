@@ -34,10 +34,6 @@ pub struct Video {
     pub max_seconds: u64,
     /// Threads a transcode uses: the pod's CPU limit is shared with serving.
     pub threads: u32,
-    /// What a video's processing holds of `process_memory` while it runs:
-    /// ffmpeg's decoders and encoder are a process of their own, so this is
-    /// an allowance rather than a measure.
-    pub memory: u64,
 }
 
 pub struct Config {
@@ -172,7 +168,6 @@ impl Config {
                 max_bytes: num("MAX_VIDEO_BYTES", 1_000_000_000)?,
                 max_seconds: num("MAX_VIDEO_SECONDS", 1800)?,
                 threads: num::<u32>("VIDEO_THREADS", 2)?.max(1),
-                memory: num("VIDEO_MEMORY_BYTES", 768 << 20)?,
             },
         })
     }
@@ -222,7 +217,6 @@ impl Config {
                 max_bytes: 64 << 20,
                 max_seconds: 600,
                 threads: 2,
-                memory: 256 << 20,
             },
         }
     }

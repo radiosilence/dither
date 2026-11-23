@@ -90,6 +90,9 @@ pub struct Uploads {
     budget: Arc<Semaphore>,
     budget_bytes: u64,
     max_pixels: u64,
+    /// The largest image: a file whose bytes are not a video is held to this
+    /// whatever type it was declared as.
+    max_image_bytes: u64,
     /// Free space kept on the disks uploads write to; `None` keeps a share of
     /// each disk instead ([`DEFAULT_FREE_SHARE`]).
     min_free: Option<u64>,
@@ -119,27 +122,28 @@ impl Drop for Held<'_> {
 }
 
 impl Uploads {
+    /// Uploads as `config` sets them, taking videos with `tools`.
     pub fn new(
         db: Db,
         store: Store,
-        state_dir: &Path,
-        process_memory: u64,
-        max_pixels: u64,
-        min_free: Option<u64>,
-        video: video::Settings,
+        config: &crate::config::Config,
+        tools: Option<video::Tools>,
     ) -> std::io::Result<Self> {
-        let dir = state_dir.join("incoming");
+        let dir = config.state_dir.join("incoming");
         std::fs::create_dir_all(&dir)?;
         // Whole MiB, and no more than one acquire can ask for.
-        let mib = (process_memory / MIB).clamp(1, u64::from(u32::MAX));
+        let mib = (config.process_memory / MIB).clamp(1, u64::from(u32::MAX));
         let budget = Arc::new(Semaphore::new(mib as usize));
         let videos = Arc::new(Videos::new(
             db.clone(),
             store.clone(),
-            state_dir,
-            budget.clone(),
-            mib as u32,
-            video,
+            &config.state_dir,
+            video::Settings {
+                tools,
+                max_bytes: config.video.max_bytes,
+                max_seconds: config.video.max_seconds,
+                max_pixels: config.max_pixels,
+            },
         )?);
         Ok(Self {
             db,
@@ -148,8 +152,9 @@ impl Uploads {
             videos,
             budget,
             budget_bytes: mib * MIB,
-            max_pixels,
-            min_free,
+            max_pixels: config.max_pixels,
+            max_image_bytes: config.max_upload_bytes,
+            min_free: config.min_free_bytes,
             locks: Default::default(),
             running: Default::default(),
         })
@@ -394,6 +399,15 @@ impl Uploads {
             && let Some(container) = crate::sanitize::sniff_video(&head)
         {
             return self.video(upload, container, &path).await;
+        }
+        // Begun as a video, perhaps, but not one: held to the image limit.
+        if upload.size > self.max_image_bytes {
+            let why = format!(
+                "{} is over the {} limit for an image",
+                crate::web::human(upload.size),
+                crate::web::human(self.max_image_bytes)
+            );
+            return self.reject(&upload, why).await;
         }
         let cost = match media::cost(&head, upload.size, self.max_pixels) {
             Ok(cost) => cost,
@@ -665,11 +679,8 @@ mod tests {
             Uploads::new(
                 db.clone(),
                 store.clone(),
-                dir.path(),
-                1 << 30,
-                50_000_000,
-                Some(0),
-                video::Settings::off(),
+                &crate::config::Config::test(dir.path().to_path_buf()),
+                None,
             )
             .unwrap(),
         );
@@ -836,11 +847,11 @@ mod tests {
             Uploads::new(
                 db.clone(),
                 Store::memory(),
-                dir.path(),
-                8 << 20,
-                50_000_000,
-                Some(0),
-                video::Settings::off(),
+                &crate::config::Config {
+                    process_memory: 8 << 20,
+                    ..crate::config::Config::test(dir.path().to_path_buf())
+                },
+                None,
             )
             .unwrap(),
         );

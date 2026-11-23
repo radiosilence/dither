@@ -407,10 +407,12 @@ const watch = new IntersectionObserver(
   { threshold: 0.5 },
 );
 
-// Keys reach the page's only player even when focus is elsewhere, unless it
-// is in a field or on a control a key works itself.
+// Keys reach a player that is what the page shows (the viewer's, or an
+// image page's) even when focus is elsewhere, unless it is in a field or on a
+// control a key works itself. A player among an album's pictures is left to
+// its own focus, so Space still scrolls the page.
 document.addEventListener("keydown", (ev) => {
-  const live = [...players.values()].filter((p) => p.root.isConnected);
+  const live = [...players.values()].filter((p) => p.root.isConnected && p.root.closest("dialog[open], .single"));
   const [only] = live;
   if (live.length !== 1 || !only || ev.defaultPrevented) return;
   const at = document.activeElement;

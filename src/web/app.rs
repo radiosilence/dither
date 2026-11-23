@@ -526,9 +526,11 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
     } else {
         (file.clone(), image.width, image.height)
     };
+    // An embedded video plays the copy every browser plays.
     let html = if image.is_video() {
         format!(
-            "<video src=\"{direct}\" poster=\"{public}/p/{}.jpg\" controls playsinline></video>",
+            "<video src=\"{public}{}\" poster=\"{public}/p/{}.jpg\" controls playsinline></video>",
+            crate::web::public::clip(&image).src,
             image.id
         )
     } else {
@@ -645,7 +647,10 @@ pub async fn stream(
                     tick = ticks.recv(), if q.album.is_some() => tick,
                     _ = stopping.wait_for(|s| *s) => break false,
                 };
-                if let Ok(tick) = tick && tick.owner == me {
+                if let Ok(tick) = tick
+                    && tick.owner == me
+                    && q.album.as_deref() == Some(tick.album.as_str())
+                {
                     yield Ok(patch(&format!(
                         "<progress id=\"vp-{}\" class=\"meter\" max=\"1000\" value=\"{}\"></progress>",
                         tick.id, tick.done

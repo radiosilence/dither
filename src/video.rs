@@ -23,8 +23,11 @@
 //! ffmpeg parses untrusted files with a great deal of code, so it runs as a
 //! process of its own, told which container it reads rather than left to
 //! guess, limited to the file protocol and to the decoders a phone or camera
-//! needs, at a lower priority than serving, with a time limit, and holding a
-//! share of the processing memory budget while it works.
+//! needs, at a lower priority than serving, and with a time limit. Its memory
+//! is outside the budget images are processed under, which a transcode
+//! lasting minutes would hold up; one video at a time on a few threads keeps
+//! it to a few hundred megabytes, which the pod's limit allows beside the
+//! budget.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -36,7 +39,7 @@ use std::time::{Duration, Instant};
 use anyhow::Context as _;
 use bytes::Bytes;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _};
-use tokio::sync::{Semaphore, broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::db::{Db, MadeVideo, NewVideo, Status};
 use crate::sanitize::Container;
@@ -211,8 +214,13 @@ impl Tools {
         };
         let outcome = tokio::select! {
             r = tokio::time::timeout(limit, work) => r,
-            () = stopped => return Err("stopped".into()),
+            () = stopped => Ok(Err("stopped".to_string())),
         };
+        // Out of time or stopped, it is killed before its error output is
+        // read, which ends only when it does.
+        if !matches!(outcome, Ok(Ok(_))) {
+            let _ = child.start_kill();
+        }
         let errors = errors.await.unwrap_or_default();
         match outcome {
             Err(_) => Err(format!("timed out after {}s", limit.as_secs())),
@@ -226,7 +234,9 @@ impl Tools {
         }
     }
 
-    /// What `path`, a `container`, holds.
+    /// What `path`, a `container`, holds. Sound in a codec ffmpeg may not
+    /// decode here is left out, as if there were none, rather than failing
+    /// the whole video.
     pub async fn probe(&self, container: Container, path: &Path) -> Result<Probe, String> {
         let mut args: Vec<OsString> = ["-hide_banner", "-v", "error"]
             .iter()
@@ -248,7 +258,15 @@ impl Tools {
                 None,
             )
             .await?;
-        Probe::parse(&out)
+        let mut probe = Probe::parse(&out)?;
+        if probe
+            .audio
+            .as_ref()
+            .is_some_and(|a| !DECODERS.split(',').any(|d| d == a.codec))
+        {
+            probe.audio = None;
+        }
+        Ok(probe)
     }
 
     fn ffmpeg_args(&self) -> Vec<OsString> {
@@ -654,28 +672,27 @@ pub struct Settings {
     pub max_bytes: u64,
     pub max_seconds: u64,
     pub max_pixels: u64,
-    /// Bytes of the processing budget a video holds while it is made.
-    pub memory: u64,
 }
 
-impl Settings {
-    /// No videos: for tests of everything else.
-    #[cfg(test)]
-    pub fn off() -> Self {
-        Self {
-            tools: None,
-            max_bytes: 0,
-            max_seconds: 0,
-            max_pixels: 0,
-            memory: 0,
-        }
-    }
+/// The video the worker is making.
+struct Making {
+    id: String,
+    owner: Arc<str>,
+    album: String,
+}
+
+/// Whether the worker should come back to a video.
+#[derive(Debug, PartialEq, Eq)]
+enum Again {
+    No,
+    Later,
 }
 
 /// How far along a video is, for the album showing it.
 #[derive(Debug, Clone)]
 pub struct Tick {
     pub owner: Arc<str>,
+    pub album: String,
     pub id: String,
     /// Thousandths.
     pub done: u16,
@@ -687,9 +704,6 @@ pub struct Videos {
     store: Store,
     /// Uploads being made into videos, by the video's id.
     dir: PathBuf,
-    budget: Arc<Semaphore>,
-    /// The budget's size, in MiB: no video asks for more.
-    budget_mib: u32,
     queue: mpsc::UnboundedSender<String>,
     waiting: parking_lot::Mutex<Option<mpsc::UnboundedReceiver<String>>>,
     progress: parking_lot::Mutex<HashMap<String, u16>>,
@@ -703,8 +717,6 @@ impl Videos {
         db: Db,
         store: Store,
         state_dir: &Path,
-        budget: Arc<Semaphore>,
-        budget_mib: u32,
         settings: Settings,
     ) -> std::io::Result<Self> {
         let dir = state_dir.join("videos");
@@ -715,8 +727,6 @@ impl Videos {
             db,
             store,
             dir,
-            budget,
-            budget_mib,
             queue,
             waiting: parking_lot::Mutex::new(Some(waiting)),
             progress: Default::default(),
@@ -851,38 +861,57 @@ impl Videos {
                 Err(e) => tracing::error!(error = %e, "listing videos to resume failed"),
             }
             while let Some(id) = waiting.recv().await {
-                this.make(&id).await;
+                if this.make(&id).await == Again::Later {
+                    // The database could not be asked or told: try again
+                    // once whatever held it has let go.
+                    let queue = this.queue.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(30)).await;
+                        let _ = queue.send(id);
+                    });
+                }
             }
         });
     }
 
-    fn tick(&self, owner: &Arc<str>, id: &str, done: u16) {
+    fn tick(&self, video: &Making, done: u16) {
         let mut progress = self.progress.lock();
-        if progress.get(id) == Some(&done) {
+        if progress.get(&video.id) == Some(&done) {
             return;
         }
-        progress.insert(id.to_string(), done);
+        progress.insert(video.id.clone(), done);
         let _ = self.ticks.send(Tick {
-            owner: owner.clone(),
-            id: id.to_string(),
+            owner: video.owner.clone(),
+            album: video.album.clone(),
+            id: video.id.clone(),
             done,
         });
     }
 
     /// Make video `id`'s copies and mark it ready, or failed with why.
-    async fn make(&self, id: &str) {
-        let Ok(Some((image, album))) = self.db.image(id).await else {
-            return;
+    async fn make(&self, id: &str) -> Again {
+        let (image, album) = match self.db.image(id).await {
+            Ok(Some(found)) => found,
+            Ok(None) => return Again::No,
+            Err(e) => {
+                tracing::warn!(video = id, error = %e, "reading a video to make failed");
+                return Again::Later;
+            }
         };
         if image.status != Status::Processing {
-            return;
+            return Again::No;
         }
-        let owner: Arc<str> = album.owner.as_str().into();
+        let video = Making {
+            id: id.to_string(),
+            owner: album.owner.as_str().into(),
+            album: album.id,
+        };
+        let owner = video.owner.clone();
         let started = Instant::now();
         let (stop, stopped) = watch::channel(false);
         *self.current.lock() = Some((id.to_string(), stop));
-        self.tick(&owner, id, 0);
-        let outcome = self.copies(&image, &owner, stopped).await;
+        self.tick(&video, 0);
+        let outcome = self.copies(&image, &video, stopped).await;
         *self.current.lock() = None;
         let _ = tokio::fs::remove_dir_all(self.work(id)).await;
         let ok = match outcome {
@@ -899,10 +928,10 @@ impl Videos {
                     false
                 }
                 Err(e) => {
-                    // Still processing, with its upload kept: made again on
-                    // the next start.
+                    // Still processing, with its upload kept: made again.
                     tracing::error!(video = id, error = %e, "recording a video failed");
-                    false
+                    self.progress.lock().remove(id);
+                    return Again::Later;
                 }
             },
             Err(Problem::Stopped) => {
@@ -929,12 +958,13 @@ impl Videos {
         };
         crate::metrics::video(ok, started.elapsed());
         self.progress.lock().remove(id);
+        Again::No
     }
 
     async fn copies(
         &self,
         image: &crate::db::Image,
-        owner: &Arc<str>,
+        video: &Making,
         stop: watch::Receiver<bool>,
     ) -> Result<MadeVideo, Problem> {
         let failed = |what: &str| {
@@ -975,15 +1005,6 @@ impl Videos {
         let container = crate::sanitize::sniff_video(&head)
             .ok_or_else(|| Problem::Failed("its upload is no longer a video".into()))?;
 
-        let mib = u32::try_from(self.settings.memory.div_ceil(1 << 20))
-            .unwrap_or(u32::MAX)
-            .clamp(1, self.budget_mib.max(1));
-        let _held = self
-            .budget
-            .acquire_many(mib)
-            .await
-            .map_err(|_| Problem::Failed("shutting down".into()))?;
-
         let probe = tools
             .probe(container, &source)
             .await
@@ -995,7 +1016,7 @@ impl Videos {
             .await
             .map_err(failed("remuxing"))?;
         let span = if playable && remuxed { 900.0 } else { 100.0 };
-        self.tick(owner, id, span as u16);
+        self.tick(video, span as u16);
 
         let play = work.join("play.mp4");
         let transcoded = !playable || !remuxed;
@@ -1003,7 +1024,7 @@ impl Videos {
             let duration = probe.duration;
             let mut report = |secs: f64| {
                 let share = (secs / duration).clamp(0.0, 1.0);
-                self.tick(owner, id, (100.0 + share * 850.0) as u16);
+                self.tick(video, (100.0 + share * 850.0) as u16);
             };
             tools
                 .transcode(container, &probe, &source, &play, &stop, &mut report)
@@ -1029,7 +1050,7 @@ impl Videos {
             .await
             .map_err(|e| Problem::Failed(e.to_string()))?
             .map_err(|e| Problem::Failed(format!("the frame: {e}")))?;
-        self.tick(owner, id, 960);
+        self.tick(video, 960);
 
         let (bytes, sha256) = digest(&original)
             .await
@@ -1058,7 +1079,7 @@ impl Videos {
         stored
             .await
             .map_err(|e| Problem::Failed(format!("storing: {e:#}")))?;
-        self.tick(owner, id, 1000);
+        self.tick(video, 1000);
         let (width, height) = probe.shown();
         Ok(MadeVideo {
             width,

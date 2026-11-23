@@ -74,17 +74,8 @@ async fn serve() -> anyhow::Result<()> {
     let uploads = Arc::new(Uploads::new(
         db.clone(),
         store.clone(),
-        &config.state_dir,
-        config.process_memory,
-        config.max_pixels,
-        config.min_free_bytes,
-        video::Settings {
-            tools: video::Tools::find(&config.video).await?,
-            max_bytes: config.video.max_bytes,
-            max_seconds: config.video.max_seconds,
-            max_pixels: config.max_pixels,
-            memory: config.video.memory,
-        },
+        &config,
+        video::Tools::find(&config.video).await?,
     )?);
     uploads.videos.start();
 

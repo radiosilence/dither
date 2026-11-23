@@ -243,13 +243,13 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
                   initialDelaySeconds: 10,
                   periodSeconds: 30,
                 },
-                // Processing is what takes memory: the service holds it to
-                // a budget (1 GiB by default, of which a video's ffmpeg is
-                // allowed 768 MiB), which this limit allows beside the image
-                // cache. A video's ffmpeg runs two threads at a lower
-                // priority, within the same CPU limit.
+                // Processing is what takes memory: the service holds images
+                // to a budget (1 GiB by default), and makes one video at a
+                // time in an ffmpeg of a few hundred megabytes, which this
+                // limit allows beside the image cache. ffmpeg runs two
+                // threads at a lower priority, within the same CPU limit.
                 resources: {
-                  limits: args.limits ?? { cpu: "2", memory: "1536Mi" },
+                  limits: args.limits ?? { cpu: "2", memory: "2Gi" },
                   requests: args.requests ?? { cpu: "10m", memory: "64Mi" },
                 },
                 securityContext: {

@@ -79,8 +79,9 @@ its ffmpeg.
 ffmpeg parses untrusted files, so it runs as a process of its own: told the
 container it reads rather than left to probe, limited to the file protocol
 and to the decoders phones and cameras need, at a lower priority than
-serving, with a time limit, holding a share of the processing budget
-(`VIDEO_MEMORY_BYTES`) while it works.
+serving, and with a time limit. Its memory is outside the image processing
+budget, which a transcode lasting minutes would otherwise hold up; one video
+at a time on `VIDEO_THREADS` threads keeps it to a few hundred megabytes.
 
 Every file is served with byte ranges, which seeking needs and Safari requires
 before it plays a video at all; video is never compressed again on the way
@@ -253,7 +254,6 @@ startup.
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
 | `VIDEO_THREADS` | 2 | Threads a transcode uses, of the CPU serving shares. |
-| `VIDEO_MEMORY_BYTES` | 768 MiB | What a video holds of `PROCESS_MEMORY_BYTES` while ffmpeg works on it. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 
 ## Development
