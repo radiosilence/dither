@@ -794,6 +794,15 @@ async fn the_app_pages_draw_and_carry_their_policy() {
 
     let page = app.get(&format!("/albums/{album}")).await;
     assert!(page.text().contains(&format!("id=\"i-{id}\"")));
+    // The signed-in pages say what they run; the public ones do not.
+    let version = format!("dither {}", env!("CARGO_PKG_VERSION"));
+    assert!(page.text().contains(&version));
+    assert!(
+        !app.get(&format!("/a/{album}"))
+            .await
+            .text()
+            .contains(&version)
+    );
     assert!(page.text().contains(&format!("http://app.test/a/{album}")));
 
     let viewer = app.get(&format!("/images/{id}/view")).await;

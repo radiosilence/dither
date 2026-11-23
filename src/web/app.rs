@@ -41,6 +41,9 @@ struct Shell {
     /// The limit for a video; `None` when the server takes none.
     max_video: Option<u64>,
     chunk: u64,
+    /// The running version, shown to the signed-in only: the public pages do
+    /// not say what they run.
+    version: &'static str,
 }
 
 impl Shell {
@@ -65,6 +68,7 @@ async fn shell(state: &AppState, session: &Session) -> Shell {
         max_upload: state.config.max_upload_bytes,
         max_video: state.uploads.max_video_bytes(),
         chunk: CHUNK,
+        version: env!("CARGO_PKG_VERSION"),
     }
 }
 
