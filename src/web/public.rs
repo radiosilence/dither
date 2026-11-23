@@ -58,6 +58,9 @@ const CSP_FILE: &str = "default-src 'none'; sandbox";
 /// its own for `'self'` to match, and Safari's then never loads the video; a
 /// file served as video with `nosniff` is never read as a page regardless.
 const CSP_VIDEO_FILE: &str = "default-src 'none'; media-src 'self'; style-src 'unsafe-inline'";
+/// A range from the start ending before this byte is a probe of the file
+/// rather than a look at it.
+const PROBE_MAX: u64 = 16;
 /// An animated picture up to this size is its own `og:image`, so it plays in
 /// the previews that play one (X's limit is 5 MB).
 const OG_ANIMATED_MAX: u64 = 5_000_000;
@@ -651,8 +654,8 @@ async fn file(
         .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"))
     {
         metrics::not_modified();
-        let response = (StatusCode::NOT_MODIFIED, h).into_response();
-        return counted(response, &album, Some(id), served, viewable);
+        // A revalidation: neither a view nor anything sent.
+        return (StatusCode::NOT_MODIFIED, h).into_response();
     }
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
     let filename = format!(
@@ -675,8 +678,14 @@ async fn file(
         if response.status() != StatusCode::PARTIAL_CONTENT {
             return response;
         }
-        // A player's later ranges are the same view.
-        let view = viewable && matches!(wanted, Wanted::Between(0, _) | Wanted::From(0));
+        // A player's later ranges are the same view, and so is the probe
+        // Safari sends before it plays (`bytes=0-1`).
+        let view = viewable
+            && match wanted {
+                Wanted::Between(0, end) => end >= PROBE_MAX,
+                Wanted::From(0) => true,
+                _ => false,
+            };
         return counted(response, &album, Some(id), served, view);
     }
     let body = match state.store.get(&key).await {

@@ -209,6 +209,10 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
         crate::views::host_only(state.config.public_host()),
     ];
     let from = crate::views::source(text(header::REFERER), &own);
+    let dest = h
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let peer = request
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
@@ -235,10 +239,15 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
         fetcher: fetcher(&agent),
         agent,
         from,
+        dest,
     };
     let (mut parts, body) = response.into_parts();
-    // Counting streams the body, which would otherwise lose its length.
-    if !parts.headers.contains_key(header::CONTENT_LENGTH)
+    // Counting streams the body, which would otherwise lose its length. A
+    // 304 or 204 has none to keep, and says nothing of the stored copy's.
+    if !matches!(
+        parts.status,
+        StatusCode::NOT_MODIFIED | StatusCode::NO_CONTENT
+    ) && !parts.headers.contains_key(header::CONTENT_LENGTH)
         && let Some(n) = axum::body::HttpBody::size_hint(&body).exact()
     {
         parts

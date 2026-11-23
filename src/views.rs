@@ -53,9 +53,9 @@ pub struct Counted {
     /// The album's owner, whose own requests are not counted.
     pub owner: String,
     pub kind: Served,
-    /// Whether it is a view, as its handler sees it: a page, or a file
-    /// asked for from its start. The counting layer drops a file that one
-    /// of dither's own pages asked for, which the page's view counted.
+    /// Whether it may be a view, as its handler sees it: a page, or an
+    /// original or display file asked for from its start. Whether a file is
+    /// one is then down to who asked ([`Visit::opened_alone`]).
     pub view: bool,
 }
 
@@ -66,6 +66,24 @@ pub struct Visit {
     pub from: Source,
     /// The link preview's fetcher that asked, by name.
     pub fetcher: Option<&'static str>,
+    /// The request's `Sec-Fetch-Dest`, which browsers send.
+    pub dest: Option<String>,
+}
+
+/// User agents of media frameworks, which fetch a page's video on its
+/// behalf (iOS's AppleCoreMedia, with no Referer): never a view of their own.
+const MEDIA_AGENTS: [&str; 4] = ["AppleCoreMedia", "stagefright", "ExoPlayer", "Lavf"];
+
+impl Visit {
+    /// Whether a file was opened on its own, rather than fetched for a page
+    /// that counted the view: navigated to, or asked for by a client that
+    /// says nothing of why and is not a page's media player.
+    fn opened_alone(&self) -> bool {
+        match self.dest.as_deref() {
+            Some(dest) => dest == "document",
+            None => !MEDIA_AGENTS.iter().any(|m| self.agent.contains(m)),
+        }
+    }
 }
 
 /// Where a request came from, by its `Referer`.
@@ -151,8 +169,19 @@ struct Shared {
     inner: Mutex<Inner>,
     /// Held through a flush, so one that is under way finishes before the
     /// next begins: the last, as the server stops, waits for it.
-    flushing: tokio::sync::Mutex<()>,
+    flushing: tokio::sync::Mutex<Announced>,
 }
+
+/// When the snapshotter was last told of counts, and whether counts have
+/// been written since.
+struct Announced {
+    at: std::time::Instant,
+    since: bool,
+}
+
+/// How often counts alone wake the snapshotter, which copies the whole
+/// database: other writes wake it at once, and carry the counts with them.
+const ANNOUNCE_EVERY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 #[derive(Clone)]
 pub struct Views(Arc<Shared>);
@@ -167,7 +196,10 @@ impl Default for Views {
                 hosts: HashMap::new(),
                 pending: Pending::default(),
             }),
-            flushing: tokio::sync::Mutex::new(()),
+            flushing: tokio::sync::Mutex::new(Announced {
+                at: std::time::Instant::now(),
+                since: false,
+            }),
         }))
     }
 }
@@ -222,32 +254,60 @@ impl Views {
         }
         let day = s.day;
         let kind = kind_name(c.kind);
-        let targets = std::iter::once(&c.album).chain(c.image.as_ref());
+        // An image's traffic is its own; an album's rows are its page's.
+        // The album is told of an image's visitors, though, so its visitors
+        // are distinct across the album.
+        let target = c.image.as_ref().unwrap_or(&c.album);
         if let Some(fetcher) = v.fetcher {
-            for t in targets {
+            // A share is the page fetched once, not the files it names.
+            if c.kind == Served::Page {
                 *s.pending
                     .fetchers
-                    .entry((t.clone(), day, fetcher))
+                    .entry((target.clone(), day, fetcher))
                     .or_default() += 1;
-                s.pending
-                    .hits
-                    .entry((t.clone(), day, kind))
-                    .or_default()
-                    .bytes += bytes;
             }
+            s.pending
+                .hits
+                .entry((target.clone(), day, kind))
+                .or_default()
+                .bytes += bytes;
             return;
+        }
+        let view = c.view
+            && match (&v.from, c.kind) {
+                (_, Served::Page) => true,
+                (Source::Here, _) => false,
+                (Source::Site(_), _) => true,
+                (Source::Unknown, _) => v.opened_alone(),
+            };
+        let e = s
+            .pending
+            .hits
+            .entry((target.clone(), day, kind))
+            .or_default();
+        e.hits += 1;
+        e.views += u64::from(view);
+        e.bytes += bytes;
+        if let Source::Site(host) = &v.from {
+            let hosts = s.hosts.entry(target.clone()).or_default();
+            let host = if hosts.contains(host) || hosts.len() < HOSTS_MAX {
+                hosts.insert(host.clone());
+                host.clone()
+            } else {
+                String::new()
+            };
+            *s.pending
+                .referrers
+                .entry((target.clone(), day, host))
+                .or_default() += 1;
         }
         let visitor = Sha256::new()
             .chain_update(s.salt)
             .chain_update(v.address.as_bytes())
             .chain_update([0])
             .chain_update(v.agent.as_bytes());
-        let view = c.view && v.from != Source::Here;
+        let targets = std::iter::once(&c.album).chain(c.image.as_ref());
         for t in targets {
-            let e = s.pending.hits.entry((t.clone(), day, kind)).or_default();
-            e.hits += 1;
-            e.views += u64::from(view);
-            e.bytes += bytes;
             let seen: [u8; 32] = visitor
                 .clone()
                 .chain_update([0])
@@ -258,36 +318,33 @@ impl Views {
             if s.seen.len() < SEEN_MAX && s.seen.insert(seen) {
                 *s.pending.visitors.entry((t.clone(), day)).or_default() += 1;
             }
-            if let Source::Site(host) = &v.from {
-                let hosts = s.hosts.entry(t.clone()).or_default();
-                let host = if hosts.contains(host) || hosts.len() < HOSTS_MAX {
-                    hosts.insert(host.clone());
-                    host.clone()
-                } else {
-                    String::new()
-                };
-                *s.pending
-                    .referrers
-                    .entry((t.clone(), day, host))
-                    .or_default() += 1;
-            }
         }
     }
 
     /// Add what has gathered to the database. What could not be written is
-    /// kept for the next flush.
-    pub async fn flush(&self, db: &Db) {
-        let _flushing = self.0.flushing.lock().await;
+    /// kept for the next flush, whatever failed. The snapshotter is told at
+    /// most every [`ANNOUNCE_EVERY`], and on the `last` flush as the server
+    /// stops.
+    pub async fn flush(&self, db: &Db, last: bool) {
+        let mut announced = self.0.flushing.lock().await;
         let pending = std::mem::take(&mut self.0.inner.lock().pending);
-        if pending.is_empty() {
-            return;
-        }
-        if let Err(failed) = db.add_views(pending).await {
-            let (e, pending) = *failed;
-            tracing::warn!(error = %e, "writing view counts failed; kept for the next try");
-            if let Some(pending) = pending {
-                self.0.inner.lock().pending.merge(pending);
+        if !pending.is_empty() {
+            let pending = Arc::new(Mutex::new(pending));
+            match db.add_views(pending.clone()).await {
+                Ok(()) => announced.since = true,
+                Err(e) => {
+                    tracing::warn!(error = %e, "writing view counts failed; kept for the next try");
+                    let pending = std::mem::take(&mut *pending.lock());
+                    self.0.inner.lock().pending.merge(pending);
+                }
             }
+        }
+        if announced.since && (last || announced.at.elapsed() >= ANNOUNCE_EVERY) {
+            db.announce();
+            *announced = Announced {
+                at: std::time::Instant::now(),
+                since: false,
+            };
         }
     }
 }
@@ -358,6 +415,7 @@ mod tests {
             agent: agent.into(),
             from: Source::Unknown,
             fetcher: None,
+            dest: None,
         }
     }
 
@@ -391,13 +449,14 @@ mod tests {
     }
 
     #[test]
-    fn a_fetcher_is_counted_as_itself_and_never_as_a_view() {
+    fn a_fetcher_is_counted_once_a_share_and_never_as_a_view() {
         let views = Views::default();
         let v = Visit {
             fetcher: Some("WhatsApp"),
             ..visit("192.0.2.1", "WhatsApp/2")
         };
         let day = today();
+        views.record_on(day, &hit(Some("IMAGE00000"), Served::Page), &v, 900);
         views.record_on(day, &hit(Some("IMAGE00000"), Served::Preview), &v, 50);
         let p = &views.0.inner.lock().pending;
         assert!(p.visitors.is_empty());
@@ -405,7 +464,8 @@ mod tests {
             p.hits[&("IMAGE00000".to_string(), day, "preview")],
             tally(0, 0, 50)
         );
-        assert_eq!(p.fetchers[&("ALBUM00000".to_string(), day, "WhatsApp")], 1);
+        assert_eq!(p.fetchers.len(), 1);
+        assert_eq!(p.fetchers[&("IMAGE00000".to_string(), day, "WhatsApp")], 1);
     }
 
     #[test]
@@ -413,16 +473,50 @@ mod tests {
         let views = Views::default();
         let file = hit(Some("IMAGE00000"), Served::Original);
         let day = today();
-        views.record_on(day, &file, &visit("192.0.2.1", "a browser"), 10);
-        let embedded = Visit {
-            from: Source::Here,
-            ..visit("192.0.2.1", "a browser")
+        let opened = |dest: Option<&str>, agent: &str, from: Source| Visit {
+            dest: dest.map(str::to_string),
+            from,
+            ..visit("192.0.2.1", agent)
         };
-        views.record_on(day, &file, &embedded, 10);
+        // Views: opened in a tab, fetched by a client that says nothing,
+        // and embedded in another site.
+        views.record_on(
+            day,
+            &file,
+            &opened(Some("document"), "a browser", Source::Unknown),
+            10,
+        );
+        views.record_on(day, &file, &opened(None, "curl/8", Source::Unknown), 10);
+        let forum = Source::Site("forum.example".into());
+        views.record_on(day, &file, &opened(Some("image"), "a browser", forum), 10);
+        // Not: one of dither's pages asking, iOS playing a page's video,
+        // and an image fetched for a page that withheld its referrer.
+        views.record_on(
+            day,
+            &file,
+            &opened(Some("image"), "a browser", Source::Here),
+            10,
+        );
+        views.record_on(
+            day,
+            &file,
+            &opened(None, "AppleCoreMedia/1.0", Source::Unknown),
+            10,
+        );
+        views.record_on(
+            day,
+            &file,
+            &opened(Some("image"), "a browser", Source::Unknown),
+            10,
+        );
         let p = &views.0.inner.lock().pending;
         assert_eq!(
             p.hits[&("IMAGE00000".to_string(), day, "original")],
-            tally(2, 1, 20)
+            tally(6, 3, 60)
+        );
+        assert!(
+            !p.hits
+                .contains_key(&("ALBUM00000".to_string(), day, "original"))
         );
     }
 

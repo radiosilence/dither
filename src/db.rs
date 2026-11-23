@@ -1220,14 +1220,16 @@ impl Db {
         .await
     }
 
-    /// Add counts gathered in memory, in one transaction. Counts for an
-    /// image or album deleted meanwhile are dropped. The snapshotter hears of
-    /// it, so the counts outlive the pod; no page is redrawn. A failure hands
-    /// the counts back.
-    pub async fn add_views(
-        &self,
-        p: crate::views::Pending,
-    ) -> std::result::Result<(), Box<(rusqlite::Error, Option<crate::views::Pending>)>> {
+    /// Tell the snapshotter the database changed, for writes made quietly.
+    pub fn announce(&self) {
+        self.0.writes.send_modify(|n| *n += 1);
+    }
+
+    /// Add counts gathered in memory, in one transaction, quietly: the
+    /// caller decides when the snapshotter hears of them
+    /// ([`Self::announce`]). Counts for an image or album deleted meanwhile
+    /// are dropped. `p` stays the caller's, to take back on any failure.
+    pub async fn add_views(&self, p: Arc<parking_lot::Mutex<crate::views::Pending>>) -> Result<()> {
         // A target that still exists: counts never outlive what they count.
         const EXISTS: &str = "WHERE EXISTS (SELECT 1 FROM images WHERE id = ?1) \
              OR EXISTS (SELECT 1 FROM albums WHERE id = ?1)";
@@ -1286,25 +1288,21 @@ impl Db {
             }
             tx.commit()
         };
-        match self
-            .run(move |c| Ok(add(c, &p).err().map(|e| (e, p))))
-            .await
-        {
-            Ok(None) => Ok(()),
-            Ok(Some((e, p))) => Err(Box::new((e, Some(p)))),
-            Err(e) => Err(Box::new((e, None))),
-        }
+        self.run_quiet(move |c| add(c, &p.lock())).await
     }
 
-    /// An image's or album's counts: since day `since`, and in all.
+    /// An image's or album's counts: since day `since`, and in all. An
+    /// album's are its page's and those of the images in it now; its
+    /// visitors were counted across the album as they came.
     pub async fn view_stats(&self, target: &str, since: i64) -> Result<crate::views::Stats> {
         use crate::views::{Stats, Totals};
+        const TARGETS: &str = "(SELECT ?1 UNION ALL SELECT id FROM images WHERE album = ?1)";
         let target = target.to_string();
         self.run(move |c| {
             let (views, bytes, recent_views, recent_bytes) = c.query_row(
-                "SELECT COALESCE(SUM(views), 0), COALESCE(SUM(bytes), 0), \
+                &format!("SELECT COALESCE(SUM(views), 0), COALESCE(SUM(bytes), 0), \
                  COALESCE(SUM(CASE WHEN day >= ?2 THEN views END), 0), \
-                 COALESCE(SUM(CASE WHEN day >= ?2 THEN bytes END), 0) FROM views WHERE target = ?1",
+                 COALESCE(SUM(CASE WHEN day >= ?2 THEN bytes END), 0) FROM views WHERE target IN {TARGETS}"),
                 params![target, since],
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)),
             )?;
@@ -1331,12 +1329,12 @@ impl Db {
                     bytes: bytes as u64,
                 },
                 shared: top(
-                    "SELECT fetcher, SUM(hits) FROM fetchers WHERE target = ?1 \
-                     GROUP BY fetcher ORDER BY 2 DESC, 1",
+                    &format!("SELECT fetcher, SUM(hits) FROM fetchers WHERE target IN {TARGETS} \
+                     GROUP BY fetcher ORDER BY 2 DESC, 1"),
                 )?,
                 referrers: top(
-                    "SELECT host, SUM(hits) FROM referrers WHERE target = ?1 \
-                     GROUP BY host ORDER BY 2 DESC, 1 LIMIT 5",
+                    &format!("SELECT host, SUM(hits) FROM referrers WHERE target IN {TARGETS} \
+                     GROUP BY host ORDER BY 2 DESC, 1 LIMIT 5"),
                 )?,
             })
         })

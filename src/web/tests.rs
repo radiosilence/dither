@@ -1367,7 +1367,7 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
         ],
     )
     .await;
-    app.state.views.flush(&app.state.db).await;
+    app.state.views.flush(&app.state.db, true).await;
 
     let stats = app.state.db.view_stats(&id, 0).await.unwrap();
     // Three page views and the file asked for on its own.
@@ -1410,7 +1410,7 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
     app.get_with(&page, &from("192.0.2.3")).await;
     let gone = app.post("/images/delete", json!({ "ids": [id] })).await;
     assert!(gone.status.is_success(), "{}", gone.text());
-    app.state.views.flush(&app.state.db).await;
+    app.state.views.flush(&app.state.db, true).await;
     let stats = app.state.db.view_stats(&id, 0).await.unwrap();
     assert_eq!(stats, crate::views::Stats::default());
 }

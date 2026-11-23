@@ -153,7 +153,7 @@ async fn serve() -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(60)).await;
-                state.views.flush(&state.db).await;
+                state.views.flush(&state.db, false).await;
             }
         });
     }
@@ -209,7 +209,7 @@ async fn serve() -> anyhow::Result<()> {
     // The last counts are written and an upload being processed finishes,
     // then the database is copied a last time, so nothing acknowledged is
     // lost with the pod.
-    state.views.flush(&state.db).await;
+    state.views.flush(&state.db, true).await;
     uploads.drain(Duration::from_secs(30)).await;
     let _ = snapshot_stop.send(true);
     let _ = snapshots.await;
