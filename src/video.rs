@@ -1197,13 +1197,8 @@ pub mod tests {
         assert_eq!(shrink(1920, 1080), 1.0);
         assert_eq!(shrink(3840, 2160), 1.0);
         assert_eq!(shrink(4096, 2160), 1.0);
-        for (w, h) in [
-            (7680, 4320),
-            (4000, 3000),
-            (4096, 4096),
-            (2160, 3840),
-            (8192, 1080),
-        ] {
+        assert_eq!(shrink(2160, 3840), 1.0, "4K, upright");
+        for (w, h) in [(7680, 4320), (4000, 3000), (4096, 4096), (8192, 1080)] {
             let f = shrink(w, h);
             let (tw, th) = (
                 (f64::from(w) * f / 2.0).trunc() * 2.0,
