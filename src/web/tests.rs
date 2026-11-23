@@ -1088,6 +1088,11 @@ async fn an_albums_app_address_sends_anyone_but_its_owner_to_its_link() {
         other.header("location"),
         format!("http://app.test/a/{album}")
     );
+    // Not the app's own requests, which a redirect would swap a page into.
+    let fetched = app
+        .write("GET", &format!("/albums/{album}"), json!({}), Some(&bob))
+        .await;
+    assert_eq!(fetched.status, StatusCode::NOT_FOUND);
     // Unless it is private, when it is as if there were none.
     app.post(&format!("/albums/{album}/meta"), json!({ "private": true }))
         .await;
