@@ -175,7 +175,7 @@ impl Tile {
             id: i.id.clone(),
             thumb: format!("/t/{}.webp", i.id),
             animated: i.animated,
-            length: i.is_video().then(|| crate::video::clock(i.seconds())),
+            length: (i.is_video() && i.ready()).then(|| crate::video::clock(i.seconds())),
             progress: (i.status == Status::Processing).then(|| jobs.progress(&i.id).unwrap_or(0)),
             failure: (i.status == Status::Failed).then(|| i.failure.clone()),
             captioned: !i.caption.is_empty(),
@@ -575,9 +575,7 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
         size: human(image.bytes),
         animated: image.animated,
         clip: (image.is_video() && image.ready()).then(|| crate::web::public::clip(&image)),
-        length: image
-            .is_video()
-            .then(|| crate::video::clock(image.seconds())),
+        length: (image.is_video() && image.ready()).then(|| crate::video::clock(image.seconds())),
         progress: (image.status == Status::Processing)
             .then(|| state.uploads.jobs.progress(&image.id).unwrap_or(0)),
         failure: (image.status == Status::Failed).then(|| image.failure.clone()),

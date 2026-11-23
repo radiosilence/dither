@@ -42,6 +42,6 @@
       <button data-move-one="{{ id }}">{{ icon("album", 13.0)|safe }} {{ __p("Button: move images to another album", "move") }}</button>
       <button class="bad" data-delete-one="{{ id }}">{{ icon("trash", 13.0)|safe }} {{ __p("Button", "delete") }}</button>
     </div>
-    <p class="m-0 text-fine break-all text-muted">{{ name }} · {{ width_full }}×{{ height_full }}{% if let Some(length) = length.as_ref() %} · {{ length }}{% endif %} · {{ size }}{% if animated %} · {{ __("animated") }}{% endif %}</p>
+    <p class="m-0 text-fine break-all text-muted">{{ name }}{% if progress.is_none() && failure.is_none() %} · {{ width_full }}×{{ height_full }}{% endif %}{% if let Some(length) = length.as_ref() %} · {{ length }}{% endif %} · {{ size }}{% if animated %} · {{ __("animated") }}{% endif %}</p>
   </div>
 </div>

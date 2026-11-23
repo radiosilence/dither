@@ -264,7 +264,8 @@ impl Hub {
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let id = name.strip_suffix(".work").unwrap_or(&name);
+            // `<id>`, or `<id>.<worker>.work`.
+            let id = name.split('.').next().unwrap_or(&name);
             let stale = entry
                 .metadata()
                 .await

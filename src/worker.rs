@@ -41,9 +41,6 @@ const RENEW: Duration = Duration::from_secs(20);
 const IDLE: Duration = Duration::from_secs(30);
 /// Claims before a job that keeps failing on this side is marked failed.
 const ATTEMPTS: u32 = 3;
-/// What sizing a picture reads before the budget is held: every header
-/// dither takes ends well within it.
-const HEAD: u64 = 4 << 20;
 /// The processing budget's unit.
 const MIB: u64 = 1 << 20;
 
@@ -183,7 +180,7 @@ impl Worker {
     async fn let_go(&self) {
         let ids: Vec<String> = self.running.lock().keys().cloned().collect();
         for id in ids {
-            let _ = self.db.release(&self.name, &id, 0).await;
+            let _ = self.db.release(&self.name, &id, 0, true).await;
         }
     }
 
@@ -362,7 +359,11 @@ impl Worker {
     async fn later(&self, job: &Claimed) {
         let wait = Duration::from_secs(30) * job.image.attempts.max(1);
         let after = now() + wait.as_millis() as i64;
-        if let Err(e) = self.db.release(&self.name, &job.image.id, after).await {
+        if let Err(e) = self
+            .db
+            .release(&self.name, &job.image.id, after, false)
+            .await
+        {
             tracing::warn!(job = %job.image.id, error = %e, "putting a job back failed; its lease will lapse");
         }
         self.say(FromWorker::Waiting {
@@ -379,6 +380,21 @@ impl Worker {
     /// the job and one that took it never share one.
     fn work(&self, id: &str) -> PathBuf {
         jobs::work(&self.state_dir, &format!("{id}.{}", self.name))
+    }
+
+    /// `cost` bytes of the processing budget, until what is returned drops.
+    async fn hold(&self, cost: u64) -> Result<tokio::sync::SemaphorePermit<'_>, Problem> {
+        let permits = u32::try_from(cost.div_ceil(MIB)).unwrap_or(u32::MAX).max(1);
+        if permits > self.budget_mib {
+            return Err(Problem::Rejected(
+                jobs::FAILED_TOO_LARGE,
+                format!("it needs {cost} bytes to process"),
+            ));
+        }
+        self.budget
+            .acquire_many(permits)
+            .await
+            .map_err(|_| Problem::Failed("stopping".into()))
     }
 
     /// The upload's file: its first `limit` bytes, or all of it.
@@ -415,36 +431,24 @@ impl Worker {
     async fn picture(&self, job: &Claimed, stop: watch::Receiver<bool>) -> Result<Made, Problem> {
         use crate::media::{self, Reject};
         let id = job.image.id.as_str();
-        // Sized from its first bytes, so files waiting for the budget are not
-        // held in memory beside it.
-        let head = self.upload(id, Some(HEAD)).await?;
         let size = job.image.bytes;
         let refused = |r: Reject| match r {
             Reject::TooBig(why) => Problem::Rejected(jobs::FAILED_TOO_LARGE, why),
             Reject::Unsupported(why) => Problem::Rejected(jobs::FAILED_UNREADABLE, why.into()),
             Reject::Broken(why) => Problem::Rejected(jobs::FAILED_UNREADABLE, why),
         };
-        let cost = match media::cost(&head, size, self.max_pixels) {
+        let cost = match media::cost_of(&self.source(id), size, self.max_pixels).await {
             Ok(cost) => cost,
-            // A header longer than the first bytes: sized from the whole file.
-            Err(Reject::Broken(_)) if (head.len() as u64) < size => {
-                let all = self.upload(id, None).await?;
-                media::cost(&all, size, self.max_pixels).map_err(refused)?
+            Err(media::Unsized::Refused(r)) => return Err(refused(r)),
+            Err(media::Unsized::Unread(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Problem::Rejected(
+                    jobs::FAILED,
+                    "its upload was lost before it was made".into(),
+                ));
             }
-            Err(r) => return Err(refused(r)),
+            Err(media::Unsized::Unread(e)) => return Err(Problem::Failed(e.to_string())),
         };
-        let permits = u32::try_from(cost.div_ceil(MIB)).unwrap_or(u32::MAX).max(1);
-        if permits > self.budget_mib {
-            return Err(Problem::Rejected(
-                jobs::FAILED_TOO_LARGE,
-                format!("it needs {cost} bytes to process"),
-            ));
-        }
-        let _held = self
-            .budget
-            .acquire_many(permits)
-            .await
-            .map_err(|_| Problem::Failed("stopping".into()))?;
+        let _held = self.hold(cost).await?;
         if *stop.borrow() {
             return Err(Problem::Stopped);
         }
@@ -507,22 +511,7 @@ impl Worker {
         let id = job.image.id.as_str();
         let owner = job.owner.as_str();
         let source = self.source(id);
-        let mut head = Vec::new();
-        match tokio::fs::File::open(&source).await {
-            Ok(file) => {
-                file.take(16)
-                    .read_to_end(&mut head)
-                    .await
-                    .map_err(|e| Problem::Failed(e.to_string()))?;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(Problem::Rejected(
-                    jobs::FAILED,
-                    "its upload was lost before it was made".into(),
-                ));
-            }
-            Err(e) => return Err(Problem::Failed(e.to_string())),
-        }
+        let head = self.upload(id, Some(16)).await?;
         let container = crate::sanitize::sniff_video(&head).ok_or_else(|| {
             Problem::Rejected(jobs::FAILED_UNREADABLE, "not a video after all".into())
         })?;
@@ -603,11 +592,16 @@ impl Worker {
             .frame(playback, at, &stop)
             .await
             .map_err(failed("taking a frame"))?;
-        let max = self.max_pixels;
-        let still = tokio::task::spawn_blocking(move || crate::media::process(&png, max))
-            .await
-            .map_err(|e| Problem::Failed(e.to_string()))?
+        let cost = crate::media::cost(&png, png.len() as u64, self.max_pixels)
             .map_err(|e| Problem::Failed(format!("the frame: {e}")))?;
+        let still = {
+            let _held = self.hold(cost).await?;
+            let max = self.max_pixels;
+            tokio::task::spawn_blocking(move || crate::media::stills(&png, max))
+                .await
+                .map_err(|e| Problem::Failed(e.to_string()))?
+                .map_err(|e| Problem::Failed(format!("the frame: {e}")))?
+        };
         self.progress(owner, id, 960);
 
         let (bytes, sha256) = digest(&original)

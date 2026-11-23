@@ -105,6 +105,63 @@ pub fn cost(head: &[u8], size: u64, max_pixels: u64) -> Result<u64, Reject> {
     Ok(2 * size + decoder.total_bytes().max(eight) + eight + copies + preview)
 }
 
+/// What sizing a picture reads before anything else: every header dither
+/// takes ends well within it.
+pub const HEAD: u64 = 4 << 20;
+
+/// Why a file could not be sized.
+#[derive(Debug)]
+pub enum Unsized {
+    /// The file is not one dither takes, or is too large to.
+    Refused(Reject),
+    /// It could not be read whole, or is shorter than `size`.
+    Unread(std::io::Error),
+}
+
+/// [`cost`] for the `size`-byte file at `path`: from its first [`HEAD`]
+/// bytes, so a file waiting for the budget is not held in memory, or from
+/// the whole file when its header runs past them.
+pub async fn cost_of(path: &std::path::Path, size: u64, max_pixels: u64) -> Result<u64, Unsized> {
+    use tokio::io::AsyncReadExt as _;
+    let mut head = Vec::new();
+    tokio::fs::File::open(path)
+        .await
+        .map_err(Unsized::Unread)?
+        .take(HEAD)
+        .read_to_end(&mut head)
+        .await
+        .map_err(Unsized::Unread)?;
+    if (head.len() as u64) < size.min(HEAD) {
+        return Err(Unsized::Unread(std::io::ErrorKind::UnexpectedEof.into()));
+    }
+    match cost(&head, size, max_pixels) {
+        Err(Reject::Broken(_)) if (head.len() as u64) < size => {
+            let all = tokio::fs::read(path).await.map_err(Unsized::Unread)?;
+            cost(&all, size, max_pixels).map_err(Unsized::Refused)
+        }
+        other => other.map_err(Unsized::Refused),
+    }
+}
+
+/// A video's thumbnail and link preview, from a frame of it: what
+/// [`process`] makes of a picture, without the original or a display copy,
+/// which a video has of its own.
+pub struct Stills {
+    pub thumb: Vec<u8>,
+    pub preview: Vec<u8>,
+}
+
+pub fn stills(frame: &[u8], max_pixels: u64) -> Result<Stills, Reject> {
+    let kind = sanitize::sniff(frame).map_err(Reject::Unsupported)?;
+    let (img, icc) = decoded(frame, kind, max_pixels, None)?;
+    let (width, height) = (img.width(), img.height());
+    let thumb = resize(&img, thumb_size(width, height));
+    Ok(Stills {
+        preview: jpeg_preview(&img, preview_size(width, height, false), icc.as_deref()),
+        thumb: webp(&thumb, THUMB_QUALITY, icc.as_deref()),
+    })
+}
+
 pub fn process(bytes: &[u8], max_pixels: u64) -> Result<Processed, Reject> {
     let kind = sanitize::sniff(bytes).map_err(Reject::Unsupported)?;
     let orientation = decoder(bytes, kind)?

@@ -40,9 +40,7 @@ use crate::store::{self, Store};
 
 /// The share of a disk uploads leave free when no floor is set.
 const DEFAULT_FREE_SHARE: f64 = 0.15;
-/// What finishing reads of a file to size it before holding any of the
-/// budget: every header dither takes ends well within it.
-const HEAD: u64 = 4 << 20;
+use crate::media::HEAD;
 
 /// The largest chunk a client sends. Traefik reads a request's body within
 /// 60 seconds by default, so a chunk this size arrives in time on anything
@@ -383,6 +381,12 @@ impl Uploads {
         if read.await.is_err() || (head.len() as u64) < upload.size.min(HEAD) {
             return self.recount(&upload).await;
         }
+        // Whole, as the database counts it: a tail that never reached the
+        // disk is sent again rather than queued short.
+        match tokio::fs::metadata(&path).await {
+            Ok(m) if m.len() == upload.size => {}
+            _ => return self.recount(&upload).await,
+        }
         let video = crate::sanitize::sniff_video(&head).is_some();
         let kind = if video {
             let Some(max) = self.max_video_bytes else {
@@ -409,20 +413,12 @@ impl Uploads {
                 );
                 return self.reject(&upload, why).await;
             }
-            let cost = match media::cost(&head, upload.size, self.max_pixels) {
+            let cost = match media::cost_of(&path, upload.size, self.max_pixels).await {
                 Ok(cost) => cost,
-                // A header longer than the first bytes: size it from the
-                // whole file.
-                Err(media::Reject::Broken(_)) if (head.len() as u64) < upload.size => {
-                    match tokio::fs::read(&path).await {
-                        Ok(all) => match media::cost(&all, upload.size, self.max_pixels) {
-                            Ok(cost) => cost,
-                            Err(reject) => return self.reject(&upload, reject.to_string()).await,
-                        },
-                        Err(_) => return self.recount(&upload).await,
-                    }
+                Err(media::Unsized::Refused(reject)) => {
+                    return self.reject(&upload, reject.to_string()).await;
                 }
-                Err(reject) => return self.reject(&upload, reject.to_string()).await,
+                Err(media::Unsized::Unread(_)) => return self.recount(&upload).await,
             };
             if cost > self.budget_bytes {
                 let why = format!(
@@ -859,6 +855,42 @@ mod tests {
             .unwrap();
         let upload = db.upload(&upload.id).await.unwrap().unwrap();
         assert!(matches!(uploads.finish(upload).await, Outcome::Done(_)));
+    }
+
+    #[tokio::test]
+    async fn a_large_file_short_of_its_count_is_sent_again_not_queued() {
+        let (uploads, db, _, _dir) = setup().await;
+        // Past the first bytes finishing reads, so only its length shows the
+        // tail is missing.
+        let mut file = jpeg(64, 64);
+        file.resize(6 << 20, 0);
+        let size = file.len() as u64;
+        let upload = begin(&db, size).await;
+        for start in (0..file.len()).step_by(CHUNK as usize) {
+            let end = (start + CHUNK as usize).min(file.len());
+            uploads
+                .append(
+                    &upload,
+                    start as u64,
+                    (end - start) as u64,
+                    chunks(&file[start..end]),
+                )
+                .await
+                .unwrap();
+        }
+        let short = size - 1000;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(uploads.file(&upload.id))
+            .unwrap()
+            .set_len(short)
+            .unwrap();
+        let stale = db.upload(&upload.id).await.unwrap().unwrap();
+        assert!(matches!(uploads.finish(stale).await, Outcome::Failed(_)));
+        assert_eq!(
+            db.upload(&upload.id).await.unwrap().unwrap().received,
+            short
+        );
     }
 
     #[tokio::test]
