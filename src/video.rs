@@ -542,9 +542,18 @@ impl Tools {
         args.extend(Self::input(Container::Mp4).iter().map(Into::into));
         args.extend(["-i".into(), file(path)]);
         // A video kept in HDR gives pictures in SDR, as its converted copy
-        // would, rather than ones that look washed out.
+        // would, rather than ones that look washed out: brought down to the
+        // largest picture made of it first, since tone mapping works in
+        // floating point.
         if hdr && self.zscale {
-            args.extend(["-vf".into(), format!("{TONEMAP},format=rgb24").into()]);
+            let max = crate::media::DISPLAY_MAX;
+            args.extend([
+                "-vf".into(),
+                format!(
+                    "scale=w='min({max},iw)':h='min({max},ih)':force_original_aspect_ratio=decrease,{TONEMAP},format=rgb24"
+                )
+                .into(),
+            ]);
         }
         args.extend(
             [
@@ -783,7 +792,6 @@ impl Probe {
             && !self.hdr()
             && v.fps <= 61.0
             && shrink(w, h, v.fps) >= 1.0
-            && v.fps <= 61.0
             && self
                 .audio
                 .as_ref()

@@ -589,13 +589,20 @@ impl Worker {
                 .map_err(failed("transcoding"))?;
         }
         // What was made is what is stored, plays and downloads: its own size
-        // and length, read back, or failing that the upload's, which it
-        // shares unless it was scaled down from beyond 4K.
+        // and length, read back, or failing that the upload's, scaled as a
+        // conversion scales it.
         let stored = match tools.probe(Container::Mp4, &made).await {
             Ok(stored) => stored,
             Err(e) => {
                 tracing::warn!(id, error = %e, "reading back what was made");
-                probe.clone()
+                let mut guess = probe.clone();
+                if !kept {
+                    let (w, h) = (guess.video.width, guess.video.height);
+                    let f = video::shrink(w, h, guess.video.fps.clamp(1.0, 60.0));
+                    let even = |n: u32| ((f64::from(n) * f / 2.0).trunc() * 2.0) as u32;
+                    (guess.video.width, guess.video.height) = (even(w), even(h));
+                }
+                guess
             }
         };
         // Kept in HDR, its frame is tone-mapped where the build can; should

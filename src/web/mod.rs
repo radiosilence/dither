@@ -148,7 +148,7 @@ async fn app_host_only(State(state): State<AppState>, request: Request, next: Ne
 }
 
 /// Link previews' fetchers, by what their user agents carry.
-const FETCHERS: [&str; 11] = [
+const FETCHERS: [&str; 10] = [
     "WhatsApp",
     "facebookexternalhit",
     "Twitterbot",
@@ -157,7 +157,6 @@ const FETCHERS: [&str; 11] = [
     "TelegramBot",
     "LinkedInBot",
     "redditbot",
-    "Applebot",
     "Iframely",
     "Embedly",
 ];
