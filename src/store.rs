@@ -124,8 +124,8 @@ enum Fetched {
     Failed(Arc<str>),
 }
 
-/// The request reading a key for the rest; the key is free again when it
-/// is dropped, finished or not.
+/// The request reading a key for the rest. The key is free again when it
+/// is dropped, finished or not, unless a write freed it first.
 struct Leading<'a> {
     reading: &'a parking_lot::Mutex<std::collections::HashMap<Path, Reading>>,
     key: Path,
@@ -136,11 +136,26 @@ impl Leading<'_> {
     fn tell(&self, fetched: Fetched) {
         self.tell.send_replace(Some(fetched));
     }
+
+    /// Whether no write to the key has happened since this read began: a
+    /// write frees the key, so what this read found is not kept.
+    fn current(&self) -> bool {
+        self.reading
+            .lock()
+            .get(&self.key)
+            .is_some_and(|r| r.same_channel(&self.tell.subscribe()))
+    }
 }
 
 impl Drop for Leading<'_> {
     fn drop(&mut self) {
-        self.reading.lock().remove(&self.key);
+        let mut reading = self.reading.lock();
+        if reading
+            .get(&self.key)
+            .is_some_and(|r| r.same_channel(&self.tell.subscribe()))
+        {
+            reading.remove(&self.key);
+        }
     }
 }
 
@@ -365,6 +380,7 @@ impl Store {
         // original just stored is not, and a batch of them would push those
         // out.
         let original = key.prefix_matches(&Path::from(Variant::Original.prefix()));
+        self.reading.lock().remove(key);
         if !original && (bytes.len() as u64) <= CACHE_ITEM_MAX {
             self.cache.insert(key.clone(), bytes);
         } else {
@@ -386,7 +402,7 @@ impl Store {
     {
         use sha2::Digest as _;
         use tokio::io::AsyncWriteExt as _;
-        self.cache.remove(key);
+        self.forget(key);
         let gone = key.to_string();
         self.on_cache(move |disk| disk.forget(&gone)).await;
         let mut writer = object_store::buffered::BufWriter::new(self.inner.clone(), key.clone());
@@ -531,12 +547,21 @@ impl Store {
         }
     }
 
+    /// `key` is being written: gone from memory, and free for a new read
+    /// rather than one begun before the write.
+    fn forget(&self, key: &Path) {
+        self.reading.lock().remove(key);
+        self.cache.remove(key);
+    }
+
     /// The object, or `None` when there is none.
     ///
     /// Of the requests for a key in neither cache, one reads the store and
     /// the rest wait for it, then share its outcome: the object, its absence
-    /// or the error. An object too large to keep is read by each waiter, at
-    /// once, as before.
+    /// or the error. If that request goes away first, a waiter reads in its
+    /// place. An object too large to keep is read by each waiter once the
+    /// first finds it so. A write to the key frees it, so a request after the
+    /// write reads afresh.
     pub async fn get(&self, key: &Path) -> object_store::Result<Option<Body>> {
         if let Some(hit) = self.cache.get(key) {
             crate::metrics::cache(true);
@@ -558,42 +583,46 @@ impl Store {
         if let Some(body) = kept {
             return Ok(Some(body));
         }
-        let waiting = {
-            let mut reading = self.reading.lock();
-            match reading.get(key) {
-                Some(waiting) => Err(waiting.clone()),
-                None => {
-                    let (tell, waiting) = tokio::sync::watch::channel(None);
-                    reading.insert(key.clone(), waiting);
-                    Ok(Leading {
-                        reading: &self.reading,
-                        key: key.clone(),
-                        tell,
-                    })
+        loop {
+            let waiting = {
+                let mut reading = self.reading.lock();
+                match reading.get(key) {
+                    Some(waiting) => Err(waiting.clone()),
+                    None => {
+                        let (tell, waiting) = tokio::sync::watch::channel(None);
+                        reading.insert(key.clone(), waiting);
+                        Ok(Leading {
+                            reading: &self.reading,
+                            key: key.clone(),
+                            tell,
+                        })
+                    }
                 }
-            }
-        };
-        let mut waiting = match waiting {
-            Ok(leading) => return self.fetch(key, Some(leading)).await,
-            Err(waiting) => waiting,
-        };
-        let fetched = waiting
-            .wait_for(Option::is_some)
-            .await
-            .ok()
-            .and_then(|f| f.clone());
-        match fetched {
-            Some(Fetched::Kept(bytes)) => {
-                crate::metrics::cache(true);
-                Ok(Some(Body::Bytes(bytes)))
-            }
-            Some(Fetched::Missing) => Ok(None),
-            Some(Fetched::Failed(e)) => Err(object_store::Error::Generic {
-                store: "dither",
-                source: e.to_string().into(),
-            }),
-            // Too large to share, or the request reading it went away.
-            Some(Fetched::Large) | None => self.fetch(key, None).await,
+            };
+            let mut waiting = match waiting {
+                Ok(leading) => return self.fetch(key, Some(leading)).await,
+                Err(waiting) => waiting,
+            };
+            // `None` when the request reading it went away: one of those
+            // waiting takes its place.
+            let fetched = waiting
+                .wait_for(Option::is_some)
+                .await
+                .ok()
+                .and_then(|f| f.clone());
+            return match fetched {
+                Some(Fetched::Kept(bytes)) => {
+                    crate::metrics::cache(true);
+                    Ok(Some(Body::Bytes(bytes)))
+                }
+                Some(Fetched::Missing) => Ok(None),
+                Some(Fetched::Failed(e)) => Err(object_store::Error::Generic {
+                    store: "dither",
+                    source: e.to_string().into(),
+                }),
+                Some(Fetched::Large) => self.fetch(key, None).await,
+                None => continue,
+            };
         }
     }
 
@@ -609,7 +638,9 @@ impl Store {
                 leading.tell(fetched);
             }
         };
-        crate::metrics::cache(false);
+        if cacheable(key) {
+            crate::metrics::cache(false);
+        }
         let fetching = self.claim(key);
         let result = match self.inner.get(key).await {
             Ok(r) => r,
@@ -631,7 +662,11 @@ impl Store {
                     return Err(e);
                 }
             };
-            self.cache.insert(key.clone(), bytes.clone());
+            // What a write overtook is served to those who asked before it,
+            // and not kept for those after.
+            if leading.as_ref().is_none_or(Leading::current) {
+                self.cache.insert(key.clone(), bytes.clone());
+            }
             tell(Fetched::Kept(bytes.clone()));
             if let Some(fetching) = fetching {
                 self.fill(fetching, key, size, Some(bytes.clone()));
@@ -660,7 +695,7 @@ impl Store {
 
     /// Gone, whether or not it was there.
     pub async fn delete(&self, key: &Path) -> object_store::Result<()> {
-        self.cache.remove(key);
+        self.forget(key);
         let gone = key.to_string();
         self.on_cache({
             let gone = gone.clone();
@@ -680,7 +715,7 @@ impl Store {
     pub async fn rename(&self, from: &Path, to: &Path) -> object_store::Result<()> {
         // What was at `to` is gone from both caches first, so no read in
         // between brings it back.
-        self.cache.remove(to);
+        self.forget(to);
         let replaced = to.to_string();
         self.on_cache(move |disk| disk.forget(&replaced)).await;
         self.inner.rename(from, to).await?;
@@ -1089,14 +1124,17 @@ mod tests {
             options: GetOptions,
         ) -> object_store::Result<object_store::GetResult> {
             self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            if self.down.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(object_store::Error::Generic {
+            // What is there when asked, answered a while later.
+            let answer = if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+                Err(object_store::Error::Generic {
                     store: "counting",
                     source: "unreachable".into(),
-                });
-            }
-            self.inner.get_opts(location, options).await
+                })
+            } else {
+                self.inner.get_opts(location, options).await
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            answer
         }
 
         fn delete_stream(
@@ -1172,6 +1210,58 @@ mod tests {
         assert_eq!(counting.gets(), 3);
         // Together, rather than one after another.
         assert!(started.elapsed() < std::time::Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn a_waiter_reads_in_place_of_a_reader_that_went_away() {
+        let counting = Counting::new();
+        let store = Store::with(counting.clone(), 1 << 20, "counting".into());
+        let k = key(Variant::Thumb, "abcdefghij");
+        counting
+            .inner
+            .put(&k, Bytes::from_static(b"webp").into())
+            .await
+            .unwrap();
+        let gone = tokio::time::timeout(std::time::Duration::from_millis(10), store.get(&k));
+        let waiting = futures_util::future::join_all((0..20).map(|_| store.get(&k)));
+        let (gone, waiting) = tokio::join!(gone, waiting);
+        assert!(gone.is_err());
+        assert!(
+            waiting
+                .iter()
+                .all(|r| matches!(r, Ok(Some(Body::Bytes(b))) if &b[..] == b"webp"))
+        );
+        assert_eq!(counting.gets(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_read_after_a_write_does_not_wait_on_one_from_before_it() {
+        let counting = Counting::new();
+        let store = Store::with(counting.clone(), 1 << 20, "counting".into());
+        let k = key(Variant::Thumb, "abcdefghij");
+        let aside = Path::from("work/abcdefghij/w1/thumb");
+        store
+            .put(&aside, Bytes::from_static(b"webp"))
+            .await
+            .unwrap();
+        // A worker's copy moves into place while a read of the key is out.
+        let before = store.get(&k);
+        let after = async {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            store.rename(&aside, &k).await.unwrap();
+            store.get(&k).await
+        };
+        let (before, after) = tokio::join!(before, after);
+        // The read begun before the write found nothing, and keeps nothing.
+        assert!(before.unwrap().is_none());
+        let Some(Body::Bytes(b)) = after.unwrap() else {
+            panic!("expected bytes");
+        };
+        assert_eq!(&b[..], b"webp");
+        let Some(Body::Bytes(b)) = store.get(&k).await.unwrap() else {
+            panic!("expected bytes");
+        };
+        assert_eq!(&b[..], b"webp");
     }
 
     #[tokio::test]
