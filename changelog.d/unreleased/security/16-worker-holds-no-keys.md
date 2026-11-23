@@ -1,1 +1,0 @@
-- **A worker holds no store keys.** Only the web process opens the database and the store; a worker's one secret is the worker API's token.

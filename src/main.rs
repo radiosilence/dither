@@ -86,6 +86,8 @@ async fn serve() -> anyhow::Result<()> {
         let router = web::work::router(web::work::Work {
             hub: jobs.clone(),
             token: config.worker_token.as_deref().map(web::work::digest),
+            limit: usize::try_from(4 * config.max_upload_bytes.max(config.video.max_bytes))
+                .unwrap_or(usize::MAX),
         });
         tokio::spawn(async move {
             if let Err(e) = axum::serve(listener, router).await {

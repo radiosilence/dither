@@ -29,6 +29,9 @@ use crate::store::Variant;
 #[derive(Clone)]
 pub struct Work {
     pub hub: Arc<Hub>,
+    /// The longest copy a worker may send: what a conversion could make of
+    /// the largest upload taken.
+    pub limit: usize,
     /// SHA-256 of the token workers present, compared as such so the
     /// comparison takes as long whatever it is given.
     pub token: Option<[u8; 32]>,
@@ -46,7 +49,7 @@ pub fn router(work: Work) -> Router {
         .route("/work/{id}/source", get(source))
         .route(
             "/work/{id}/files/{variant}",
-            put(file).layer(DefaultBodyLimit::disable()),
+            put(file).layer(DefaultBodyLimit::max(work.limit)),
         )
         .route("/work/{id}/end", post(end))
         .layer(middleware::from_fn_with_state(work.clone(), allowed))
@@ -159,7 +162,7 @@ async fn source(
         .and_then(|v| v.strip_suffix('-'))
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
-    if from > len {
+    if from > 0 && from >= len {
         return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
     }
     if let Err(e) = file.seek(std::io::SeekFrom::Start(from)).await {
@@ -177,19 +180,22 @@ async fn source(
             Err(e) => Some((Err(e), file)),
         }
     });
-    (
-        if from > 0 {
-            StatusCode::PARTIAL_CONTENT
-        } else {
-            StatusCode::OK
-        },
+    let mut response = (
+        StatusCode::OK,
         [
             (header::CONTENT_LENGTH, (len - from).to_string()),
             (header::CONTENT_TYPE, "application/octet-stream".into()),
         ],
         Body::from_stream(stream),
     )
-        .into_response()
+        .into_response();
+    if from > 0 {
+        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+        if let Ok(range) = format!("bytes {from}-{}/{len}", len - 1).parse() {
+            response.headers_mut().insert(header::CONTENT_RANGE, range);
+        }
+    }
+    response
 }
 
 async fn file(

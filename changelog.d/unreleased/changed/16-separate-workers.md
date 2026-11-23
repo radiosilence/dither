@@ -1,1 +1,0 @@
-- **Workers are Deployments of their own.** The Pulumi component no longer runs a worker in dither's pod: `createDither` requires `workerToken` and returns `queue`, and `createDitherWorker` runs a worker on whichever node it names, as many as are wanted. Without one, uploads queue and nothing is made of them.

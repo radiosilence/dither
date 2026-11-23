@@ -330,6 +330,12 @@ impl Store {
     }
 
     /// Every variant of image `id`. True when all are gone.
+    /// Move what is stored at `from` to `to`, replacing it.
+    pub async fn rename(&self, from: &Path, to: &Path) -> object_store::Result<()> {
+        self.cache.remove(to);
+        self.inner.rename(from, to).await
+    }
+
     pub async fn delete_image(&self, id: &str) -> bool {
         let mut gone = true;
         for variant in [

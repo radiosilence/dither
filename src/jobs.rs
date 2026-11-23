@@ -210,9 +210,13 @@ impl Hub {
     fn heard(&self, name: &str, makes: Option<(bool, bool)>) {
         let mut workers = self.workers.lock();
         workers.retain(|_, seen| seen.at.elapsed() < ALIVE);
-        let (pictures, videos) = makes
-            .or_else(|| workers.get(name).map(|s| (s.pictures, s.videos)))
-            .unwrap_or_default();
+        // One not heard asking since this process started (busy since) is
+        // counted once it asks, rather than as making nothing.
+        let Some((pictures, videos)) =
+            makes.or_else(|| workers.get(name).map(|s| (s.pictures, s.videos)))
+        else {
+            return;
+        };
         workers.insert(
             name.to_string(),
             Seen {
@@ -289,6 +293,9 @@ impl Hub {
             let waiting = self.waiting.notified();
             tokio::pin!(waiting);
             waiting.as_mut().enable();
+            // A job failed here for having killed workers leaves the next
+            // to be looked for at once.
+            let mut again = false;
             for video in [false, true] {
                 if !(if video { want.videos } else { want.pictures }) {
                     continue;
@@ -297,9 +304,9 @@ impl Hub {
                     continue;
                 };
                 let image = claimed.image;
-                self.started(&claimed.owner, &image.id);
                 // A job that has killed workers before is not tried again.
                 if image.attempts > ATTEMPTS {
+                    again = true;
                     let detail = format!("claimed {} times without ending", image.attempts - 1);
                     self.end(
                         name,
@@ -313,9 +320,7 @@ impl Hub {
                     .await?;
                     continue;
                 }
-                // Recorded before any copy is stored, so copies stored for a
-                // job that then goes are found and removed.
-                self.db.add_stray(&image.id).await?;
+                self.started(&claimed.owner, &image.id);
                 // The upload's length is its file's: the row's becomes the
                 // original's once a worker has stored one.
                 let bytes = tokio::fs::metadata(source(&self.state_dir, &image.id))
@@ -329,6 +334,9 @@ impl Hub {
                     max_seconds: self.max_seconds,
                     id: image.id,
                 }));
+            }
+            if again {
+                continue;
             }
             tokio::select! {
                 () = waiting => {}
@@ -402,6 +410,10 @@ impl Hub {
     /// Job `id`'s copy of `variant`, from worker `name`: stored, and for its
     /// original, its length and SHA-256 recorded on its row for when it is
     /// made. False when the job is not the worker's.
+    ///
+    /// It is written aside and moved into place only if the job is still the
+    /// worker's once it has arrived, so a worker that lost the job while
+    /// sending cannot replace what the one that took it stored.
     pub async fn put<E>(
         &self,
         name: &str,
@@ -415,14 +427,16 @@ impl Hub {
         if !self.renew(name, id, None).await? {
             return Ok(false);
         }
-        let fingerprint = self
-            .store
-            .put_stream(&store::key(variant, id), body)
-            .await?;
-        if variant == store::Variant::Original {
-            let (bytes, sha256) = fingerprint;
-            return Ok(self.db.record_original(name, id, bytes, sha256).await?);
+        let aside = object_store::path::Path::from(format!("work/{id}/{name}/{}", variant.name()));
+        let (bytes, sha256) = self.store.put_stream(&aside, body).await?;
+        let still = self.renew(name, id, None).await?
+            && (variant != store::Variant::Original
+                || self.db.record_original(name, id, bytes, sha256).await?);
+        if !still {
+            let _ = self.store.delete(&aside).await;
+            return Ok(false);
         }
+        self.store.rename(&aside, &store::key(variant, id)).await?;
         Ok(true)
     }
 
@@ -503,8 +517,8 @@ impl Hub {
         // Not this worker's to record. Deleted: everything goes. Taken by
         // another worker after this one's lease lapsed: everything stays,
         // the copies included, which are that worker's now. Stopped while
-        // still this worker's: given back, since a worker does not take up
-        // a job it holds.
+        // still this worker's: given back at once, for whichever worker asks
+        // next.
         match self.db.image(id).await? {
             None => self.gone(id, false).await,
             Some(_) => {

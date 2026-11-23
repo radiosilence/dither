@@ -48,6 +48,8 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
     let work = super::work::router(super::work::Work {
         hub: hub.clone(),
         token: config.worker_token.as_deref().map(super::work::digest),
+        limit: usize::try_from(4 * config.max_upload_bytes.max(config.video.max_bytes))
+            .unwrap_or(usize::MAX),
     });
     tokio::spawn(async move { axum::serve(listener, work).await });
     {

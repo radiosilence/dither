@@ -314,7 +314,7 @@ impl Worker {
             stop: stopped,
             done,
         };
-        let outcome = match self.fetch(&job).await {
+        let outcome = match self.fetch(&job, &making).await {
             Ok(source) if job.video => self.video(&job, &source, &making).await,
             Ok(source) => self.picture(&job, &source, &making).await,
             Err(problem) => Err(problem),
@@ -367,7 +367,7 @@ impl Worker {
     /// Job `id`'s upload: where it waits, when this worker shares the web
     /// process's state directory, or else fetched, carrying on from where a
     /// fetch cut short stopped.
-    async fn fetch(&self, job: &Job) -> Result<PathBuf, Problem> {
+    async fn fetch(&self, job: &Job, making: &Making) -> Result<PathBuf, Problem> {
         use tokio::io::AsyncWriteExt as _;
         let local = jobs::source(&self.state_dir, &job.id);
         if tokio::fs::metadata(&local)
@@ -414,6 +414,9 @@ impl Worker {
                 }
             };
             loop {
+                if making.stopped() {
+                    return Err(Problem::Stopped);
+                }
                 match response.chunk().await {
                     Ok(Some(chunk)) => {
                         file.write_all(&chunk)

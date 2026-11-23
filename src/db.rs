@@ -924,6 +924,12 @@ impl Db {
                 .optional()?;
             let claimed = match image {
                 Some(image) => {
+                    // Copies a worker stores for it are found and removed
+                    // should the job go before it is made.
+                    tx.execute(
+                        "INSERT OR REPLACE INTO strays (id, since) VALUES (?1, ?2)",
+                        params![image.id, now()],
+                    )?;
                     let owner = tx.query_row(
                         "SELECT owner FROM albums WHERE id = ?1",
                         [&image.album],
