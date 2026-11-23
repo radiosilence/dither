@@ -1152,12 +1152,17 @@ pub mod tests {
     pub async fn tools() -> Option<Tools> {
         let video = crate::config::Config::test(PathBuf::new()).video;
         let found = Tools::find(&video).await.expect("auto never fails");
-        if found.is_none() {
-            assert!(
-                std::env::var_os("DITHER_REQUIRE_FFMPEG").is_none(),
-                "ffmpeg and ffprobe are required here"
-            );
-            eprintln!("skipped: no ffmpeg");
+        let required = std::env::var_os("DITHER_REQUIRE_FFMPEG").is_some();
+        match &found {
+            None => {
+                assert!(!required, "ffmpeg and ffprobe are required here");
+                eprintln!("skipped: no ffmpeg");
+            }
+            // The build the image ships must tone-map, or HDR plays grey.
+            Some(tools) => assert!(
+                !required || tools.zscale,
+                "the shipped ffmpeg has no zscale"
+            ),
         }
         found
     }
@@ -1371,6 +1376,50 @@ pub mod tests {
         let play = tools.probe(Container::Mp4, &out).await.unwrap();
         assert_eq!((play.video.width, play.video.height), (1920, 1080));
         assert_eq!(play.audio.as_ref().unwrap().codec, "aac");
+    }
+
+    #[tokio::test]
+    async fn hdr_is_tone_mapped_to_sdr_where_the_build_can() {
+        let Some(tools) = tools().await else { return };
+        if !tools.zscale {
+            eprintln!("skipped: this ffmpeg has no zscale");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        // HLG in BT.2020, 10-bit HEVC, as an iPhone records HDR.
+        let hlg = clip(
+            dir.path(),
+            "hlg.mov",
+            1,
+            "640x360",
+            &[
+                "-c:v",
+                "libx265",
+                "-x265-params",
+                "log-level=error",
+                "-pix_fmt",
+                "yuv420p10le",
+                "-color_primaries",
+                "bt2020",
+                "-color_trc",
+                "arib-std-b67",
+                "-colorspace",
+                "bt2020nc",
+                "-c:a",
+                "aac",
+            ],
+        );
+        let probe = tools.probe(Container::Mp4, &hlg).await.unwrap();
+        assert!(probe.hdr(), "{probe:?}");
+        let out = dir.path().join("play.mp4");
+        tools
+            .transcode(Container::Mp4, &probe, &hlg, &out, &never(), &mut |_| {})
+            .await
+            .unwrap();
+        let play = tools.probe(Container::Mp4, &out).await.unwrap();
+        assert_eq!(play.video.pix_fmt, "yuv420p");
+        assert_eq!(play.video.transfer, "bt709");
+        assert!(play.playable(), "{play:?}");
     }
 
     #[tokio::test]
