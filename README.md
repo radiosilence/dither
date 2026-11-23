@@ -55,19 +55,27 @@ from Photos through the browser.
 
 MP4, MOV (as phones record), M4V and WebM or Matroska are accepted when the
 server has ffmpeg (the image ships a static build), up to 1 GB and 30 minutes
-by default. The original is remuxed into MP4 without re-encoding, keeping its
-first video and audio streams and nothing else: phones write where a video
-was taken into the container's metadata and into timed metadata tracks, as
-they do into a photo's EXIF, and none of it is kept. The rotation a phone
-records is part of the video track and survives.
+by default.
 
-Browsers do not all play what phones record, so a video that is not already
-H.264, 8-bit, SDR, at most 1920 pixels long, at most 60 frames a second and
-under 12 Mbit/s gets a playback copy that is (x264 at CRF 23, stereo AAC),
-tone-mapped from HDR (PQ or HLG) to SDR. The original stays downloadable as
-recorded. A frame of the playback copy becomes the thumbnail and the link
-preview, and a page's `og:video` names the playback copy, for the sites that
-play one inline.
+One copy of each video is kept, and it is what plays and what downloads. By
+default it is converted to what every browser plays, at the video's own size:
+H.264 within 4K and level 5.2's frame (4096×2304; beyond it hardware
+decoders refuse a video), x264 at CRF 18, which is visually lossless, 8-bit
+SDR tone-mapped from HDR (PQ or HLG), at most 60 frames a second, with stereo
+AAC. That also makes dither a way to turn a phone's HEVC into something
+anything plays. A video that is already all of that is not re-encoded,
+whatever its bitrate. With *keep videos as recorded* ticked when it is uploaded, it is
+kept exactly as recorded instead, and plays where the browser can.
+
+Either way it goes into MP4 with its first video and sound streams and
+nothing else: phones write where a video was taken into the container's
+metadata and into timed metadata tracks, as they do into a photo's EXIF, and
+none of it is kept. Nor are the SEI messages inside an H.264 or HEVC stream,
+where an encoder writes its settings and some cameras the time or where they
+were, whether in the frames or in the stream's configuration. The rotation a
+phone records is part of the video track and survives. A frame of it becomes the thumbnail and the link preview,
+tone-mapped when the video is HDR, and a page's `og:video` names it, for the
+sites that play one inline.
 
 The worker (see *Processing*) makes a video's copies, showing its progress
 on the album page, and marks it ready, or failed with the reason: unreadable,
@@ -77,8 +85,18 @@ ffmpeg parses untrusted files, so it runs as a process of its own, with none
 of the environment: told the container it reads rather than left to probe,
 limited to the file protocol and to the decoders phones and cameras need, on
 `VIDEO_THREADS` threads (filters included) at a lower priority, and with a
-time limit. A video whose codec MP4 cannot hold (VP8, Theora, ProRes) keeps
-only its playback copy.
+time limit. Those are ffmpeg's own checks, which a file exploiting a bug in
+it would ignore, so the kernel confines each run as well. Landlock lets it
+read only the programs' directories and the file it was given, and write
+only in its own working directory: not the database, the store or `/proc`,
+and no TCP. seccomp refuses it sockets, other processes (`ptrace`,
+`process_vm_*`), new namespaces and the kernel interfaces exploits reach for
+(io_uring, BPF, perf events, userfaultfd). It writes no file larger than the
+disk's room above `MIN_FREE_BYTES` and dumps no core, and the worker that
+starts it keeps its own memory and environment out of `/proc`. Landlock
+applies as far as the kernel has it, which the worker logs at startup; the
+rest applies on any Linux. A video whose codec MP4 cannot hold (VP8, Theora,
+ProRes) is converted even when it is to be kept as recorded.
 
 Every file is served with byte ranges, which seeking needs and Safari requires
 before it plays a video at all; video is never compressed again on the way
@@ -178,7 +196,7 @@ The same JSON API serves anything else that wants to upload:
 
 ```text
 POST   /api/albums                 {title?}                 → {id}
-POST   /api/albums/{id}/uploads    {files: [{name, size, type?}]} → {uploads: [{id}], chunk}
+POST   /api/albums/{id}/uploads    {files: [{name, size, type?}], as_recorded?} → {uploads: [{id}], chunk}
 PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 GET    /api/uploads/{id}                                    → {received, size, image?, error?}
 POST   /api/uploads/{id}/finish                             → {image: {id, page, file, thumb, processing, …}} | {error}
@@ -187,7 +205,7 @@ DELETE /api/uploads/{id}
 
 A file's `type`, the browser's MIME type, holds a video to the video limit
 rather than the image one; the bytes decide what a file is when it finishes.
-A video finishes `processing`, and its copies follow.
+A video finishes `processing`, and what is kept of it follows.
 
 Every request needs a session and, if it writes, an `X-Dither` or
 `Datastar-Request` header. A chunk answered 408, 429 or a 5xx other than 507
@@ -210,7 +228,11 @@ kōan's, from [@radiosilence/theme](https://github.com/radiosilence/theme).
 dither is an OAuth client of an OpenID Connect provider (`OIDC_ISSUER`) and
 has no allowlist of its own: who may sign in is the provider's decision.
 Every person who signs in gets albums of their own and sees nobody else's.
-Sessions are opaque ids in `__Host-` cookies, stored hashed.
+Sessions are opaque ids in `__Host-` cookies, stored hashed. A sign-in lasts
+two days, and a page load a day after it goes back through the provider,
+which remembers the person and asks nothing, but decides again whether they
+may sign in: someone the provider stops letting in is out of dither within a
+day. An upload or a live page already going carries on for the second day.
 
 The id_token is taken from the token endpoint in answer to a request dither
 makes, never from the browser, so its signature is not checked; its issuer,
@@ -244,7 +266,11 @@ name out of public repositories, closes both.
   only the player's own script, and load it only where there is a video.
 - ffmpeg, which parses uploaded videos, runs as a separate process told the
   container it reads, limited to the file protocol and a list of decoders,
-  at a lower priority, with a time limit (see *Videos*).
+  at a lower priority, with a time limit, and confined by Landlock, seccomp
+  and resource limits to the files it was given (see *Videos*).
+- The web process decodes nothing: every picture is made by the worker.
+- Sign-ins are checked with the provider again a day after they are made
+  (see *Signing in*).
 - A file's type is decided by its signature, never by its name or the type
   the browser claims. Decoding is limited in pixels and allocation.
 - Files in an album that is not private are cached by browsers for a year and
@@ -268,14 +294,14 @@ startup.
 | `STORAGE` | `file://<cwd>/data/objects` | The object store. |
 | `AWS_ENDPOINT`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | — | For an `s3://` store. R2's region is `auto`. |
 | `STATE_DIR` | `data/state` | The database and uploads in progress, on a local disk. |
-| `MIN_FREE_BYTES` | 15% of each disk | Uploads are refused below this much free space on a disk they write to. |
+| `MIN_FREE_BYTES` | 15% of each disk | Uploads are refused below this much free space on a disk they write to, and no file ffmpeg writes may take a disk below it. |
 | `MAX_UPLOAD_BYTES`, `MAX_PIXELS` | 64 000 000, 100 000 000 | Per image. |
 | `PROCESS_MEMORY_BYTES` | 1 GiB | Memory a worker's pictures take at once. A picture that needs more alone is refused when its upload finishes. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |
 | `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
-| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. |
+| `VIDEO_THREADS` | 2 | Threads an ffmpeg run uses, filters included. A conversion also takes about 1.5 GB of memory at 4K, 2 GB from an 8K source, beside `PROCESS_MEMORY_BYTES`. |
 | `PICTURE_WORKERS`, `VIDEO_WORKERS` | 4, 1 | Jobs a worker makes at once. |
 | `BIND_ADDR`, `METRICS_ADDR` | `127.0.0.1:8080`, none | `/metrics` (Prometheus) is on a port of its own when set. |
 

@@ -68,7 +68,6 @@ const CSP_APP: &str = "default-src 'self'; script-src 'self' 'unsafe-eval'; styl
 
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
-        .route("/albums/{id}", get(app::album))
         .route("/albums/{id}/meta", post(app::album_meta))
         .route("/albums/{id}/order", post(app::reorder))
         .route("/albums/{id}/cover", post(app::cover))
@@ -92,6 +91,7 @@ pub fn router(state: AppState) -> Router {
             crate::auth::extract::require_session,
         ));
     let app_only = Router::new()
+        .route("/albums/{id}", get(app::album))
         .merge(protected)
         .merge(crate::auth::routes::router())
         .layer(middleware::from_fn_with_state(state.clone(), app_host_only));
@@ -112,6 +112,7 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             security_headers,
         ))
+        .layer(middleware::from_fn(preview_log))
         // Video is compressed already, and a compressed range would not be
         // the range asked for.
         .layer(
@@ -144,6 +145,52 @@ async fn app_host_only(State(state): State<AppState>, request: Request, next: Ne
         return public::not_found().await.into_response();
     }
     next.run(request).await
+}
+
+/// Link previews' fetchers, by what their user agents carry.
+const FETCHERS: [&str; 10] = [
+    "WhatsApp",
+    "facebookexternalhit",
+    "Twitterbot",
+    "Slackbot",
+    "Discordbot",
+    "TelegramBot",
+    "LinkedInBot",
+    "redditbot",
+    "Iframely",
+    "Embedly",
+];
+
+/// What a link preview's fetcher asked for and was answered, logged: a
+/// preview that does not appear is found out from what its fetcher saw.
+async fn preview_log(request: Request, next: Next) -> Response {
+    let agent = request
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let Some(fetcher) = FETCHERS.iter().find(|f| agent.contains(*f)) else {
+        return next.run(request).await;
+    };
+    let fetcher = *fetcher;
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let range = request
+        .headers()
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let response = next.run(request).await;
+    tracing::info!(
+        fetcher,
+        %method,
+        path,
+        range,
+        status = response.status().as_u16(),
+        "a link preview's fetcher asked"
+    );
+    response
 }
 
 /// Every write carries a header a cross-site form cannot set: Datastar's own,

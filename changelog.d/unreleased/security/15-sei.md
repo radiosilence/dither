@@ -1,0 +1,1 @@
+- **SEI messages are stripped from videos kept as they are.** H.264 and HEVC streams lose the SEI where encoders write their settings and some cameras the time or where they were, both in the frames and in an HEVC stream's configuration.

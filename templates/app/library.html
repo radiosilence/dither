@@ -13,6 +13,7 @@
   {% else %}
   <p class="m-0 text-fine text-muted">{{ __("JPEG, PNG, GIF or WebP, up to %{max} each. Where a photo was taken and what took it are removed before anything is stored.").with("max", shell.max_label()) }}</p>
   {% endif %}
+  {% if shell.max_video.is_some() %}<label class="toggle text-fine" title="{{ __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.") }}"><input type="checkbox" data-as-recorded> {{ __("keep videos as recorded") }}</label>{% endif %}
 </div>
 <div data-init="@get('/stream')"></div>
 {{ albums|safe }}

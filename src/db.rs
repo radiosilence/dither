@@ -29,7 +29,8 @@ pub use rusqlite::Result;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_processing.sql"),
-    include_str!("../migrations/0003_sessions.sql"),
+    include_str!("../migrations/0003_as_recorded.sql"),
+    include_str!("../migrations/0004_sessions.sql"),
 ];
 
 /// Idle connections kept: more than the service's usual concurrency, so the
@@ -263,6 +264,8 @@ pub struct Image {
     pub failure: String,
     /// How many times a worker has claimed it.
     pub attempts: u32,
+    /// A video kept as recorded, rather than converted to H.264.
+    pub as_recorded: bool,
 }
 
 /// Whether an image's copies are there to serve. A picture is ready when its
@@ -333,6 +336,7 @@ impl Image {
             })?,
             failure: r.get("failure")?,
             attempts: r.get("attempts")?,
+            as_recorded: r.get("as_recorded")?,
         })
     }
 
@@ -370,6 +374,8 @@ pub struct Upload {
     pub image: Option<String>,
     pub error: Option<String>,
     pub created_at: i64,
+    /// Its videos are kept as recorded rather than converted.
+    pub as_recorded: bool,
 }
 
 impl Upload {
@@ -385,6 +391,7 @@ impl Upload {
             image: r.get("image")?,
             error: r.get("error")?,
             created_at: r.get("created_at")?,
+            as_recorded: r.get("as_recorded")?,
         })
     }
 }
@@ -762,12 +769,14 @@ impl Db {
     }
 
     /// One upload per file, at the end of `album` in the order given, or
-    /// `None` when `owner` does not own it.
+    /// `None` when `owner` does not own it. `as_recorded` keeps its videos as
+    /// they were recorded rather than converting them.
     pub async fn begin_uploads(
         &self,
         owner: &str,
         album: &str,
         files: Vec<(String, u64)>,
+        as_recorded: bool,
     ) -> Result<Option<Vec<Upload>>> {
         let (o, album) = (owner.to_string(), album.to_string());
         self.write_as(owner, move |tx| {
@@ -777,8 +786,8 @@ impl Db {
             let created_at = now();
             let mut uploads = Vec::with_capacity(files.len());
             let mut insert = tx.prepare(
-                "INSERT INTO uploads (id, owner, album, position, name, size, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO uploads (id, owner, album, position, name, size, created_at, as_recorded) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             for (i, (name, size)) in files.into_iter().enumerate() {
                 let upload = Upload {
@@ -792,6 +801,7 @@ impl Db {
                     image: None,
                     error: None,
                     created_at,
+                    as_recorded,
                 };
                 insert.execute(params![
                     upload.id,
@@ -800,7 +810,8 @@ impl Db {
                     upload.position,
                     upload.name,
                     upload.size as i64,
-                    upload.created_at
+                    upload.created_at,
+                    as_recorded
                 ])?;
                 uploads.push(upload);
             }
@@ -840,21 +851,27 @@ impl Db {
     pub async fn begin_job(&self, owner: &str, upload: &str, job: NewJob) -> Result<bool> {
         let (o, upload) = (owner.to_string(), upload.to_string());
         self.write_as(owner, move |tx| {
-            let Some((album, position, name)) = tx
+            let Some((album, position, name, as_recorded)) = tx
                 .query_row(
-                    "SELECT album, position, name FROM uploads \
+                    "SELECT album, position, name, as_recorded FROM uploads \
                      WHERE id = ?1 AND owner = ?2 AND image IS NULL AND error IS NULL",
                     params![upload, o],
                     |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
-                })
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, bool>(3)?,
+                        ))
+                    },
+                )
                 .optional()?
             else {
                 return Ok(false);
             };
             tx.execute(
-                "INSERT INTO images (id, album, position, kind, width, height, bytes, sha256, name, created_at, state) \
-                 VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, X'', ?6, ?7, 'processing')",
+                "INSERT INTO images (id, album, position, kind, width, height, bytes, sha256, name, created_at, state, as_recorded) \
+                 VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, X'', ?6, ?7, 'processing', ?8)",
                 params![
                     job.id,
                     album,
@@ -863,6 +880,7 @@ impl Db {
                     job.bytes as i64,
                     name,
                     now(),
+                    as_recorded,
                 ],
             )?;
             tx.execute(
@@ -1241,7 +1259,7 @@ pub mod tests {
         let album = db.create_album(owner, "trip").await.unwrap();
         let files = (0..n).map(|i| (format!("{i}.jpg"), 10)).collect();
         let uploads = db
-            .begin_uploads(owner, &album.id, files)
+            .begin_uploads(owner, &album.id, files, false)
             .await
             .unwrap()
             .unwrap();
@@ -1269,7 +1287,7 @@ pub mod tests {
         let album = db.create_album("ann", "").await.unwrap();
         let files = vec![("a".into(), 1), ("b".into(), 1), ("c".into(), 1)];
         let uploads = db
-            .begin_uploads("ann", &album.id, files)
+            .begin_uploads("ann", &album.id, files, false)
             .await
             .unwrap()
             .unwrap();
@@ -1314,7 +1332,7 @@ pub mod tests {
         );
         assert!(db.delete_album("bob", &album.id).await.unwrap().is_none());
         assert!(
-            db.begin_uploads("bob", &album.id, vec![("x".into(), 1)])
+            db.begin_uploads("bob", &album.id, vec![("x".into(), 1)], false)
                 .await
                 .unwrap()
                 .is_none()
@@ -1349,7 +1367,7 @@ pub mod tests {
         );
         // Images added after a reorder still go at the end.
         let uploads = db
-            .begin_uploads("ann", &album.id, vec![("e".into(), 1)])
+            .begin_uploads("ann", &album.id, vec![("e".into(), 1)], false)
             .await
             .unwrap()
             .unwrap();
@@ -1382,7 +1400,7 @@ pub mod tests {
         let db = Db::temp().await;
         let (album, ids) = album_with(&db, "ann", 2).await;
         let pending = db
-            .begin_uploads("ann", &album.id, vec![("p".into(), 1)])
+            .begin_uploads("ann", &album.id, vec![("p".into(), 1)], false)
             .await
             .unwrap()
             .unwrap();
@@ -1402,7 +1420,12 @@ pub mod tests {
         let db = Db::temp().await;
         let album = db.create_album("ann", "").await.unwrap();
         let uploads = db
-            .begin_uploads("ann", &album.id, vec![("a".into(), 10), ("b".into(), 10)])
+            .begin_uploads(
+                "ann",
+                &album.id,
+                vec![("a".into(), 10), ("b".into(), 10)],
+                false,
+            )
             .await
             .unwrap()
             .unwrap();
@@ -1434,7 +1457,7 @@ pub mod tests {
         let db = Db::temp().await;
         let album = db.create_album("ann", "").await.unwrap();
         let upload = db
-            .begin_uploads("ann", &album.id, vec![("a".into(), 10)])
+            .begin_uploads("ann", &album.id, vec![("a".into(), 10)], false)
             .await
             .unwrap()
             .unwrap()
@@ -1512,7 +1535,7 @@ pub mod tests {
         let db = Db::temp().await;
         let album = db.create_album("ann", "").await.unwrap();
         let uploads = db
-            .begin_uploads("ann", &album.id, vec![("a".into(), 1)])
+            .begin_uploads("ann", &album.id, vec![("a".into(), 1)], false)
             .await
             .unwrap()
             .unwrap();
@@ -1546,6 +1569,7 @@ pub mod tests {
                 "ann",
                 &album.id,
                 vec![("a.jpg".into(), 1), ("b.mp4".into(), 1)],
+                false,
             )
             .await
             .unwrap()

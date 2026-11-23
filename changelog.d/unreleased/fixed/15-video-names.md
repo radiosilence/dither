@@ -1,0 +1,1 @@
+- **A video's file name no longer reaches its public pages.** A video with no caption was titled for the media controls with the name it was uploaded under, which is its owner's alone; it is now "a video".

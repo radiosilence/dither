@@ -5,7 +5,8 @@ pub struct Clip {
     /// The video's id: the player's own, so a redraw of the app's viewer
     /// replaces a player for another video rather than reshaping it.
     pub id: String,
-    /// What plays: the playback copy, or the original where it plays as is.
+    /// What plays: the video's display copy where it has one, otherwise the
+    /// video as kept.
     pub src: String,
     pub poster: String,
     /// The original, to download.

@@ -423,12 +423,13 @@ impl Uploads {
                 Err(why) => return self.reject(&upload, why.into()).await,
             }
         };
-        // A video's original and its playback copy are made beside the
-        // upload before it goes.
-        let needed = if video {
-            upload.size.saturating_mul(2)
-        } else {
-            upload.size
+        // A video is made beside its upload before the upload goes: kept as
+        // recorded, about its size again; converted, H.264 at CRF 18 from a
+        // phone's HEVC can be three times it.
+        let needed = match (video, upload.as_recorded) {
+            (true, true) => upload.size.saturating_mul(2),
+            (true, false) => upload.size.saturating_mul(4),
+            (false, _) => upload.size,
         };
         if !self.room_for(needed) {
             return Outcome::Failed(
@@ -628,7 +629,7 @@ mod tests {
 
     async fn begin(db: &Db, size: u64) -> Upload {
         let album = db.create_album("ann", "").await.unwrap();
-        db.begin_uploads("ann", &album.id, vec![("a.jpg".into(), size)])
+        db.begin_uploads("ann", &album.id, vec![("a.jpg".into(), size)], false)
             .await
             .unwrap()
             .unwrap()
