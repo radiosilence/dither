@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.0
+
+### Security
+
+- **ffmpeg runs confined by the kernel.** Each ffmpeg and ffprobe run reads only the programs' directories and the file it was given and writes only in its own working directory (Landlock: not the database, the store or `/proc`, and no TCP); seccomp refuses it sockets, other processes, new namespaces, io_uring, BPF, perf events, userfaultfd and keyrings; no file it writes may take the disk below `MIN_FREE_BYTES`, and the worker keeps its own memory and environment out of `/proc`.
+- **The Pulumi package pins the image by digest.** CI writes the released image's digest into the package it publishes, so a tag moved later changes nothing that is deployed; the worker is given `MIN_FREE_BYTES` too.
+- **SEI messages are stripped from videos kept as they are.** H.264 and HEVC streams lose the SEI where encoders write their settings and some cameras the time or where they were, both in the frames and in an HEVC stream's configuration.
+- **Sign-ins are checked with the provider daily.** A session lasts two days instead of thirty, and a page load a day after signing in goes back through the identity provider, which asks the person nothing but decides again whether they may sign in.
+
+### Removed
+
+- **The web process no longer makes link previews.** An image from before 0.3.0 without one gets none: every picture is made by the worker, and the web process decodes nothing.
+
+### Fixed
+
+- **A video's file name no longer reaches its public pages.** A video with no caption was titled for the media controls with the name it was uploaded under, which is its owner's alone; it is now "a video".
+
 ## 0.6.0
 
 ### Added
