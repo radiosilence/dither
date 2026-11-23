@@ -4,7 +4,8 @@
 //! place: a live stream redraws the album grid and the library whenever a
 //! write lands (an upload finishing, another device reordering), sending a
 //! part only when it differs from what was sent. Fields save as they are
-//! typed in. The upload queue, selection and drag-to-reorder are app.js's,
+//! typed in. The upload queue, selection and drag-to-reorder are the
+//! browser script's (browser/app.ts),
 //! since they live in the browser.
 
 use std::collections::HashMap;
@@ -561,7 +562,10 @@ pub async fn stream(
                     // could not answer (a long write holding the lock) is
                     // logged below and asked again on the next write.
                     Err(AppError::NotFound) => {
-                        yield Ok(patch(&Deleted.render().unwrap_or_default()));
+                        match Deleted.render() {
+                            Ok(html) => yield Ok(patch(&html)),
+                            Err(e) => tracing::error!(error = %e, "drawing a deleted album failed"),
+                        }
                         break;
                     }
                     Err(e) => Err(e),

@@ -38,6 +38,8 @@
   <span data-k="delete n?" data-n="{{ n }}">{{ __n("Delete this image? Links to it stop working. This can't be undone.", "Delete these %{n} images? Links to them stop working. This can't be undone.", *n) }}</span>
   <span data-k="processing n" data-n="{{ n }}">{{ __n("processing %{n}…", "processing %{n}…", *n) }}</span>
   <span data-k="delete failed n" data-n="{{ n }}">{{ __n("Couldn't delete it.", "Couldn't delete them.", *n) }}</span>
+  <span data-k="delete album n?" data-n="{{ n }}">{{ __n("Delete this album and its image? Its link stops working. This can't be undone.", "Delete this album and its %{n} images? Its link stops working. This can't be undone.", *n) }}</span>
+  <span data-k="moved n" data-n="{{ n }}">{{ __n("Moved %{n} image.", "Moved %{n} images.", *n) }}</span>
   {% endfor %}
   <span data-k="dismiss">{{ __p("Button: hide a notice", "dismiss") }}</span>
   <span data-k="copied">{{ __p("A copy button, after copying", "copied") }}</span>
@@ -45,12 +47,11 @@
   <span data-k="none selected">{{ __("none selected") }}</span>
   <span data-k="cover failed">{{ __("Couldn't set the cover.") }}</span>
   <span data-k="delete">{{ __p("Button", "delete") }}</span>
-  <span data-k="delete album?">{{ __("Delete this album and everything in it? Its link stops working. This can't be undone.") }}</span>
+  <span data-k="delete empty album?">{{ __("Delete this album? Its link stops working. This can't be undone.") }}</span>
   <span data-k="album delete failed">{{ __("Couldn't delete the album.") }}</span>
   <span data-k="album failed">{{ __("Couldn't make an album.") }}</span>
   <span data-k="albums failed">{{ __("Couldn't list your albums.") }}</span>
   <span data-k="move failed">{{ __("Couldn't move them.") }}</span>
-  <span data-k="moved">{{ __("Moved.") }}</span>
   <span data-k="open that album">{{ __("open that album") }}</span>
   <span data-k="order failed">{{ __("Couldn't save the new order; reload to see the album as it is.") }}</span>
   <span data-k="pasted image">{{ __("pasted image") }}</span>

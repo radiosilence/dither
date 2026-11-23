@@ -31,6 +31,12 @@ msgid "%{n} of %{total}"
 msgstr ""
 
 #: templates/app/layout.html
+msgid "%{n} selected"
+msgid_plural "%{n} selected"
+msgstr[0] ""
+msgstr[1] ""
+
+#: templates/app/layout.html
 msgid "%{rate}/s · %{left} left"
 msgstr ""
 
@@ -60,7 +66,9 @@ msgstr ""
 
 #: templates/app/layout.html
 msgid "Couldn't delete it."
-msgstr ""
+msgid_plural "Couldn't delete them."
+msgstr[0] ""
+msgstr[1] ""
 
 #: templates/app/layout.html
 msgid "Couldn't delete the album."
@@ -88,13 +96,24 @@ msgstr ""
 
 #: templates/app/layout.html
 msgid ""
-"Delete this album and everything in it? Its link stops working. This can't "
-"be undone."
+"Delete this album and its image? Its link stops working. This can't be "
+"undone."
+msgid_plural ""
+"Delete this album and its %{n} images? Its link stops working. This can't be "
+"undone."
+msgstr[0] ""
+msgstr[1] ""
+
+#: templates/app/layout.html
+msgid "Delete this album? Its link stops working. This can't be undone."
 msgstr ""
 
 #: templates/app/layout.html
 msgid "Delete this image? Links to it stop working. This can't be undone."
-msgstr ""
+msgid_plural ""
+"Delete these %{n} images? Links to them stop working. This can't be undone."
+msgstr[0] ""
+msgstr[1] ""
 
 #: templates/app/layout.html
 msgid "HEIC isn't supported yet: export it as JPEG"
@@ -107,8 +126,10 @@ msgid ""
 msgstr ""
 
 #: templates/app/layout.html
-msgid "Moved."
-msgstr ""
+msgid "Moved %{n} image."
+msgid_plural "Moved %{n} images."
+msgstr[0] ""
+msgstr[1] ""
 
 #: templates/app/albums.html
 msgid "No albums yet. Drop some images in to start one."
@@ -281,6 +302,12 @@ msgstr ""
 #: templates/app/album.html templates/app/albums.html
 msgid "private"
 msgstr ""
+
+#: templates/app/layout.html
+msgid "processing %{n}…"
+msgid_plural "processing %{n}…"
+msgstr[0] ""
+msgstr[1] ""
 
 #: templates/app/layout.html
 msgid "processing failed (%{status})"
@@ -481,32 +508,4 @@ msgstr ""
 msgctxt "Upload state"
 msgid "waiting"
 msgstr ""
-
-#: templates/app/layout.html
-#, fuzzy
-msgid "%{n} selected"
-msgid_plural "%{n} selected"
-msgstr[0] ""
-msgstr[1] ""
-
-#: templates/app/layout.html
-#, fuzzy
-msgid "Delete this image? Links to it stop working. This can't be undone."
-msgid_plural ""
-"Delete these %{n} images? Links to them stop working. This can't be undone."
-msgstr[0] ""
-msgstr[1] ""
-
-#: templates/app/layout.html
-#, fuzzy
-msgid "processing %{n}…"
-msgid_plural "processing %{n}…"
-msgstr[0] ""
-msgstr[1] ""
-
-#: templates/app/layout.html
-msgid "Couldn't delete it."
-msgid_plural "Couldn't delete them."
-msgstr[0] ""
-msgstr[1] ""
 

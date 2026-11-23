@@ -50,7 +50,7 @@ for (const el of $<HTMLTemplateElement>("#copy")?.content.querySelectorAll<HTMLE
 }
 
 const fill = (text: string, values: Record<string, string | number>) =>
-  text.replace(/%\{(\w+)\}/g, (whole, name: string) => (name in values ? String(values[name]) : whole));
+  text.replace(/%\{(\w+)\}/g, (whole, name: string) => (Object.hasOwn(values, name) ? String(values[name]) : whole));
 
 /** A line of copy with its `%{name}` placeholders filled. A missing key reads as itself, which is obvious on screen. */
 function say(key: string, values: Record<string, string | number> = {}) {
@@ -326,7 +326,9 @@ document.addEventListener("click", async (ev) => {
     }
   } else if (t.closest("[data-delete-album]")) {
     const id = t.closest<HTMLElement>("[data-delete-album]")?.dataset["deleteAlbum"] ?? "";
-    if (await ask(say("delete album?"), say("delete"))) {
+    // How much goes with it is the cue an irreversible delete needs.
+    const n = $$(".tile").length;
+    if (await ask(n === 0 ? say("delete empty album?") : sayN("delete album n?", n), say("delete"))) {
       const res = await api("POST", `/albums/${id}/delete`);
       if (res.ok) location.href = "/";
       else notice(say("album delete failed"), true);
@@ -364,11 +366,12 @@ document.addEventListener("click", async (ev) => {
   const title = dialog.querySelector<HTMLInputElement>("input[name=title]")?.value ?? "";
   const res = await api("POST", "/images/move", { ids: moving, to, title });
   if (!res.ok) return notice(say("move failed"), true);
-  const { to: dest } = await json<{ moved: number; to: string }>(res);
+  const { moved = 0, to: dest } = await json<{ moved: number; to: string }>(res);
   dialog.close();
   $<HTMLDialogElement>("#viewer")?.close();
   selecting(false);
-  notice(say("moved"), false, dest ? { href: `/albums/${dest}`, label: say("open that album") } : undefined);
+  // The count says if some did not move: gone meanwhile, or not theirs.
+  notice(sayN("moved n", moved), false, dest ? { href: `/albums/${dest}`, label: say("open that album") } : undefined);
 });
 
 // Typing a new album's name picks that option.
@@ -942,9 +945,9 @@ const tray: Tray = (() => {
     const live = pending();
     const done = items.filter((i) => i.state === "done").length;
     const failed = items.filter((i) => i.state === "failed").length;
-    const counted = items.filter((i) => i.state !== "failed");
-    const total = counted.reduce((s, i) => s + i.size, 0);
-    const sent = counted.reduce((s, i) => s + Math.min(i.size, i.acked + i.flight), 0);
+    const kept = items.filter((i) => i.state !== "failed");
+    const total = kept.reduce((s, i) => s + i.size, 0);
+    const sent = kept.reduce((s, i) => s + Math.min(i.size, i.acked + i.flight), 0);
     const processing = live.filter((i) => i.state === "processing").length;
 
     // Rate over the last few seconds, from samples of bytes sent.
@@ -1011,7 +1014,9 @@ const tray: Tray = (() => {
     // a chunk's progress events read as one motion.
     const ease = 1 - Math.exp(-dt / 140);
     shown += (goal - shown) * ease;
-    if (Math.abs(goal - shown) < 0.0005) shown = goal;
+    // Close enough, or nothing on its way and the goal behind what is shown
+    // (a file failed or was cancelled): settle, rather than run backwards.
+    if (Math.abs(goal - shown) < 0.0005 || (!target.live && shown > goal)) shown = goal;
     meter.value = shown;
     for (const i of queue.items) {
       if (!i.row || !expanded) continue;

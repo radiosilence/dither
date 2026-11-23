@@ -147,7 +147,10 @@ mod tests {
             let committed = root.join("locales").join(locale).join("messages.po");
             let dir = tempfile::tempdir().unwrap();
             let fresh = dir.path().join("messages.po");
-            if committed.exists() {
+            // The source locale has no translations to keep, so it is built
+            // afresh, in the templates' order and with nothing marked fuzzy as
+            // a rewording of what it said before.
+            if committed.exists() && *locale != LOCALE {
                 std::fs::copy(&committed, &fresh).unwrap();
             } else {
                 askama_gettext::merge::create_catalog(&fresh, locale).unwrap();
@@ -166,6 +169,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every key in `source` that follows `call` (`say("` reads the keys of
+    /// `say("key"`).
+    fn keys<'a>(source: &'a str, call: &str) -> std::collections::BTreeSet<&'a str> {
+        source
+            .split(call)
+            .skip(1)
+            .filter_map(|rest| rest.split('"').next())
+            .collect()
+    }
+
+    /// The browser's script asks for its words by key from the layout's copy,
+    /// a counted line from the entries rendered once per plural form. A key on
+    /// one side only is a word the script would show as its key, or one the
+    /// catalogue keeps for nothing.
+    #[test]
+    fn the_script_and_its_copy_name_the_same_lines() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = std::fs::read_to_string(root.join("browser/app.ts")).unwrap();
+        let layout = std::fs::read_to_string(root.join("templates/app/layout.html")).unwrap();
+        let (mut plain, mut counted) = (
+            std::collections::BTreeSet::new(),
+            std::collections::BTreeSet::new(),
+        );
+        for tag in layout.split("<span ").skip(1) {
+            let tag = tag.split('>').next().unwrap();
+            let Some(key) = tag
+                .split("data-k=\"")
+                .nth(1)
+                .and_then(|k| k.split('"').next())
+            else {
+                continue;
+            };
+            if tag.contains("data-n=") {
+                counted.insert(key);
+            } else {
+                plain.insert(key);
+            }
+        }
+        assert_eq!(keys(&script, "say(\""), plain, "plain lines");
+        assert_eq!(keys(&script, "sayN(\""), counted, "counted lines");
     }
 
     #[test]

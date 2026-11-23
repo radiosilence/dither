@@ -31,7 +31,7 @@ An image host: axum, askama, Datastar and Tailwind, with images in an object sto
 ## Check
 
 ```sh
-just check   # Cargo.lock clean, fmt, clippy -D warnings, tests, the Pulumi package, stylesheet fresh, changelog, versions
+just check   # Cargo.lock clean, fmt, clippy -D warnings, tests, the Pulumi package, stylesheet fresh, the script's types, changelog, versions
 just css     # after changing styles/, a template or class strings in src/
 ```
 
