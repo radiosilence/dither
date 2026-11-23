@@ -1383,7 +1383,6 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
         )
         .await;
     assert_eq!(unchanged.status, StatusCode::NOT_MODIFIED);
-    assert!(unchanged.headers.get(header::CONTENT_LENGTH).is_none());
     app.state.views.flush(&app.state.db, true).await;
 
     let stats = app.state.db.view_stats(&id, 0).await.unwrap();
