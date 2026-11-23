@@ -941,17 +941,23 @@ impl Db {
         .await
     }
 
-    /// Mark job `id` ready with what its copies came to, claiming the copies
-    /// [`add_stray`](Self::add_stray) recorded. False when it is no longer
-    /// processing: deleted while its copies were made, whose copies are then
-    /// the caller's to remove.
-    pub async fn finish_job(&self, owner: &str, id: &str, made: Made) -> Result<bool> {
-        let (o, id) = (owner.to_string(), id.to_string());
+    /// Mark job `id`, which `worker` holds, ready with what its copies came
+    /// to, claiming the copies [`add_stray`](Self::add_stray) recorded.
+    /// False when `worker` no longer holds it: deleted while its copies were
+    /// made, or its lease lapsed and another took it.
+    pub async fn finish_job(
+        &self,
+        owner: &str,
+        worker: &str,
+        id: &str,
+        made: Made,
+    ) -> Result<bool> {
+        let (o, worker, id) = (owner.to_string(), worker.to_string(), id.to_string());
         self.write_as(owner, move |tx| {
             let n = tx.execute(
                 "UPDATE images SET state = 'ready', width = ?1, height = ?2, bytes = ?3, animated = ?4, \
                    display = ?5, sha256 = ?6, duration_ms = ?7, audio = ?8, lease_until = NULL, claimed_by = NULL \
-                 WHERE id = ?9 AND state = 'processing' \
+                 WHERE id = ?9 AND state = 'processing' AND claimed_by = ?11 \
                    AND album IN (SELECT id FROM albums WHERE owner = ?10)",
                 params![
                     made.width,
@@ -963,7 +969,8 @@ impl Db {
                     made.duration_ms.map(|d| d as i64),
                     made.audio,
                     id,
-                    o
+                    o,
+                    worker
                 ],
             )?;
             if n == 0 {
@@ -975,14 +982,21 @@ impl Db {
         .await
     }
 
-    /// Mark job `id` failed, with a key for why (`jobs::FAILED`, …).
-    pub async fn fail_job(&self, owner: &str, id: &str, why: &str) -> Result<bool> {
-        let (o, id, why) = (owner.to_string(), id.to_string(), why.to_string());
+    /// Mark job `id`, which `worker` holds, failed, with a key for why
+    /// (`jobs::FAILED`, …). False when `worker` no longer holds it.
+    pub async fn fail_job(&self, owner: &str, worker: &str, id: &str, why: &str) -> Result<bool> {
+        let (o, worker, id, why) = (
+            owner.to_string(),
+            worker.to_string(),
+            id.to_string(),
+            why.to_string(),
+        );
         self.run_as(owner, move |c| {
             c.execute(
                 "UPDATE images SET state = 'failed', failure = ?1, lease_until = NULL, claimed_by = NULL \
-                 WHERE id = ?2 AND state = 'processing' AND album IN (SELECT id FROM albums WHERE owner = ?3)",
-                params![why, id, o],
+                 WHERE id = ?2 AND state = 'processing' AND claimed_by = ?4 \
+                   AND album IN (SELECT id FROM albums WHERE owner = ?3)",
+                params![why, id, o, worker],
             )
             .map(|n| n == 1)
         })
@@ -1182,7 +1196,9 @@ pub mod tests {
             sha256: vec![1; 32],
             ..Made::default()
         };
-        db.finish_job(owner, image, made).await.unwrap()
+        let claimed = db.claim("w", false, now() + 60_000).await.unwrap().unwrap();
+        assert_eq!(claimed.image.id, image);
+        db.finish_job(owner, "w", image, made).await.unwrap()
     }
 
     /// An album of `owner` holding `n` images, added through uploads as
@@ -1481,7 +1497,7 @@ pub mod tests {
             .await
             .unwrap();
         assert!(
-            !db.finish_job("ann", "MAKING0000", Made::default())
+            !db.finish_job("ann", "w", "MAKING0000", Made::default())
                 .await
                 .unwrap()
         );
@@ -1571,19 +1587,36 @@ pub mod tests {
             display: true,
             ..Made::default()
         };
-        assert!(db.finish_job("ann", &video, made).await.unwrap());
+        db.claim("w", true, now() + 60_000).await.unwrap().unwrap();
+        db.claim("w", false, now() + 60_000).await.unwrap().unwrap();
+        assert!(
+            !db.finish_job("ann", "other", &video, made.clone())
+                .await
+                .unwrap(),
+            "only its holder finishes it"
+        );
+        assert!(db.finish_job("ann", "w", &video, made).await.unwrap());
         let (v, _) = db.image(&video).await.unwrap().unwrap();
         assert_eq!(
             (v.status, v.width, v.duration_ms, v.audio, v.display),
             (Status::Ready, 640, Some(4200), true, true)
         );
         assert!(
-            !db.finish_job("bob", &picture, Made::default())
+            !db.finish_job("bob", "w", &picture, Made::default())
                 .await
                 .unwrap(),
             "not bob's"
         );
-        assert!(db.fail_job("ann", &picture, "unreadable").await.unwrap());
+        assert!(
+            !db.fail_job("ann", "other", &picture, "unreadable")
+                .await
+                .unwrap()
+        );
+        assert!(
+            db.fail_job("ann", "w", &picture, "unreadable")
+                .await
+                .unwrap()
+        );
         let (p, _) = db.image(&picture).await.unwrap().unwrap();
         assert_eq!(
             (p.status, p.failure.as_str()),

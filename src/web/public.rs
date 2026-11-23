@@ -725,8 +725,11 @@ async fn partial(
     mut h: HeaderMap,
 ) -> Response {
     let (body, range, total) = match state.store.get_range(key, wanted.range()).await {
-        Ok(Some(store::Part::Within { body, range, total })) => (body, range, total),
-        Ok(Some(store::Part::Outside { total })) => {
+        Ok(Some(store::Part::Within { body, range, total })) if range.start < range.end => {
+            (body, range, total)
+        }
+        // Some stores answer an empty range rather than refusing it.
+        Ok(Some(store::Part::Within { total, .. } | store::Part::Outside { total })) => {
             h.insert(
                 header::CONTENT_RANGE,
                 HeaderValue::from_str(&format!("bytes */{total}")).expect("digits"),

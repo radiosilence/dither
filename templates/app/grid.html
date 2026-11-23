@@ -4,7 +4,7 @@
   <button type="button" class="tile" id="i-{{ t.id }}" data-id="{{ t.id }}" aria-label="{{ t.label }}"
     data-on:click="dither.show('viewer'); @get('/images/{{ t.id }}/view')">
     {% if let Some(done) = t.progress %}
-    <span class="tile-wait"><span>{{ __p("A video's state", "processing") }}</span><progress id="vp-{{ t.id }}" class="meter" max="1000" value="{{ done }}"></progress></span>
+    <span class="tile-wait"><span>{{ __p("An upload's state", "processing") }}</span><progress id="vp-{{ t.id }}" class="meter" max="1000" value="{{ done }}"></progress></span>
     {% else if let Some(why) = t.failure.as_ref() %}
     <span class="tile-wait bad" title="{% call m::failure(why) %}{% endcall %}">{{ icon("warning", 18.0)|safe }}<span>{{ __("couldn't process") }}</span></span>
     {% else %}

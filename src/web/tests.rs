@@ -897,6 +897,10 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
         )
         .await;
     assert_eq!(beyond.status, StatusCode::RANGE_NOT_SATISFIABLE);
+    let none = app
+        .get_with(&format!("/{id}.mp4"), &[(header::RANGE, "bytes=-0")])
+        .await;
+    assert_eq!(none.status, StatusCode::RANGE_NOT_SATISFIABLE);
     assert_eq!(beyond.header("content-range"), format!("bytes */{len}"));
     // A range of a version that is not this one is answered whole.
     let stale = app

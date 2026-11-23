@@ -41,6 +41,9 @@ const RENEW: Duration = Duration::from_secs(20);
 const IDLE: Duration = Duration::from_secs(30);
 /// Claims before a job that keeps failing on this side is marked failed.
 const ATTEMPTS: u32 = 3;
+/// What sizing a picture reads before the budget is held: every header
+/// dither takes ends well within it.
+const HEAD: u64 = 4 << 20;
 /// The processing budget's unit.
 const MIB: u64 = 1 << 20;
 
@@ -188,9 +191,16 @@ impl Worker {
         let _ = self.events.send(event);
     }
 
+    /// Say job `id` is `done` thousandths made. Never backwards: ffmpeg's
+    /// time out wavers as it interleaves sound and picture.
     fn progress(&self, owner: &str, id: &str, done: u16) {
-        if self.said.lock().insert(id.to_string(), done) == Some(done) {
-            return;
+        {
+            let mut said = self.said.lock();
+            let last = said.get(id).copied();
+            if last.is_some_and(|last| done <= last) {
+                return;
+            }
+            said.insert(id.to_string(), done);
         }
         self.say(FromWorker::Progress {
             owner: owner.to_string(),
@@ -203,9 +213,6 @@ impl Worker {
         loop {
             let mut claimed = false;
             for video in [false, true] {
-                if video && self.tools.is_none() {
-                    continue;
-                }
                 let slots = if video { &self.videos } else { &self.pictures };
                 let Ok(slot) = slots.clone().try_acquire_owned() else {
                     continue;
@@ -239,35 +246,49 @@ impl Worker {
         let id = job.image.id.clone();
         let owner = job.owner.clone();
         let video = job.image.is_video();
-        let (stop, stopped) = watch::channel(false);
-        self.running.lock().insert(id.clone(), stop.clone());
-        // The lease is renewed while the job is made; one that cannot be was
-        // deleted, or lapsed and taken by another, and this stops.
-        let heartbeat = {
-            let this = self.clone();
-            let id = id.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(RENEW).await;
-                    let until = now() + LEASE.as_millis() as i64;
-                    if let Ok(false) = this.db.renew(&this.name, &id, until).await {
-                        let _ = stop.send(true);
-                        return;
-                    }
-                }
-            })
-        };
         let started = Instant::now();
-        self.progress(&owner, &id, 0);
-        let outcome = if video {
-            self.video(&job, stopped).await
+        // A job that has killed workers before is not tried again.
+        let outcome = if job.image.attempts > ATTEMPTS {
+            Err(Problem::Rejected(
+                jobs::FAILED,
+                format!("claimed {} times without ending", job.image.attempts - 1),
+            ))
+        } else if video && self.tools.is_none() {
+            Err(Problem::Rejected(
+                jobs::FAILED_UNSUPPORTED,
+                "this worker has no ffmpeg".into(),
+            ))
         } else {
-            self.picture(&job, stopped).await
+            let (stop, stopped) = watch::channel(false);
+            self.running.lock().insert(id.clone(), stop.clone());
+            // The lease is renewed while the job is made; one that cannot be
+            // was deleted, or lapsed and taken by another, and this stops.
+            let heartbeat = {
+                let this = self.clone();
+                let id = id.clone();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(RENEW).await;
+                        let until = now() + LEASE.as_millis() as i64;
+                        if let Ok(false) = this.db.renew(&this.name, &id, until).await {
+                            let _ = stop.send(true);
+                            return;
+                        }
+                    }
+                })
+            };
+            self.progress(&owner, &id, 0);
+            let outcome = if video {
+                self.video(&job, stopped).await
+            } else {
+                self.picture(&job, stopped).await
+            };
+            heartbeat.abort();
+            self.running.lock().remove(&id);
+            outcome
         };
-        heartbeat.abort();
-        self.running.lock().remove(&id);
         self.said.lock().remove(&id);
-        let _ = tokio::fs::remove_dir_all(jobs::work(&self.state_dir, &id)).await;
+        let _ = tokio::fs::remove_dir_all(self.work(&id)).await;
         let ended = |made: bool, bytes: u64| FromWorker::Ended {
             owner: owner.clone(),
             id: id.clone(),
@@ -276,34 +297,22 @@ impl Worker {
             ms: started.elapsed().as_millis() as u64,
             bytes,
         };
-        let source = jobs::source(&self.state_dir, &id);
-        match outcome {
+        let recorded = match outcome {
             Ok(made) => {
                 let bytes = made.bytes;
-                match self.db.finish_job(&owner, &id, made).await {
-                    Ok(true) => {
-                        let _ = tokio::fs::remove_file(&source).await;
-                        tracing::info!(job = %id, video, ms = started.elapsed().as_millis() as u64, "made");
-                        self.say(ended(true, bytes));
-                    }
-                    // Deleted as it was finished.
-                    Ok(false) => {
-                        let _ = tokio::fs::remove_file(&source).await;
-                        store::discard(&self.store, &self.db, vec![id.clone()]).await;
-                    }
-                    Err(e) => {
-                        tracing::error!(job = %id, error = %e, "recording a made job failed");
-                        self.later(&job).await;
-                    }
+                let finished = self.db.finish_job(&owner, &self.name, &id, made).await;
+                if let Ok(true) = finished {
+                    tracing::info!(job = %id, video, ms = started.elapsed().as_millis() as u64, "made");
+                    self.say(ended(true, bytes));
                 }
+                finished
             }
-            Err(Problem::Stopped) => {
-                let _ = tokio::fs::remove_file(&source).await;
-                store::discard(&self.store, &self.db, vec![id.clone()]).await;
-            }
+            // Deleted, or no longer this worker's: what to tidy is decided below.
+            Err(Problem::Stopped) => Ok(false),
             Err(Problem::Failed(why)) if job.image.attempts < ATTEMPTS => {
                 tracing::warn!(job = %id, attempt = job.image.attempts, error = %why, "a job failed; it will be tried again");
                 self.later(&job).await;
+                return;
             }
             Err(problem) => {
                 let why = match problem {
@@ -317,37 +326,87 @@ impl Worker {
                     }
                     Problem::Stopped => unreachable!("matched above"),
                 };
-                let _ = tokio::fs::remove_file(&source).await;
-                store::discard(&self.store, &self.db, vec![id.clone()]).await;
-                match self.db.fail_job(&owner, &id, why).await {
-                    Ok(_) => self.say(ended(false, 0)),
-                    Err(e) => {
-                        tracing::warn!(job = %id, error = %e, "recording a failed job failed");
-                        self.later(&job).await;
-                    }
+                let failed = self.db.fail_job(&owner, &self.name, &id, why).await;
+                if let Ok(true) = failed {
+                    self.say(ended(false, 0));
                 }
+                failed
+            }
+        };
+        match recorded {
+            // Ended here: the upload goes, and a failure's copies with it.
+            Ok(true) => {
+                let _ = tokio::fs::remove_file(self.source(&id)).await;
+                if !matches!(self.db.image(&id).await, Ok(Some((image, _))) if image.ready()) {
+                    store::discard(&self.store, &self.db, vec![id.clone()]).await;
+                }
+            }
+            // Not this worker's to record. Deleted: everything goes. Taken by
+            // another worker after this one's lease lapsed: everything stays,
+            // the copies included, which are that worker's now.
+            Ok(false) => {
+                if let Ok(None) = self.db.image(&id).await {
+                    let _ = tokio::fs::remove_file(self.source(&id)).await;
+                    store::discard(&self.store, &self.db, vec![id.clone()]).await;
+                }
+            }
+            Err(e) => {
+                tracing::error!(job = %id, error = %e, "recording how a job ended failed");
+                self.later(&job).await;
             }
         }
     }
 
-    /// Put a job back to be tried again, later with each attempt.
+    /// Put a job back to be tried again, later with each attempt, and say
+    /// it waits, so its album does not show it stuck part way.
     async fn later(&self, job: &Claimed) {
         let wait = Duration::from_secs(30) * job.image.attempts.max(1);
         let after = now() + wait.as_millis() as i64;
         if let Err(e) = self.db.release(&self.name, &job.image.id, after).await {
             tracing::warn!(job = %job.image.id, error = %e, "putting a job back failed; its lease will lapse");
         }
+        self.say(FromWorker::Waiting {
+            owner: job.owner.clone(),
+            id: job.image.id.clone(),
+        });
     }
 
-    /// The upload's file, whole.
-    async fn upload(&self, id: &str) -> Result<Vec<u8>, Problem> {
-        match tokio::fs::read(jobs::source(&self.state_dir, id)).await {
-            Ok(bytes) => Ok(bytes),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Problem::Rejected(
-                jobs::FAILED,
-                "its upload was lost before it was made".into(),
-            )),
-            Err(e) => Err(Problem::Failed(e.to_string())),
+    fn source(&self, id: &str) -> PathBuf {
+        jobs::source(&self.state_dir, id)
+    }
+
+    /// Where this worker works on job `id`: its own, so a worker that lost
+    /// the job and one that took it never share one.
+    fn work(&self, id: &str) -> PathBuf {
+        jobs::work(&self.state_dir, &format!("{id}.{}", self.name))
+    }
+
+    /// The upload's file: its first `limit` bytes, or all of it.
+    async fn upload(&self, id: &str, limit: Option<u64>) -> Result<Vec<u8>, Problem> {
+        let lost = |e: std::io::Error| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Problem::Rejected(
+                    jobs::FAILED,
+                    "its upload was lost before it was made".into(),
+                )
+            } else {
+                Problem::Failed(e.to_string())
+            }
+        };
+        let path = self.source(id);
+        match limit {
+            None => tokio::fs::read(&path).await.map_err(lost),
+            Some(n) => {
+                let mut head = Vec::new();
+                tokio::fs::File::open(&path)
+                    .await
+                    .map_err(lost)?
+                    .take(n)
+                    .read_to_end(&mut head)
+                    .await
+                    .map_err(lost)?;
+                Ok(head)
+            }
         }
     }
 
@@ -356,13 +415,24 @@ impl Worker {
     async fn picture(&self, job: &Claimed, stop: watch::Receiver<bool>) -> Result<Made, Problem> {
         use crate::media::{self, Reject};
         let id = job.image.id.as_str();
-        let bytes = self.upload(id).await?;
+        // Sized from its first bytes, so files waiting for the budget are not
+        // held in memory beside it.
+        let head = self.upload(id, Some(HEAD)).await?;
+        let size = job.image.bytes;
         let refused = |r: Reject| match r {
             Reject::TooBig(why) => Problem::Rejected(jobs::FAILED_TOO_LARGE, why),
             Reject::Unsupported(why) => Problem::Rejected(jobs::FAILED_UNREADABLE, why.into()),
             Reject::Broken(why) => Problem::Rejected(jobs::FAILED_UNREADABLE, why),
         };
-        let cost = media::cost(&bytes, bytes.len() as u64, self.max_pixels).map_err(refused)?;
+        let cost = match media::cost(&head, size, self.max_pixels) {
+            Ok(cost) => cost,
+            // A header longer than the first bytes: sized from the whole file.
+            Err(Reject::Broken(_)) if (head.len() as u64) < size => {
+                let all = self.upload(id, None).await?;
+                media::cost(&all, size, self.max_pixels).map_err(refused)?
+            }
+            Err(r) => return Err(refused(r)),
+        };
         let permits = u32::try_from(cost.div_ceil(MIB)).unwrap_or(u32::MAX).max(1);
         if permits > self.budget_mib {
             return Err(Problem::Rejected(
@@ -378,6 +448,7 @@ impl Worker {
         if *stop.borrow() {
             return Err(Problem::Stopped);
         }
+        let bytes = self.upload(id, None).await?;
         let max = self.max_pixels;
         let processed = tokio::task::spawn_blocking(move || media::process(&bytes, max))
             .await
@@ -435,7 +506,7 @@ impl Worker {
             .ok_or_else(|| Problem::Failed("this worker has no ffmpeg".into()))?;
         let id = job.image.id.as_str();
         let owner = job.owner.as_str();
-        let source = jobs::source(&self.state_dir, id);
+        let source = self.source(id);
         let mut head = Vec::new();
         match tokio::fs::File::open(&source).await {
             Ok(file) => {
@@ -455,10 +526,14 @@ impl Worker {
         let container = crate::sanitize::sniff_video(&head).ok_or_else(|| {
             Problem::Rejected(jobs::FAILED_UNREADABLE, "not a video after all".into())
         })?;
-        let probe = tools
-            .probe(container, &source)
-            .await
-            .map_err(|e| Problem::Rejected(jobs::FAILED_UNREADABLE, e))?;
+        let probe = tools.probe(container, &source).await.map_err(|e| {
+            // Out of time, or ffprobe would not start: this side's trouble.
+            if e.starts_with("timed out") || e.starts_with("starting ") {
+                Problem::Failed(format!("probing: {e}"))
+            } else {
+                Problem::Rejected(jobs::FAILED_UNREADABLE, e)
+            }
+        })?;
         if probe.duration > self.max_seconds as f64 {
             return Err(Problem::Rejected(
                 jobs::FAILED_TOO_LONG,
@@ -483,7 +558,7 @@ impl Worker {
             .await
             .map(|m| m.len())
             .unwrap_or(0);
-        let work = jobs::work(&self.state_dir, id);
+        let work = self.work(id);
         let _ = tokio::fs::remove_dir_all(&work).await;
         tokio::fs::create_dir_all(&work)
             .await

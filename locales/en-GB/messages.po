@@ -131,6 +131,14 @@ msgstr ""
 msgid "It couldn't be processed. Delete it and upload it again."
 msgstr ""
 
+#: templates/app/macros.html
+msgid "It's larger than this server takes."
+msgstr ""
+
+#: templates/app/macros.html
+msgid "It's longer than this server takes."
+msgstr ""
+
 #: templates/app/library.html
 msgid ""
 "JPEG, PNG, GIF or WebP up to %{max} each, and videos up to %{video}. Where a "
@@ -159,7 +167,7 @@ msgid "Nothing here yet."
 msgstr ""
 
 #: templates/app/viewer.html
-msgid "Processing this video. It can be shared once it's done."
+msgid "Processing. It can be shared once it's done."
 msgstr ""
 
 #: templates/app/deleted.html
@@ -168,6 +176,10 @@ msgstr ""
 
 #: templates/public/missing.html
 msgid "This link doesn't lead to anything, or no longer does."
+msgstr ""
+
+#: templates/app/macros.html
+msgid "This server can't process videos."
 msgstr ""
 
 #: templates/player.html
@@ -442,7 +454,7 @@ msgid "copied"
 msgstr ""
 
 #: templates/app/grid.html
-msgctxt "A video's state"
+msgctxt "An upload's state"
 msgid "processing"
 msgstr ""
 

@@ -31,7 +31,13 @@ use crate::db::Db;
 pub const FAILED_UNREADABLE: &str = "unreadable";
 pub const FAILED_TOO_LONG: &str = "too-long";
 pub const FAILED_TOO_LARGE: &str = "too-large";
+/// A video, and no worker that can make videos.
+pub const FAILED_UNSUPPORTED: &str = "unsupported";
 pub const FAILED: &str = "failed";
+
+/// How long a job's progress stands with no word of it: longer than any step
+/// of a transcode between reports.
+const STALE: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Where jobs' files wait, and are worked on.
 pub fn dir(state_dir: &Path) -> PathBuf {
@@ -73,6 +79,8 @@ pub enum FromWorker {
         id: String,
         done: u16,
     },
+    /// Job `id` of `owner`'s was put back, to be made from the start later.
+    Waiting { owner: String, id: String },
     /// Job `id` of `owner`'s ended: made, or not, after `ms`, its original
     /// `bytes` long.
     Ended {
@@ -98,7 +106,8 @@ pub struct Tick {
 pub struct Hub {
     db: Db,
     state_dir: PathBuf,
-    progress: parking_lot::Mutex<HashMap<String, u16>>,
+    /// The last word of each job's progress, and when it came.
+    progress: parking_lot::Mutex<HashMap<String, (u16, std::time::Instant)>>,
     ticks: broadcast::Sender<Tick>,
     orders: broadcast::Sender<ToWorker>,
 }
@@ -180,11 +189,24 @@ impl Hub {
     fn heard(&self, event: FromWorker) {
         match event {
             FromWorker::Progress { owner, id, done } => {
-                self.progress.lock().insert(id.clone(), done);
+                let mut progress = self.progress.lock();
+                // What no word has come of for a while (a worker stopped
+                // mid-job, or a word after the job was deleted) goes.
+                progress.retain(|_, (_, at)| at.elapsed() < STALE);
+                progress.insert(id.clone(), (done, std::time::Instant::now()));
+                drop(progress);
                 let _ = self.ticks.send(Tick {
                     owner: owner.into(),
                     id,
                     done,
+                });
+            }
+            FromWorker::Waiting { owner, id } => {
+                self.progress.lock().remove(&id);
+                let _ = self.ticks.send(Tick {
+                    owner: owner.into(),
+                    id,
+                    done: 0,
                 });
             }
             FromWorker::Ended {
@@ -222,7 +244,11 @@ impl Hub {
 
     /// Thousandths done of job `id`, while a worker reports on it.
     pub fn progress(&self, id: &str) -> Option<u16> {
-        self.progress.lock().get(id).copied()
+        self.progress
+            .lock()
+            .get(id)
+            .filter(|(_, at)| at.elapsed() < STALE)
+            .map(|(done, _)| *done)
     }
 
     pub fn ticks(&self) -> broadcast::Receiver<Tick> {

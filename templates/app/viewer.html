@@ -11,7 +11,7 @@
     {% if let Some(c) = clip.as_ref() %}
     {% call player::clip(c) %}{% endcall %}
     {% else if let Some(done) = progress %}
-    <div class="stage-wait"><p>{{ __("Processing this video. It can be shared once it's done.") }}</p><progress class="meter" data-progress-of="{{ id }}" max="1000" value="{{ done }}"></progress></div>
+    <div class="stage-wait"><p>{{ __("Processing. It can be shared once it's done.") }}</p><progress class="meter" data-progress-of="{{ id }}" max="1000" value="{{ done }}"></progress></div>
     {% else if let Some(why) = failure.as_ref() %}
     <div class="stage-wait bad">{{ icon("warning", 22.0)|safe }}<p>{% call m::failure(why) %}{% endcall %}</p></div>
     {% else %}
