@@ -48,7 +48,7 @@
   }
 
   .wordmark {
-    @apply text-title-sm font-light text-strong lowercase hover:no-underline;
+    @apply text-title-sm font-extralight text-strong lowercase hover:no-underline;
   }
 
   .page {

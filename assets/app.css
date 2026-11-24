@@ -1170,8 +1170,8 @@
   .wordmark {
     font-size: var(--text-title-sm);
     line-height: var(--tw-leading, var(--text-title-sm--line-height));
-    --tw-font-weight: var(--font-weight-light);
-    font-weight: var(--font-weight-light);
+    --tw-font-weight: var(--font-weight-extralight);
+    font-weight: var(--font-weight-extralight);
     color: var(--strong);
     text-transform: lowercase;
   }
