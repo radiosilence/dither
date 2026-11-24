@@ -11,7 +11,7 @@
     <label class="choice">
       <input type="radio" name="to" value="{{ a.id }}">
       <span class="thumb">{% if let Some(src) = a.cover.as_ref() %}<img src="{{ src }}" alt="" loading="lazy">{% endif %}</span>
-      <span class="grow"><span class="block truncate normal-case{% if a.title.is_empty() %} text-muted{% endif %}">{% if a.title.is_empty() %}{{ __("untitled") }}{% else %}{{ a.title }}{% endif %}</span><span class="block text-fine text-muted normal-case">{% call m::images(a.count, a.size) %}{% endcall %}</span></span>
+      <span class="grow"><span class="block truncate{% if a.title.is_empty() %} text-muted{% endif %}">{% if a.title.is_empty() %}{{ __("untitled") }}{% else %}{{ a.title }}{% endif %}</span><span class="block text-fine text-muted">{% call m::images(a.count, a.size) %}{% endcall %}</span></span>
     </label>
     {% endfor %}
   </div>

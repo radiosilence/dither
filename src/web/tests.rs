@@ -380,7 +380,10 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
 
     let album_page = app.get(&format!("/a/{album}")).await;
     let html = album_page.text();
-    assert!(html.contains("<h1>trip</h1>"), "{html}");
+    assert!(
+        html.contains("<h1 class=\"normal-case\">trip</h1>"),
+        "{html}"
+    );
     assert!(
         html.contains(&format!("srcset=\"/d/{id}.webp 2048w, /{id}.jpg 3000w\"")),
         "{html}"

@@ -41,12 +41,14 @@ use crate::web::Helpers as _;
 use crate::web::clip::Clip;
 use crate::web::{AppState, human, on_public_host};
 
-/// Public pages: no script at all, images and styles from here only.
-const CSP_PUBLIC: &str = "default-src 'none'; img-src 'self'; style-src 'self'; font-src 'self'; \
+/// Public pages: no script at all, images and styles from here only. `data:`
+/// images are the theme's own glyphs (a checkbox's tick, a select's chevron),
+/// which its stylesheet carries as data URLs.
+const CSP_PUBLIC: &str = "default-src 'none'; img-src 'self' data:; style-src 'self'; font-src 'self'; \
      form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
 /// A public page holding a video: video, and the player's script, from here
 /// too, and still nothing inline.
-const CSP_PUBLIC_VIDEO: &str = "default-src 'none'; img-src 'self'; media-src 'self'; \
+const CSP_PUBLIC_VIDEO: &str = "default-src 'none'; img-src 'self' data:; media-src 'self'; \
      script-src 'self'; style-src 'self'; font-src 'self'; form-action 'none'; \
      frame-ancestors 'none'; base-uri 'none'";
 /// Image files: nothing at all, in a sandbox, should a browser ever render

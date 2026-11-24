@@ -171,6 +171,28 @@ for (const d of $$<HTMLDialogElement>("dialog")) {
   });
 }
 
+// iOS shrinks the visual viewport for its keyboard and not the layout one a
+// fixed sheet sits in, so a sheet on a phone would open under the keyboard.
+// The kit lifts it by `--keyboard-inset`, the height the keyboard covers; a
+// browser that resizes the layout viewport itself measures zero.
+const viewport = globalThis.visualViewport;
+if (viewport) {
+  let published = -1;
+  const publish = () => {
+    const covered = Math.round(
+      Math.max(0, document.documentElement.clientHeight - viewport.height - viewport.offsetTop),
+    );
+    // Most visualViewport scrolls report the same figure; skipping them keeps
+    // a pan from invalidating style.
+    if (covered === published) return;
+    published = covered;
+    document.documentElement.style.setProperty("--keyboard-inset", `${covered}px`);
+  };
+  viewport.addEventListener("resize", publish);
+  viewport.addEventListener("scroll", publish);
+  publish();
+}
+
 $<HTMLDialogElement>("#viewer")?.addEventListener("close", () => {
   // The next image opened draws into an empty viewer, not over the last one.
   $("#viewer-body")?.replaceChildren();
