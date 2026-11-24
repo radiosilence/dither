@@ -660,6 +660,67 @@
     background-color: #0000;
   }
 
+  .fill {
+    background-color: var(--hover);
+    border-color: #0000;
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .fill {
+      background-color: color-mix(in oklab, var(--hover) 40%, transparent);
+    }
+  }
+
+  @media (hover: hover) {
+    .fill:hover {
+      background-color: var(--hover);
+    }
+
+    @supports (color: color-mix(in lab, red, red)) {
+      .fill:hover {
+        background-color: color-mix(in oklab, var(--hover) 70%, transparent);
+      }
+    }
+  }
+
+  .fill:active {
+    background-color: var(--hover);
+  }
+
+  .fill:is(.primary, .bad) {
+    color: var(--bg);
+  }
+
+  @media (hover: hover) {
+    .fill:is(.primary, .bad):hover {
+      opacity: .9;
+    }
+  }
+
+  .fill:is(.primary, .bad):active {
+    opacity: .8;
+  }
+
+  .primary.fill {
+    background-color: var(--brand);
+  }
+
+  @media (hover: hover) {
+    .primary.fill:hover {
+      background-color: var(--brand);
+    }
+  }
+
+  .bad.fill {
+    background-color: var(--bad);
+  }
+
+  @media (hover: hover) {
+    .bad.fill:hover {
+      background-color: var(--bad);
+    }
+  }
+
   .bad {
     border-color: var(--bad);
     color: var(--bad);
@@ -747,9 +808,14 @@
 
   .panel {
     border-style: var(--tw-border-style);
-    border-width: 1px;
-    border-color: var(--rule);
+    background-color: var(--surface);
     padding: calc(var(--spacing) * 5);
+    border-width: 1px;
+    border-color: #0000;
+  }
+
+  .panel :is(.code, .panel) {
+    background-color: var(--bg);
   }
 
   .panel > :first-child {
@@ -1104,8 +1170,8 @@
   .wordmark {
     font-size: var(--text-title-sm);
     line-height: var(--tw-leading, var(--text-title-sm--line-height));
-    --tw-font-weight: var(--font-weight-light);
-    font-weight: var(--font-weight-light);
+    --tw-font-weight: var(--font-weight-extralight);
+    font-weight: var(--font-weight-extralight);
     color: var(--strong);
     text-transform: lowercase;
   }
