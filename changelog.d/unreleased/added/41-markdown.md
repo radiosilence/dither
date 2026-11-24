@@ -1,0 +1,1 @@
+- **Markdown in captions and album descriptions.** CommonMark with GitHub's tables, strikethrough, task lists and bare links; raw HTML is shown as text, and link previews and alt text take the words without the markup.

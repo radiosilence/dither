@@ -21,6 +21,13 @@ picture is a JPEG at most 1200 pixels wide and 300 KB, made at upload:
 WhatsApp shows nothing for a larger one, and not every fetcher reads WebP. An
 animated picture under 5 MB is its own preview, so it plays where previews do.
 
+Captions and album descriptions are Markdown: CommonMark with GitHub's
+tables, strikethrough, task lists and bare links, and a line break in the box
+is one on the page, as people expect of a caption. Raw HTML shows as the text
+it is, a link that could run script loses its address, and an image becomes a
+link to it, since the pages load no picture from another site. Link previews,
+alt text and a video's title in the media controls take the words alone.
+
 Albums are unlisted: an address is ten characters of base62 from a CSPRNG
 (about 59.5 bits), long enough that enumerating them is hopeless where
 imgur's seven are not. Pages say `noindex`, so search engines leave them out,
