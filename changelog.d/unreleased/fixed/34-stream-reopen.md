@@ -1,0 +1,1 @@
+- **Live pages after a deploy.** The library and album pages reopen their live stream every minute and when the tab is shown again, rather than going still until reloaded.
