@@ -10,7 +10,7 @@
       <img src="{{ pic.src }}"{% if !pic.srcset.is_empty() %} srcset="{{ pic.srcset }}" sizes="100vw"{% endif %} width="{{ pic.width }}" height="{{ pic.height }}" alt="{{ pic.caption }}" fetchpriority="high" decoding="async">
     </a>
     {% endif %}
-    {% if !pic.caption.is_empty() %}<figcaption class="prose">{{ pic.caption_html|safe }}</figcaption>{% endif %}
+    {% if !pic.caption_html.is_empty() %}<figcaption class="prose">{{ pic.caption_html|safe }}</figcaption>{% endif %}
   </figure>
   <p class="mx-auto max-w-[1000px] px-[22px] text-meta text-muted">
     {{ meta }} · <a href="{{ pic.file }}">{{ __("original") }}</a>{% if let Some(link) = album.as_ref() %} · <a href="{{ link.href }}">{% if !link.title.is_empty() %}{{ link.title }} · {% endif %}{{ __n("%{count} image", "%{count} images", *link.count) }}</a>{% endif %}

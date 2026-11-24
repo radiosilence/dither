@@ -27,13 +27,34 @@ pub fn html(text: &str) -> String {
     let arena = Arena::new();
     let o = options();
     let root = comrak::parse_document(&arena, text, &o);
-    for node in root.descendants() {
-        let mut ast = node.data_mut();
-        match &mut ast.value {
-            NodeValue::Image(link) => ast.value = NodeValue::Link(link.clone()),
-            NodeValue::Heading(h) => h.level = (h.level + 1).min(6),
-            _ => {}
+    let nodes: Vec<_> = root.descendants().collect();
+    for node in nodes {
+        let link = match &mut node.data_mut().value {
+            NodeValue::Image(link) => link.clone(),
+            NodeValue::Heading(h) => {
+                h.level = (h.level + 1).min(6);
+                continue;
+            }
+            _ => continue,
+        };
+        let in_link = node
+            .ancestors()
+            .skip(1)
+            .any(|a| matches!(a.data().value, NodeValue::Link(_)));
+        if in_link {
+            // A linked image (a badge, a thumbnail) is its words, inside the
+            // link it was in, since a link cannot hold another.
+            let words: Vec<_> = node.children().collect();
+            for word in words {
+                node.insert_before(word);
+            }
+            node.detach();
+            continue;
         }
+        if node.first_child().is_none() {
+            node.append(arena.alloc(NodeValue::Text(link.url.clone().into()).into()));
+        }
+        node.data_mut().value = NodeValue::Link(link);
     }
     let mut out = String::new();
     comrak::format_html(root, &o, &mut out).expect("writing to a String");
@@ -109,6 +130,18 @@ mod tests {
         assert_eq!(
             html("![a cat](https://example.com/cat.png)"),
             "<p><a href=\"https://example.com/cat.png\">a cat</a></p>\n"
+        );
+    }
+
+    #[test]
+    fn linked_and_unnamed_images() {
+        assert_eq!(
+            html("[![logo](https://x/logo.png)](https://example.com)"),
+            "<p><a href=\"https://example.com\">logo</a></p>\n"
+        );
+        assert_eq!(
+            html("![](https://x/cat.png)"),
+            "<p><a href=\"https://x/cat.png\">https://x/cat.png</a></p>\n"
         );
     }
 

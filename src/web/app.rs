@@ -222,11 +222,9 @@ impl Tile {
             progress: (i.status == Status::Processing).then(|| jobs.progress(&i.id).unwrap_or(0)),
             failure: (i.status == Status::Failed).then(|| i.failure.clone()),
             captioned: !i.caption.is_empty(),
-            label: if i.caption.is_empty() {
-                i.name.clone()
-            } else {
-                crate::markdown::plain(&i.caption)
-            },
+            label: Some(crate::markdown::plain(&i.caption))
+                .filter(|l| !l.is_empty())
+                .unwrap_or_else(|| i.name.clone()),
         }
     }
 }
@@ -240,6 +238,8 @@ struct Viewer {
     width: u32,
     height: u32,
     caption: String,
+    /// The caption's words without its Markdown.
+    alt: String,
     /// Where it falls in the album, from 1.
     position: usize,
     total: usize,
@@ -648,6 +648,7 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
         width,
         height,
         caption: image.caption.clone(),
+        alt: crate::markdown::plain(&image.caption),
         position: at + 1,
         total: images.len(),
         prev: at

@@ -118,6 +118,7 @@ pub fn clip(i: &Image) -> Clip {
             .lines()
             .next()
             .unwrap_or_default()
+            .trim()
             .to_string(),
     }
 }
@@ -403,8 +404,8 @@ pub async fn album(
     let description = if album.description.is_empty() {
         images
             .iter()
-            .find(|i| !i.caption.is_empty())
             .map(|i| summary(&i.caption, 200))
+            .find(|s| !s.is_empty())
             .unwrap_or_default()
     } else {
         summary(&album.description, 200)
@@ -473,18 +474,15 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     }
     let siblings = state.db.count(&album.id).await.unwrap_or(1);
     let public = &state.config.public_url;
+    let title = summary(&image.caption, 90);
     let og = Og {
-        title: if image.caption.is_empty() {
+        title: if title.is_empty() {
             album.title.clone()
         } else {
-            summary(&image.caption, 90)
+            title
         },
         album_count: None,
-        description: if image.caption.is_empty() {
-            String::new()
-        } else {
-            summary(&image.caption, 200)
-        },
+        description: summary(&image.caption, 200),
         url: format!("{public}/{id}"),
         image: Some(og_image(public, &image)),
         video: og_video(public, &image),
