@@ -1,0 +1,1 @@
+- **The icon has a transparent background.** The favicon and touch icon no longer sit on a dark square, so they match the browser tab or home screen behind them.
