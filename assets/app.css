@@ -1424,7 +1424,7 @@
     outline-style: none;
   }
 
-  @media not all and (min-width: 721px) {
+  @media not all and (min-width: 40rem) {
     .title-field {
       font-size: var(--text-title);
       line-height: var(--tw-leading, var(--text-title--line-height));
@@ -1924,6 +1924,12 @@
     margin: 0;
   }
 
+  dialog.sheet {
+    padding-inline: calc(var(--spacing) * 5);
+    padding-top: calc(var(--spacing) * 4);
+    padding-bottom: calc(var(--spacing) * 5);
+  }
+
   .picker {
     gap: var(--spacing);
     overscroll-behavior: contain;
@@ -2238,33 +2244,7 @@
     opacity: 0;
   }
 
-  .player-button {
-    width: calc(var(--spacing) * 10);
-    height: calc(var(--spacing) * 10);
-    border-style: var(--tw-border-style);
-    color: var(--ink);
-    text-transform: none;
-    background-color: #0000;
-    border-width: 0;
-    flex-shrink: 0;
-    place-items: center;
-    padding: 0;
-    display: inline-grid;
-  }
-
-  @media (hover: hover) {
-    .player-button:hover {
-      background-color: var(--hover);
-    }
-
-    @supports (color: color-mix(in lab, red, red)) {
-      .player-button:hover {
-        background-color: color-mix(in oklab, var(--hover) 30%, transparent);
-      }
-    }
-  }
-
-  .player-button svg + svg, .player.playing [data-act="toggle"] svg:first-child, .player.muted [data-act="mute"] svg:first-child, .player.full [data-act="full"] svg:first-child {
+  .player-controls .icon-button svg + svg, .player.playing [data-act="toggle"] svg:first-child, .player.muted [data-act="mute"] svg:first-child, .player.full [data-act="full"] svg:first-child {
     display: none;
   }
 
@@ -2314,7 +2294,7 @@
   }
 
   :is(.player-seek, .player-volume)::-webkit-slider-runnable-track {
-    background-color: #0000;
+    background: none;
   }
 
   :is(.player-seek, .player-volume)::-moz-range-track {
@@ -2496,12 +2476,20 @@
     flex: 1;
   }
 
+  .shrink-0 {
+    flex-shrink: 0;
+  }
+
   .grow {
     flex-grow: 1;
   }
 
   .transform {
     transform: var(--tw-rotate-x, ) var(--tw-rotate-y, ) var(--tw-rotate-z, ) var(--tw-skew-x, ) var(--tw-skew-y, );
+  }
+
+  .resize {
+    resize: both;
   }
 
   .flex-wrap {
@@ -2538,10 +2526,6 @@
     overflow: hidden;
   }
 
-  .px-5 {
-    padding-inline: calc(var(--spacing) * 5);
-  }
-
   .px-\[22px\] {
     padding-inline: 22px;
   }
@@ -2558,16 +2542,8 @@
     padding-block: calc(var(--spacing) * 24);
   }
 
-  .pt-4 {
-    padding-top: calc(var(--spacing) * 4);
-  }
-
   .pt-8 {
     padding-top: calc(var(--spacing) * 8);
-  }
-
-  .pb-5 {
-    padding-bottom: calc(var(--spacing) * 5);
   }
 
   .pb-24 {

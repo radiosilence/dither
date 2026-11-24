@@ -180,7 +180,7 @@
   }
 
   .title-field {
-    @apply w-full border-0 border-b border-transparent bg-transparent px-0 py-1 text-display font-extralight text-strong hover:border-rule focus:border-brand focus:outline-none max-wide:text-title;
+    @apply w-full border-0 border-b border-transparent bg-transparent px-0 py-1 text-display font-extralight text-strong hover:border-rule focus:border-brand focus:outline-none max-sm:text-title;
   }
 
   .text-field {
@@ -350,7 +350,11 @@
     @apply m-0 min-w-0;
   }
 
-  /* ── The move picker ───────────────────────────────────────────────── */
+  /* ── Sheets: the move picker and confirmations ─────────────────────── */
+
+  dialog.sheet {
+    @apply px-5 pt-4 pb-5;
+  }
 
   .picker {
     @apply grid max-h-[50dvh] gap-1 overflow-y-auto overscroll-contain;
@@ -480,12 +484,8 @@
     @apply pointer-events-none opacity-0;
   }
 
-  .player-button {
-    @apply inline-grid size-10 shrink-0 place-items-center border-0 bg-transparent p-0 text-ink normal-case hover:bg-hover/30;
-  }
-
   /* A toggle shows the glyph for what it does now. */
-  .player-button svg + svg,
+  .player-controls .icon-button svg + svg,
   .player.playing [data-act="toggle"] svg:first-child,
   .player.muted [data-act="mute"] svg:first-child,
   .player.full [data-act="full"] svg:first-child {
@@ -528,7 +528,10 @@
   }
 
   /* The input draws the line, buffered part included, so the kit's track and done part stand down. */
-  :is(.player-seek, .player-volume)::-webkit-slider-runnable-track,
+  :is(.player-seek, .player-volume)::-webkit-slider-runnable-track {
+    background: none;
+  }
+
   :is(.player-seek, .player-volume)::-moz-range-track,
   :is(.player-seek, .player-volume)::-moz-range-progress {
     @apply bg-transparent;
