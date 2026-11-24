@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+
+- **Markdown in captions and album descriptions.** CommonMark with GitHub's tables, strikethrough, task lists and bare links; raw HTML is shown as text, and link previews and alt text take the words without the markup.
+
+### Changed
+
+- **The icon has a transparent background.** The favicon and touch icon no longer sit on a dark square, so they match the browser tab or home screen behind them.
+- **The controls come from the kōan web kit.** @radiosilence/theme 0.2.5 now draws the element defaults, button weights, meter, notice and sheet that dither's stylesheet used to carry, so they stay in step with the other apps. A confirmation or the move picker now rises from the bottom of a phone's screen.
+
 ## 0.10.5
 
 ### Changed
