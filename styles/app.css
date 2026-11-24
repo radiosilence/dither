@@ -352,8 +352,10 @@
 
   /* ── Sheets: the move picker and confirmations ─────────────────────── */
 
+  /* The kit pads a phone sheet's foot to this or the home indicator's inset, whichever is larger. */
   dialog.sheet {
-    @apply px-5 pt-4 pb-5;
+    --sheet-padding-bottom: 20px;
+    @apply px-5 pt-4;
   }
 
   .picker {
