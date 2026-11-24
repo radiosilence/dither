@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.3
+
+### Changed
+
+- **Datastar from askama_datastar.** The script (Datastar 1.0.2 to 1.0.5), patches and the live stream come from the shared crate; the stream is no longer stored by any cache.
+
+### Fixed
+
+- **Live pages after a deploy.** The library and album pages reopen their live stream every minute and when the tab is shown again, rather than going still until reloaded.
+
 ## 0.10.2
 
 ### Fixed
