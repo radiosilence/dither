@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.4
+
+### Changed
+
+- **The accent is magenta.** Controls, links and the icon use magenta instead of the shared theme's green, in both colour schemes.
+
 ## 0.10.3
 
 ### Changed
