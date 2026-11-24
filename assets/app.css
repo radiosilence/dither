@@ -603,12 +603,25 @@
 
 @layer components {
   .primary {
-    border-color: var(--brand);
+    background-color: var(--brand);
     padding-inline: calc(var(--spacing) * 5);
     padding-block: calc(var(--spacing) * 3);
     font-size: var(--text-body);
     line-height: var(--tw-leading, var(--text-body--line-height));
-    color: var(--brand);
+    color: var(--bg);
+    border-color: #0000;
+  }
+
+  @media (hover: hover) {
+    .primary:hover {
+      background-color: var(--brand);
+      opacity: .9;
+    }
+  }
+
+  .primary:active {
+    background-color: var(--brand);
+    opacity: .8;
   }
 
   .standard {
@@ -687,38 +700,20 @@
     background-color: var(--hover);
   }
 
-  .fill:is(.primary, .bad) {
-    color: var(--bg);
-  }
-
-  @media (hover: hover) {
-    .fill:is(.primary, .bad):hover {
-      opacity: .9;
-    }
-  }
-
-  .fill:is(.primary, .bad):active {
-    opacity: .8;
-  }
-
-  .primary.fill {
-    background-color: var(--brand);
-  }
-
-  @media (hover: hover) {
-    .primary.fill:hover {
-      background-color: var(--brand);
-    }
-  }
-
   .bad.fill {
     background-color: var(--bad);
+    color: var(--bg);
   }
 
   @media (hover: hover) {
     .bad.fill:hover {
       background-color: var(--bad);
+      opacity: .9;
     }
+  }
+
+  .bad.fill:active {
+    opacity: .8;
   }
 
   .bad {
