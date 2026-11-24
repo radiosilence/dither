@@ -4,8 +4,8 @@
  *
  * The look is kōan's (radiosilence/koan, docs/design/koan-theme.md): Geist Mono throughout, square corners, no
  * shadows, blur or gradients, regions told apart by space or a hairline, the app's own words in lower case and what a
- * person wrote in its own. The tokens come from @radiosilence/theme; what is here is element defaults, the controls
- * koan draws, and the few classes the server, Datastar or app.js toggle.
+ * person wrote in its own. The tokens, the element defaults and the controls come from @radiosilence/theme's kit;
+ * what is here is dither's accent, its layout and the components particular to it.
  */
 @import "tailwindcss" source(none);
 @source "../templates";
@@ -29,196 +29,9 @@
 @theme {
   /* Wider than this, a desktop layout: the viewer's side panel, the tray in a corner. app.js matches on it too. */
   --breakpoint-wide: 721px;
-  --animate-busy: busy 0.7s linear infinite;
-  --animate-sweep: sweep 1.4s ease-in-out infinite alternate;
-  --animate-fade: fade 0.6s ease-out forwards;
-
-  @keyframes fade {
-    from {
-      opacity: 1;
-    }
-    to {
-      opacity: 0;
-    }
-  }
-
-  @keyframes busy {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  @keyframes sweep {
-    from {
-      background-position:
-        0 50%,
-        0 50%;
-    }
-    to {
-      background-position:
-        100% 50%,
-        0 50%;
-    }
-  }
-}
-
-@layer base {
-  :root {
-    /* The toggle's tick, in `bg`: a data URL cannot read a custom property, so it is stated per scheme. */
-    --tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.5l2.5 2.5L11 4.5' fill='none' stroke='%231e1e1e' stroke-width='1.6' stroke-linecap='square'/%3E%3C/svg%3E");
-
-    @media (prefers-color-scheme: light) {
-      --tick: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Cpath d='M3 7.5l2.5 2.5L11 4.5' fill='none' stroke='%23ffffff' stroke-width='1.6' stroke-linecap='square'/%3E%3C/svg%3E");
-    }
-  }
-
-  html,
-  body {
-    @apply overflow-x-hidden;
-  }
-
-  /* Touch screens get no hover, so a tap's highlight is the only sign it landed. Preflight removes it. */
-  html {
-    -webkit-tap-highlight-color: revert;
-  }
-
-  body {
-    @apply min-h-dvh bg-bg text-body text-ink;
-    -webkit-text-size-adjust: 100%;
-  }
-
-  a {
-    @apply text-brand hover:underline;
-  }
-
-  p {
-    @apply my-[1em];
-  }
-
-  /* The app's words are lowercase; a title a person typed keeps its case, which is why public headings say so. */
-  h1 {
-    @apply mt-1 mb-4 text-display font-extralight wrap-anywhere text-strong lowercase max-wide:text-title;
-  }
-
-  .public h1 {
-    @apply normal-case;
-  }
-
-  h2 {
-    @apply mt-8 mb-3 text-title-sm font-light text-strong lowercase;
-  }
-
-  button,
-  summary,
-  label,
-  .button {
-    @apply lowercase;
-  }
-
-  :focus-visible {
-    @apply outline-2 outline-offset-2 outline-brand;
-  }
-
-  /* Bordered: a button's weight unless the page says otherwise. Square, as every control in the theme is; the
-   * outline is `muted` because `rule` is too faint to show where a control is. */
-  button,
-  .button {
-    @apply inline-flex cursor-pointer items-center gap-1.5 border border-muted bg-transparent px-3 py-1.5 text-meta text-ink select-none hover:bg-hover/30 hover:no-underline active:bg-hover disabled:cursor-default disabled:opacity-40 disabled:hover:bg-transparent;
-  }
-
-  input,
-  select,
-  textarea {
-    @apply min-w-0 border border-muted bg-transparent px-2.5 py-2 text-input text-ink normal-case;
-  }
-
-  ::placeholder {
-    @apply text-muted opacity-100;
-  }
-
-  /* The theme's toggle: a square box, outlined off, filled with a tick on. */
-  input[type="checkbox"],
-  input[type="radio"] {
-    @apply m-0 size-3.5 flex-none cursor-pointer appearance-none p-0 checked:border-brand;
-  }
-
-  input[type="checkbox"]:checked,
-  input[type="radio"]:checked {
-    background: var(--brand) var(--tick) center / 100% no-repeat;
-  }
-
-  /* The theme's progress bar: a hairline, the part done thicker in the accent. Without a value, before there is
-   * anything to count, a short length of the accent moves along it; under reduced motion it is the thicker track. */
-  progress.meter {
-    @apply block h-[3px] w-full appearance-none border-0 bg-transparent;
-    background: linear-gradient(var(--rule), var(--rule)) 0 50% / 100% 1px no-repeat;
-  }
-
-  progress.meter::-webkit-progress-bar {
-    @apply bg-transparent;
-  }
-
-  progress.meter::-webkit-progress-value {
-    @apply bg-brand;
-  }
-
-  progress.meter::-moz-progress-bar {
-    @apply bg-brand;
-  }
-
-  progress.meter:indeterminate {
-    @apply animate-sweep;
-    background:
-      linear-gradient(var(--brand), var(--brand)) 0 50% / 25% 3px no-repeat,
-      linear-gradient(var(--rule), var(--rule)) 0 50% / 100% 1px no-repeat;
-
-    @media (prefers-reduced-motion: reduce) {
-      animation: none;
-      background: linear-gradient(var(--rule), var(--rule)) 0 50% / 100% 3px no-repeat;
-    }
-  }
-
-  progress.meter:indeterminate::-moz-progress-bar {
-    @apply bg-transparent;
-  }
-
-  dialog {
-    @apply text-ink;
-  }
-
-  dialog::backdrop {
-    @apply bg-bg/80;
-  }
 }
 
 @layer components {
-  /* The weights beside the bordered default: prominent is what the page is for, and a page has at most one; standard
-   * is the label alone; quiet is a text button; bad is destructive. */
-  .primary {
-    @apply border-brand px-5 py-3 text-body text-brand;
-  }
-
-  .standard {
-    @apply border-transparent px-1 py-2 text-control hover:bg-transparent hover:text-strong;
-  }
-
-  .quiet {
-    @apply border-transparent bg-transparent px-2 text-muted hover:bg-transparent hover:text-ink;
-  }
-
-  .bad {
-    @apply border-bad text-bad;
-  }
-
-  .quiet.bad,
-  .standard.bad {
-    @apply border-transparent hover:text-bad;
-  }
-
-  .icon-button {
-    @apply inline-grid size-10 place-items-center border-0 bg-transparent p-0 text-ink hover:bg-hover/30;
-  }
-
   .done {
     @apply border-brand text-brand;
   }
@@ -244,18 +57,6 @@
 
   .back {
     @apply inline-flex items-center gap-1 text-meta text-muted lowercase hover:text-ink hover:no-underline;
-  }
-
-  .notice {
-    @apply mb-6 flex flex-wrap items-baseline gap-x-3 gap-y-1 border-l-2 border-brand py-1 pl-3 text-control;
-  }
-
-  .notice.bad {
-    @apply border-bad text-bad;
-  }
-
-  .notice button {
-    @apply ml-auto;
   }
 
   /* ── Uploading ─────────────────────────────────────────────────────── */
@@ -392,11 +193,12 @@
     @apply mt-5 flex flex-wrap items-center gap-2;
   }
 
-  .share .link {
+  .share-url {
     @apply min-w-[16ch] flex-1 py-1.5 text-meta;
   }
 
-  .toggle {
+  /* A checkbox inline in a bar, its box before its label; the kit's .toggle is a form's row, box trailing. */
+  .check {
     @apply ml-2 inline-flex cursor-pointer items-center gap-2 text-meta;
   }
 
@@ -548,11 +350,7 @@
     @apply m-0 min-w-0;
   }
 
-  /* ── Sheets: the move picker and confirmations ─────────────────────── */
-
-  .sheet {
-    @apply m-auto max-h-[85dvh] w-[min(560px,calc(100vw-32px))] border border-rule bg-bg px-5 pt-4 pb-5;
-  }
+  /* ── The move picker ───────────────────────────────────────────────── */
 
   .picker {
     @apply grid max-h-[50dvh] gap-1 overflow-y-auto overscroll-contain;
@@ -616,7 +414,7 @@
    * so a portrait clip is not several screens tall. The bar sits solid on the picture's foot, and goes once a playing
    * video is left alone; player.ts toggles the state classes. */
   .player {
-    @apply relative mx-auto block w-full overflow-hidden bg-[#000] select-none;
+    @apply relative mx-auto block w-full overflow-hidden bg-black select-none;
     -webkit-touch-callout: none;
     touch-action: manipulation;
   }
@@ -661,8 +459,9 @@
     @apply right-auto left-[12%];
   }
 
+  /* The kit's fade, quickened: a jump's mark is seen for a moment, not read. */
   .player-jump.shown {
-    @apply animate-fade;
+    @apply animate-fade [animation-duration:0.8s];
   }
 
   .player-failed {
@@ -709,7 +508,7 @@
   }
 
   /* The scrubber and the volume: a hairline, the buffered part thicker in the rule's colour and what has played in the
-   * accent, as the theme's progress bar draws; a square thumb. The input is tall, so a finger finds it, while the line
+   * accent, as the kit's meter draws; the kit's square thumb, shown while in use. The input is tall, so a finger finds it, while the line
    * stays thin. */
   .player-seek,
   .player-volume {
@@ -728,14 +527,11 @@
     @apply w-20 shrink-0;
   }
 
-  .player-seek::-webkit-slider-thumb,
-  .player-volume::-webkit-slider-thumb {
-    @apply size-3 appearance-none border-0 bg-ink;
-  }
-
-  .player-seek::-moz-range-thumb,
-  .player-volume::-moz-range-thumb {
-    @apply size-3 rounded-none border-0 bg-ink;
+  /* The input draws the line, buffered part included, so the kit's track and done part stand down. */
+  :is(.player-seek, .player-volume)::-webkit-slider-runnable-track,
+  :is(.player-seek, .player-volume)::-moz-range-track,
+  :is(.player-seek, .player-volume)::-moz-range-progress {
+    @apply bg-transparent;
   }
 
   /* In the viewer the stage sets the player's box, and the picture is fitted inside it. */

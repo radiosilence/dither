@@ -1,0 +1,1 @@
+- **The controls come from the kōan web kit.** @radiosilence/theme 0.2.0 now draws the element defaults, button weights, meter, notice and sheet that dither's stylesheet used to carry, so they stay in step with the other apps. A confirmation or the move picker now rises from the bottom of a phone's screen.

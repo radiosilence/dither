@@ -9,17 +9,17 @@
     data-on:input__debounce.700ms="@post('/albums/{{ id }}/meta', {payload: {description: el.value}})">{{ description }}</textarea>
 </div>
 <div class="share">
-  <input class="link" readonly value="{{ share }}" aria-label="{{ __("link to this album") }}" data-select>
+  <input class="share-url" readonly value="{{ share }}" aria-label="{{ __("link to this album") }}" data-select>
   <button data-copy="{{ share }}">{{ icon("copy", 13.0)|safe }} <span>{{ __("copy link") }}</span></button>
   <a class="button" href="{{ share }}" target="_blank" rel="noopener">{{ icon("open-external", 13.0)|safe }} {{ __p("Button: open the album's public page", "open") }}</a>
-  <label class="toggle"><input type="checkbox"{% if private %} checked{% endif %}
+  <label class="check"><input type="checkbox"{% if private %} checked{% endif %}
     data-on:change="@post('/albums/{{ id }}/meta', {payload: {private: el.checked}})"> {{ __("private") }}</label>
 </div>
 <div class="mt-4">{{ views|safe }}</div>
 <div class="dropzone compact" data-dropzone>
   <button class="primary" data-pick>{{ __("add images") }}</button>
   <p class="m-0 text-meta text-muted">{{ __("or drop them anywhere, or paste") }}</p>
-  {% if shell.max_video.is_some() %}<label class="toggle text-fine" title="{{ __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.") }}"><input type="checkbox" data-as-recorded> {{ __("keep videos as recorded") }}</label>{% endif %}
+  {% if shell.max_video.is_some() %}<label class="check text-fine" title="{{ __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.") }}"><input type="checkbox" data-as-recorded> {{ __("keep videos as recorded") }}</label>{% endif %}
 </div>
 <div class="toolbar">
   <span class="text-meta text-muted">{{ summary|safe }}</span>

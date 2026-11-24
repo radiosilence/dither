@@ -50,14 +50,19 @@ auth:
     [ -n "$token" ] || { echo "no GitHub token: run 'gh auth login', or set GH_TOKEN" >&2; exit 1; }
     printf '//npm.pkg.github.com/:_authToken=%s\n' "$token" > .npmrc.auth
 
+# Fail on classes outside the kōan look (rounded corners, shadows, Tailwind's palette and type sizes, inline styles) in
+# the templates and the code that writes markup. Most compile to nothing, so a leftover would lose its style silently.
+kit: theme
+    node node_modules/@radiosilence/theme/kit-check.mjs templates src browser
+
 # Compile styles/ into assets/app.css and copy the theme's typeface beside it, where the stylesheet's relative font URL
 # points. Both are committed because the server embeds them; CI fails a build where either is stale.
-css: theme
+css: theme kit
     tailwindcss --optimize --input styles/app.css --output assets/app.css
     cp node_modules/@radiosilence/theme/geist-mono.woff2 assets/geist-mono.woff2
 
 # Fail when the committed stylesheet or typeface is not what the sources and the installed theme give.
-css-fresh: theme
+css-fresh: theme kit
     #!/usr/bin/env bash
     set -euo pipefail
     css=$(mktemp)

@@ -346,6 +346,7 @@ jobs:
 
   # The web UI's stylesheet is compiled by Tailwind and committed, since the
   # server embeds it. A source edited without a rebuild would ship the old CSS.
+  # `just css` runs kit-check first, which fails on classes outside the theme.
   css:
     name: Stylesheet
     runs-on: ubuntu-latest

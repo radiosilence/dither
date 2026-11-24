@@ -3,7 +3,7 @@
 {% block main %}
 <main class="mx-auto max-w-[1000px] pt-8 pb-24 max-wide:pt-5">
   <header class="mb-6 px-[22px]">
-    {% if !title.is_empty() %}<h1>{{ title }}</h1>{% endif %}
+    {% if !title.is_empty() %}<h1 class="normal-case">{{ title }}</h1>{% endif %}
     {% if !description.is_empty() %}<p class="prose">{{ description }}</p>{% endif %}
     <p class="text-meta text-muted">{{ __n("%{count} image", "%{count} images", *count) }}</p>
   </header>
