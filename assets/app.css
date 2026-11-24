@@ -2267,6 +2267,16 @@
   }
 }
 
+:root {
+  --brand: #f07ac8;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --brand: #b02a83;
+  }
+}
+
 @property --tw-rotate-x {
   syntax: "*";
   inherits: false
