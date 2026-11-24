@@ -15,7 +15,9 @@
   {% endif %}
   {% if shell.max_video.is_some() %}<label class="toggle text-fine" title="{{ __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.") }}"><input type="checkbox" data-as-recorded> {{ __("keep videos as recorded") }}</label>{% endif %}
 </div>
-<div data-init="@get('/stream')"></div>
+<div data-init="@get('/stream')"
+  data-on-interval__duration.60s="@get('/stream')"
+  data-on:visibilitychange__document="!document.hidden && @get('/stream')"></div>
 {{ albums|safe }}
 {{ usage|safe }}
 {% endblock %}

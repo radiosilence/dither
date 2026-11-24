@@ -14,7 +14,6 @@ pub mod clip;
 pub mod public;
 pub mod work;
 
-use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,10 +21,8 @@ use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
-use futures_util::Stream;
 
 use crate::auth::session::Sessions;
 use crate::config::Config;
@@ -109,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(|| async { "ok" }))
         .route("/robots.txt", get(public::robots))
         .route("/favicon.ico", get(assets::favicon))
+        .route("/assets/datastar.js", get(askama_datastar::script::serve))
         .route("/assets/{name}", get(assets::serve))
         .fallback(public::not_found)
         .layer(middleware::from_fn_with_state(
@@ -290,10 +288,12 @@ async fn preview_log(request: Request, next: Next) -> Response {
 
 /// Every write carries a header a cross-site form cannot set: Datastar's own,
 /// or the uploader's. With `SameSite=Lax` cookies this closes cross-site
-/// request forgery twice over.
+/// request forgery twice over. A variation of
+/// `askama_datastar::require_datastar_on_post`: it also admits the uploader's
+/// header and covers every method that writes, not only POST.
 async fn marked_writes(request: Request, next: Next) -> Response {
     let safe = matches!(*request.method(), Method::GET | Method::HEAD);
-    let marked = request.headers().contains_key("datastar-request")
+    let marked = askama_datastar::is_datastar(request.headers())
         || request.headers().contains_key("x-dither");
     if !safe && !marked {
         return StatusCode::FORBIDDEN.into_response();
@@ -366,25 +366,6 @@ pub trait Helpers {
 }
 
 impl<T: askama::Template> Helpers for T {}
-
-/// A Datastar patch of whole elements, matched by their ids.
-pub fn patch(html: &str) -> Event {
-    // A bare `\r` would start a line of its own, outside the `elements`
-    // prefix.
-    Event::default().event("datastar-patch-elements").data(
-        html.replace('\r', "")
-            .lines()
-            .map(|l| format!("elements {l}"))
-            .collect::<Vec<_>>()
-            .join("\n"),
-    )
-}
-
-pub fn sse(events: impl Stream<Item = Result<Event, Infallible>> + Send + 'static) -> Response {
-    Sse::new(events)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
-        .into_response()
-}
 
 /// `n` bytes for a person to read.
 pub fn human(bytes: u64) -> String {
