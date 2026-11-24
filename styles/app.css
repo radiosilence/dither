@@ -14,6 +14,18 @@
 @source "../browser/player.ts";
 @import "@radiosilence/theme";
 
+/* dither's accent is magenta rather than the theme's green; the light value is the same hue darkened to read on white.
+ * Both are over 5:1 on --surface. */
+:root {
+  --brand: #f07ac8;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --brand: #b02a83;
+  }
+}
+
 @theme {
   /* Wider than this, a desktop layout: the viewer's side panel, the tray in a corner. app.js matches on it too. */
   --breakpoint-wide: 721px;

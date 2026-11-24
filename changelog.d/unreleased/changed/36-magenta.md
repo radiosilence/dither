@@ -1,0 +1,1 @@
+- **The accent is magenta.** Controls, links and the icon use magenta instead of the shared theme's green, in both colour schemes.
