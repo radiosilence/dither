@@ -78,7 +78,10 @@ pub struct Pic {
     pub file: String,
     pub width: u32,
     pub height: u32,
+    /// The caption's words without its Markdown, for alt text.
     pub caption: String,
+    /// The caption drawn from its Markdown.
+    pub caption_html: String,
     /// Portrait: drawn narrower in an album, so it fits a screen.
     pub tall: bool,
     /// A video, drawn by the player rather than as a picture.
@@ -113,8 +116,7 @@ pub fn clip(i: &Image) -> Clip {
         looping: !i.audio && seconds <= LOOP_MAX_SECONDS,
         // Never the name it was uploaded under, which is its owner's: a
         // phone's says little, a laptop's can say a lot.
-        title: i
-            .caption
+        title: crate::markdown::plain(&i.caption)
             .lines()
             .next()
             .unwrap_or_default()
@@ -141,7 +143,8 @@ impl Pic {
             file,
             width: i.width,
             height: i.height,
-            caption: i.caption.clone(),
+            caption: crate::markdown::plain(&i.caption),
+            caption_html: crate::markdown::html(&i.caption),
             tall: u64::from(i.height) * 20 > u64::from(i.width) * 23,
             clip: i.is_video().then(|| clip(i)),
         }
@@ -194,7 +197,7 @@ fn og_image(public_url: &str, i: &Image) -> OgImage {
             mime: i.kind.mime(),
             width: i.width,
             height: i.height,
-            alt: i.caption.clone(),
+            alt: crate::markdown::plain(&i.caption),
         };
     }
     let (width, height) = preview_size(i.width, i.height, i.animated);
@@ -203,12 +206,14 @@ fn og_image(public_url: &str, i: &Image) -> OgImage {
         mime: "image/jpeg",
         width,
         height,
-        alt: i.caption.clone(),
+        alt: crate::markdown::plain(&i.caption),
     }
 }
 
-/// The first line of `text`, cut to about `max` characters at a word.
+/// The first line of the words of Markdown `text`, cut to about `max`
+/// characters at a word.
 fn summary(text: &str, max: usize) -> String {
+    let text = crate::markdown::plain(text);
     let line = text
         .lines()
         .find(|l| !l.trim().is_empty())
@@ -229,6 +234,7 @@ struct AlbumPage {
     /// Whether it holds a video, and so needs the player's script.
     video: bool,
     title: String,
+    /// Drawn from its Markdown.
     description: String,
     count: u64,
     pics: Vec<Pic>,
@@ -400,8 +406,8 @@ pub async fn album(
     let description = if album.description.is_empty() {
         images
             .iter()
-            .find(|i| !i.caption.is_empty())
             .map(|i| summary(&i.caption, 200))
+            .find(|s| !s.is_empty())
             .unwrap_or_default()
     } else {
         summary(&album.description, 200)
@@ -419,7 +425,7 @@ pub async fn album(
         og,
         video,
         title: album.title.clone(),
-        description: album.description.clone(),
+        description: crate::markdown::html(&album.description),
         count: images.len() as u64,
         pics: images.iter().map(Pic::new).collect(),
     }
@@ -470,18 +476,15 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     }
     let siblings = state.db.count(&album.id).await.unwrap_or(1);
     let public = &state.config.public_url;
+    let title = summary(&image.caption, 90);
     let og = Og {
-        title: if image.caption.is_empty() {
+        title: if title.is_empty() {
             album.title.clone()
         } else {
-            summary(&image.caption, 90)
+            title
         },
         album_count: None,
-        description: if image.caption.is_empty() {
-            String::new()
-        } else {
-            summary(&image.caption, 200)
-        },
+        description: summary(&image.caption, 200),
         url: format!("{public}/{id}"),
         image: Some(og_image(public, &image)),
         video: og_video(public, &image),

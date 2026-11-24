@@ -11,6 +11,7 @@ mod i18n;
 mod icon;
 mod id;
 mod jobs;
+mod markdown;
 mod media;
 mod metrics;
 mod mp4;

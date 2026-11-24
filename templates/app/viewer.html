@@ -15,7 +15,7 @@
     {% else if let Some(why) = failure.as_ref() %}
     <div class="stage-wait bad">{{ icon("warning", 22.0)|safe }}<p>{% call m::failure(why) %}{% endcall %}</p></div>
     {% else %}
-    <img src="{{ src }}" width="{{ width }}" height="{{ height }}" alt="{{ caption }}" decoding="async" draggable="false">
+    <img src="{{ src }}" width="{{ width }}" height="{{ height }}" alt="{{ alt }}" decoding="async" draggable="false">
     {% endif %}
     {% if let Some(p) = prev.as_ref() %}<button class="nav prev" aria-label="{{ __("previous image") }}" data-key="ArrowLeft" data-on:click="@get('/images/{{ p }}/view')">{{ icon("chevron-left", 22.0)|safe }}</button>{% endif %}
     {% if let Some(n) = next.as_ref() %}<button class="nav next" aria-label="{{ __("next image") }}" data-key="ArrowRight" data-on:click="@get('/images/{{ n }}/view')">{{ icon("chevron-right", 22.0)|safe }}</button>{% endif %}
