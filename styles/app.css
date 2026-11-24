@@ -363,7 +363,7 @@
   }
 
   .choice {
-    @apply grid cursor-pointer grid-cols-[auto_48px_minmax(0,1fr)] items-center gap-3 px-1 py-1.5 normal-case hover:bg-hover/30;
+    @apply grid cursor-pointer grid-cols-[auto_48px_minmax(0,1fr)] items-center gap-3 px-1 py-1.5 hover:bg-hover/30;
   }
 
   .choice .thumb {
