@@ -22,7 +22,7 @@ use crate::web::AppState;
 /// fragment request would swap the sign-in page into the middle of the app,
 /// and an event stream cannot be redirected at all.
 pub fn is_page_load(headers: &HeaderMap) -> bool {
-    !headers.contains_key("datastar-request")
+    !askama_datastar::is_datastar(headers)
         && !headers.contains_key("x-dither")
         && headers
             .get(header::ACCEPT)

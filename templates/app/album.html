@@ -34,7 +34,9 @@
   <button class="standard bad" data-delete>{{ icon("trash", 13.0)|safe }} {{ __p("Button", "delete") }}</button>
   <button class="standard" data-select-done>{{ __p("Button: stop choosing images", "done") }}</button>
 </div>
-<div data-init="@get('/stream?album={{ id }}')"></div>
+<div data-init="@get('/stream?album={{ id }}')"
+  data-on-interval__duration.60s="@get('/stream?album={{ id }}')"
+  data-on:visibilitychange__document="!document.hidden && @get('/stream?album={{ id }}')"></div>
 {{ grid|safe }}
 <div class="mt-16 flex justify-end">
   <button class="quiet bad" data-delete-album="{{ id }}">{{ icon("trash", 13.0)|safe }} {{ __("delete album") }}</button>

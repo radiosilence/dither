@@ -1,4 +1,5 @@
 //! The stylesheet, scripts, typeface and icons, embedded in the binary.
+//! Datastar's script is `askama_datastar`'s, served from `/assets/datastar.js`.
 //!
 //! Each is linked by a URL carrying a hash of its contents, so a page from a
 //! new build fetches its own assets rather than a cached copy of the last
@@ -11,7 +12,6 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 const APP_CSS: &str = include_str!("../../assets/app.css");
-const DATASTAR_JS: &str = include_str!("../../assets/datastar.js");
 /// browser/app.ts with its types stripped by build.rs.
 const APP_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/app.js"));
 /// browser/player.ts, likewise: the video player, on public pages too.
@@ -32,12 +32,8 @@ fn fingerprint(bytes: &[u8]) -> String {
 
 static CSS_URL: LazyLock<String> =
     LazyLock::new(|| format!("/assets/app.css?v={}", fingerprint(APP_CSS.as_bytes())));
-static DATASTAR_URL: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "/assets/datastar.js?v={}",
-        fingerprint(DATASTAR_JS.as_bytes())
-    )
-});
+static DATASTAR_URL: LazyLock<String> =
+    LazyLock::new(|| askama_datastar::script::url("/assets/datastar.js"));
 static APP_JS_URL: LazyLock<String> =
     LazyLock::new(|| format!("/assets/app.js?v={}", fingerprint(APP_JS.as_bytes())));
 static PLAYER_JS_URL: LazyLock<String> =
@@ -77,7 +73,6 @@ pub async fn serve(Path(name): Path<String>, RawQuery(query): RawQuery) -> Respo
     let q = query.as_deref();
     match name.as_str() {
         "app.css" => respond(APP_CSS, "text/css; charset=utf-8", q),
-        "datastar.js" => respond(DATASTAR_JS, "text/javascript; charset=utf-8", q),
         "app.js" => respond(APP_JS, "text/javascript; charset=utf-8", q),
         "player.js" => respond(PLAYER_JS, "text/javascript; charset=utf-8", q),
         "geist-mono.woff2" => respond(GEIST_MONO, "font/woff2", Some("v=")),

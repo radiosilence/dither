@@ -24,7 +24,7 @@ use crate::error::{AppError, AppResult};
 use crate::media::{DISPLAY_MAX, fit};
 use crate::upload::CHUNK;
 use crate::web::Helpers as _;
-use crate::web::{AppState, human, on_public_host, patch, sse};
+use crate::web::{AppState, human, on_public_host};
 
 /// Longest title, description and caption kept.
 const TITLE_MAX: usize = 300;
@@ -363,7 +363,7 @@ pub async fn album(
     // The app's own requests, which a redirect would swap a page into. A
     // link preview's fetcher may not ask for HTML, so this is not
     // `!page_load`.
-    let app_request = headers.contains_key("datastar-request") || headers.contains_key("x-dither");
+    let app_request = askama_datastar::is_datastar(&headers) || headers.contains_key("x-dither");
     let lapsed = crate::auth::cookie::session_id(&headers).is_some();
     let sign_in = || {
         let path = uri.path_and_query().map_or("/", |p| p.as_str());
@@ -718,7 +718,7 @@ pub async fn stream(
                     // logged below and asked again on the next write.
                     Err(AppError::NotFound) => {
                         match Deleted.render() {
-                            Ok(html) => yield Ok(patch(&html)),
+                            Ok(html) => yield askama_datastar::Html::trusted(html).patch(),
                             Err(e) => tracing::error!(error = %e, "drawing a deleted album failed"),
                         }
                         break;
@@ -731,7 +731,7 @@ pub async fn stream(
                 Ok(parts) => {
                     for (key, html) in parts {
                         if sent.get(key) != Some(&html) {
-                            yield Ok(patch(&html));
+                            yield askama_datastar::Html::trusted(html.clone()).patch();
                             sent.insert(key, html);
                         }
                     }
@@ -754,10 +754,10 @@ pub async fn stream(
                     && tick.owner == me
                     && shown.contains(&tick.id)
                 {
-                    yield Ok(patch(&format!(
+                    yield askama_datastar::Html::trusted(format!(
                         "<progress id=\"vp-{}\" class=\"meter\" max=\"1000\" value=\"{}\"></progress>",
                         tick.id, tick.done
-                    )));
+                    )).patch();
                 }
             };
             if !woken {
@@ -768,5 +768,5 @@ pub async fn stream(
             while !matches!(changes.try_recv(), Err(TryRecvError::Empty | TryRecvError::Closed)) {}
         }
     };
-    sse(events)
+    askama_datastar::stream(events)
 }
