@@ -225,7 +225,7 @@ impl Tile {
             label: if i.caption.is_empty() {
                 i.name.clone()
             } else {
-                i.caption.clone()
+                crate::markdown::plain(&i.caption)
             },
         }
     }
@@ -612,8 +612,7 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
     let file = format!("/{}.{}", image.id, image.kind.ext());
     let direct = format!("{public}{file}");
     let page = format!("{public}/{}", image.id);
-    let alt = image
-        .caption
+    let alt = crate::markdown::plain(&image.caption)
         .lines()
         .next()
         .unwrap_or_default()
