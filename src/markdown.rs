@@ -51,18 +51,20 @@ pub fn plain(text: &str) -> String {
 }
 
 fn collect<'a>(node: &'a AstNode<'a>, out: &mut String) {
-    let block = node.data().value.block();
-    if block && !out.is_empty() && !out.ends_with('\n') {
+    let data = node.data();
+    let value = &data.value;
+    let next_cell = matches!(value, NodeValue::TableCell) && node.previous_sibling().is_some();
+    if value.block() && !next_cell && !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-    match &node.data().value {
+    match value {
         NodeValue::Text(t) => out.push_str(t),
         NodeValue::Code(c) => out.push_str(&c.literal),
         NodeValue::CodeBlock(c) => out.push_str(c.literal.trim_end()),
         NodeValue::HtmlInline(h) => out.push_str(h),
         NodeValue::HtmlBlock(h) => out.push_str(h.literal.trim_end()),
         NodeValue::SoftBreak | NodeValue::LineBreak => out.push('\n'),
-        NodeValue::TableCell if node.previous_sibling().is_some() => out.push(' '),
+        NodeValue::TableCell if next_cell => out.push(' '),
         _ => {}
     }
     for child in node.children() {
