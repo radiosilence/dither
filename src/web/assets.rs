@@ -18,7 +18,7 @@ const APP_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/app.js"));
 const PLAYER_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/player.js"));
 /// browser/join.ts: moves an invite from the address into the join form.
 const JOIN_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/join.js"));
-/// The typeface @radiosilence/theme sets; app.css names it by a URL relative
+/// The typeface @radiosilence/koan-kit-web sets; app.css names it by a URL relative
 /// to itself.
 const GEIST_MONO: &[u8] = include_bytes!("../../assets/geist-mono.woff2");
 const ICON_SVG: &str = include_str!("../../assets/icon.svg");

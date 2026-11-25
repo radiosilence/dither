@@ -37,7 +37,7 @@ fast:
     git diff --quiet Cargo.lock || { echo 'Cargo.lock has uncommitted changes'; exit 1; }
     cargo fmt --all -- --check
 
-# Install the shared theme (@radiosilence/theme) the stylesheet imports, writing the registry token first if missing.
+# Install the shared theme (@radiosilence/koan-kit-web) the stylesheet imports, writing the registry token first if missing.
 theme:
     @test -s .npmrc.auth || just auth
     aube install --frozen-lockfile
@@ -54,13 +54,13 @@ auth:
 # Fail on classes outside the kōan look (rounded corners, shadows, Tailwind's palette and type sizes, inline styles) in
 # the templates and the code that writes markup. Most compile to nothing, so a leftover would lose its style silently.
 kit: theme
-    node node_modules/@radiosilence/theme/kit-check.mjs templates src browser
+    node node_modules/@radiosilence/koan-kit-web/kit-check.mjs templates src browser
 
 # Compile styles/ into assets/app.css and copy the theme's typeface beside it, where the stylesheet's relative font URL
 # points. Both are committed because the server embeds them; CI fails a build where either is stale.
 css: theme kit
     tailwindcss --optimize --input styles/app.css --output assets/app.css
-    cp node_modules/@radiosilence/theme/geist-mono.woff2 assets/geist-mono.woff2
+    cp node_modules/@radiosilence/koan-kit-web/geist-mono.woff2 assets/geist-mono.woff2
 
 # Fail when the committed stylesheet or typeface is not what the sources and the installed theme give.
 css-fresh: theme kit
@@ -70,7 +70,7 @@ css-fresh: theme kit
     trap 'rm -f "$css"' EXIT
     tailwindcss --optimize --input styles/app.css --output "$css"
     cmp -s "$css" assets/app.css || { echo 'assets/app.css is stale: run `just css`'; exit 1; }
-    cmp -s node_modules/@radiosilence/theme/geist-mono.woff2 assets/geist-mono.woff2 || { echo 'assets/geist-mono.woff2 is stale: run `just css`'; exit 1; }
+    cmp -s node_modules/@radiosilence/koan-kit-web/geist-mono.woff2 assets/geist-mono.woff2 || { echo 'assets/geist-mono.woff2 is stale: run `just css`'; exit 1; }
 
 # Typecheck the browser's script. Cargo strips its types as it builds (build.rs); this checks them.
 js:
