@@ -1,0 +1,1 @@
+- **Accounts take kōan-auth 0.75.2 from crates.io.** It carries the fixes from a security review of the crate: removing an admin and resetting a password each happen in one transaction, so two admins cannot remove each other at once and a failed reset leaves no old credential alive.
