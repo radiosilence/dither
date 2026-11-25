@@ -1,0 +1,1 @@
+- **Change your own password.** `/account`, from the username in the top bar, takes the current password and a new one; the browser it is changed from stays signed in and every other session ends. Read-only accounts change theirs too.

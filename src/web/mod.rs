@@ -7,6 +7,7 @@
 //! or receives a cookie. Every route behind sign-in sits under one session
 //! layer, so a route added there later is protected by where it is added.
 
+pub mod account;
 pub mod api;
 pub mod app;
 pub mod assets;
@@ -38,6 +39,9 @@ pub struct Inner {
     pub verifier: koan_auth::password::Verifier,
     /// Posts to the sign-in pages, per address.
     pub sign_ins: koan_auth::limit::RateLimiter,
+    /// Tries at changing a password, per account, whatever their outcome:
+    /// each is two argon2 runs, one under the write lock.
+    pub password_changes: koan_auth::limit::FailureLimiter<i64>,
     /// The code `/setup` asks for, logged at start while there is no
     /// account; `None` once there was one then.
     pub setup: Option<koan_auth::setup::SetupCode>,
@@ -91,6 +95,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/uploads/{id}/finish", post(api::finish))
         .merge(users::router())
+        .layer(middleware::from_fn(crate::auth::extract::require_writer))
+        // Its own password is a readonly account's one write.
+        .merge(account::router())
         .layer(middleware::from_fn(marked_writes))
         .layer(middleware::from_fn_with_state(
             state.clone(),

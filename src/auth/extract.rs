@@ -4,8 +4,9 @@
 //! check in each handler: a route added later is protected by being added
 //! there, and an unprotected one has to be mounted somewhere else on purpose.
 //! The layer puts the [`Session`] in the request's extensions for handlers to
-//! read, and refuses a readonly account's writes. [`require_admin`] goes over
-//! the admins' routes, inside it.
+//! read. Inside it, [`require_writer`] refuses a readonly account's writes
+//! everywhere but its own account's page, and [`require_admin`] goes over the
+//! admins' routes.
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
@@ -53,10 +54,6 @@ pub async fn require_session(
 ) -> Response {
     match current(&state, request.headers()).await {
         Some(session) => {
-            let safe = matches!(*request.method(), Method::GET | Method::HEAD);
-            if !safe && !session.writes() {
-                return StatusCode::FORBIDDEN.into_response();
-            }
             request.extensions_mut().insert(session);
             next.run(request).await
         }
@@ -65,6 +62,15 @@ pub async fn require_session(
             Redirect::to(&crate::auth::routes::login_url(path)).into_response()
         }
         None => StatusCode::UNAUTHORIZED.into_response(),
+    }
+}
+
+/// No writes from a readonly account, behind [`require_session`].
+pub async fn require_writer(request: Request, next: Next) -> Response {
+    let safe = matches!(*request.method(), Method::GET | Method::HEAD);
+    match request.extensions().get::<Session>() {
+        Some(session) if safe || session.writes() => next.run(request).await,
+        _ => StatusCode::FORBIDDEN.into_response(),
     }
 }
 
