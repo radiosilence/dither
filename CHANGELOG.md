@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+
+- **Visitors counted behind a CDN.** `TRUSTED_PROXIES` (the Pulumi component's `trustedProxies`) lists a CDN's edge ranges, which are passed over in `X-Forwarded-For`, so visitors are counted by their own address rather than the edge's.
+- **Client address from a trusted proxy's header.** `ADDRESS_HEADER` (`addressHeader`) names the header a trusted proxy puts the client's address in, such as `CF-Connecting-IP`, for an ingress that does not keep the CDN's `X-Forwarded-For`; it is read only on requests from `TRUSTED_PROXIES`.
+
+### Fixed
+
+- **404s are never cached.** A private album's files are missing to everyone but their owner, so a shared cache keeping a stranger's 404 would show the owner the same.
+
 ## 0.12.0
 
 ### Changed
