@@ -465,11 +465,10 @@ async fn a_private_album_is_its_owners_alone() {
         format!("/{id}.jpg"),
         format!("/t/{id}.webp"),
     ] {
-        assert_eq!(
-            app.get_as(&uri, &stranger).await.status,
-            StatusCode::NOT_FOUND,
-            "{uri}"
-        );
+        let missing = app.get_as(&uri, &stranger).await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND, "{uri}");
+        // A shared cache keeping it would show the owner the same.
+        assert_eq!(missing.header("cache-control"), "no-store", "{uri}");
     }
     // The owner (with no identity provider, everyone without a cookie is "dev") sees it, uncached.
     let mine = app.get(&format!("/{id}.jpg")).await;
@@ -1320,33 +1319,37 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
 async fn a_cdn_in_front_names_the_visitor() {
     let app = app_with(|c| {
         c.trusted_proxies = vec!["198.51.100.0/24".parse().unwrap()];
+        c.address_header = Some(header::HeaderName::from_static("cf-connecting-ip"));
     })
     .await;
     let (_, done) = app.upload(&[&jpeg(300, 200)]).await;
     let id = image_id(&done[0]);
     let page = format!("/{id}");
     let forwarded = header::HeaderName::from_static("x-forwarded-for");
-    // One visitor through two of the CDN's edges, once claiming to be someone
-    // else; another through the first edge; and a request that reached the
-    // server without the CDN, claiming a third's address.
-    for chain in [
-        "192.0.2.1, 198.51.100.1",
-        "192.0.2.9, 192.0.2.1, 198.51.100.2",
-        "192.0.2.2, 198.51.100.1",
-        "192.0.2.1, 203.0.113.7",
+    let client = header::HeaderName::from_static("cf-connecting-ip");
+    // One visitor through two of the CDN's edges, by its header and by its
+    // `X-Forwarded-For` (once forging an earlier entry); another through the
+    // first edge; and one that skipped the CDN, claiming other addresses.
+    for (chain, claimed) in [
+        ("198.51.100.1", Some("192.0.2.1")),
+        ("198.51.100.2", Some("192.0.2.1")),
+        ("192.0.2.9, 192.0.2.1, 198.51.100.2", None),
+        ("198.51.100.1", Some("192.0.2.2")),
+        ("203.0.113.7", Some("192.0.2.3")),
+        ("192.0.2.4, 203.0.113.7", Some("192.0.2.5")),
     ] {
-        app.get_with(
-            &page,
-            &[
-                (header::USER_AGENT, "a browser"),
-                (forwarded.clone(), chain),
-            ],
-        )
-        .await;
+        let mut headers = vec![
+            (header::USER_AGENT, "a browser"),
+            (forwarded.clone(), chain),
+        ];
+        if let Some(address) = claimed {
+            headers.push((client.clone(), address));
+        }
+        app.get_with(&page, &headers).await;
     }
     app.state.views.flush(&app.state.db, true).await;
     let stats = app.state.db.view_stats(&id, 0).await.unwrap();
-    assert_eq!(stats.all.views, 4);
+    assert_eq!(stats.all.views, 6);
     assert_eq!(stats.all.visitors, 3);
 }
 

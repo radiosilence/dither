@@ -179,8 +179,9 @@ fn fetcher(agent: &str) -> Option<&'static str> {
 /// The client's address is the last `X-Forwarded-For` entry outside the
 /// trusted proxies' ranges, else the peer's. Traefik appends the address it
 /// saw, and a CDN in front (trusted) appends the client's before that, so
-/// whatever a client sends sits to the left of both and is never chosen. It
-/// goes into the visitor's hash and nowhere else.
+/// whatever a client sends sits to the left of both and is never chosen.
+/// Where the last entry is a trusted proxy's, the address header it set
+/// comes first. It goes into the visitor's hash and nowhere else.
 async fn count(State(state): State<AppState>, request: Request, next: Next) -> Response {
     if request.method() != Method::GET {
         return next.run(request).await;
@@ -193,8 +194,16 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
     };
     let session = crate::auth::cookie::session_id(h).map(str::to_string);
     let agent = text(header::USER_AGENT).to_string();
-    let trusted = &state.config.trusted_proxies;
-    let forwarded = h
+    let trusted = |a: &str| {
+        a.parse::<std::net::IpAddr>().is_ok_and(|ip| {
+            state
+                .config
+                .trusted_proxies
+                .iter()
+                .any(|net| net.contains(&ip))
+        })
+    };
+    let hops: Vec<&str> = h
         .get_all("x-forwarded-for")
         .iter()
         .rev()
@@ -202,10 +211,17 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
         .flat_map(|v| v.rsplit(','))
         .map(str::trim)
         .filter(|a| !a.is_empty())
-        .find(|a| {
-            !a.parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| trusted.iter().any(|net| net.contains(&ip)))
-        })
+        .collect();
+    let given = match (&state.config.address_header, hops.first()) {
+        (Some(name), Some(last)) if trusted(last) => h
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|a| !a.is_empty()),
+        _ => None,
+    };
+    let forwarded = given
+        .or_else(|| hops.iter().copied().find(|a| !trusted(a)))
         .map(str::to_string);
     let own = [
         crate::views::host_only(state.config.app_host()),

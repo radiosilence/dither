@@ -96,6 +96,7 @@ describe("environment", () => {
     const ranges = env({ ...base, trustedProxies: ["173.245.48.0/20", "2400:cb00::/32"] }).TRUSTED_PROXIES;
     expect(await new Promise((r) => pulumi.output(ranges).apply(r))).toBe("173.245.48.0/20,2400:cb00::/32");
     expect(env(base).TRUSTED_PROXIES).toBeUndefined();
+    expect(env({ ...base, addressHeader: "CF-Connecting-IP" }).ADDRESS_HEADER).toBe("CF-Connecting-IP");
   });
 
   it("links to the public domain when there is one", () => {

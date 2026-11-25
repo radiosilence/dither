@@ -80,6 +80,11 @@ pub struct Config {
     /// edges: `X-Forwarded-For` entries in these ranges are passed over when
     /// finding the client's address.
     pub trusted_proxies: Vec<ipnet::IpNet>,
+    /// A header a trusted proxy sets to the client's address, such as
+    /// Cloudflare's `CF-Connecting-IP`, for a proxy whose `X-Forwarded-For`
+    /// the one in front does not keep. Read only when the request came from
+    /// a trusted proxy, since anyone else could send it.
+    pub address_header: Option<axum::http::HeaderName>,
     pub video: Video,
     pub workers: Workers,
     /// Where the web process serves the worker API. Loopback unless workers
@@ -213,6 +218,12 @@ impl Config {
                         })
                 })
                 .collect::<Result<_>>()?,
+            address_header: var("ADDRESS_HEADER")
+                .map(|v| {
+                    axum::http::HeaderName::from_bytes(v.trim().as_bytes())
+                        .map_err(|_| anyhow::anyhow!("ADDRESS_HEADER must be a header name"))
+                })
+                .transpose()?,
             video: Video {
                 mode: match or("VIDEO", "auto").as_str() {
                     "auto" => VideoMode::Auto,
@@ -281,6 +292,7 @@ impl Config {
             disk_cache_bytes: 0,
             min_free_bytes: Some(0),
             trusted_proxies: Vec::new(),
+            address_header: None,
             video: Video {
                 mode: VideoMode::Auto,
                 ffmpeg: PathBuf::from("ffmpeg"),

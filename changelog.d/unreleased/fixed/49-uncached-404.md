@@ -1,0 +1,1 @@
+- **404s are never cached.** A private album's files are missing to everyone but their owner, so a shared cache keeping a stranger's 404 would show the owner the same.
