@@ -1,0 +1,23 @@
+{% extends "sign/layout.html" %}
+{% block title %}{{ __("set up") }} · dither{% endblock %}
+{% block main %}
+<h1 class="m-0">{{ __("set up") }}</h1>
+<p class="m-0 text-meta text-muted">{{ __("This server has no account yet. Make the first one: it is an admin, and invites everyone else.") }}</p>
+{% include "sign/problem.html" %}
+<form method="post" action="/setup" class="grid gap-4">
+  <label class="grid gap-2 text-meta">{{ __("setup code") }}
+    <input class="w-full" name="code" autocomplete="off" autocapitalize="none" spellcheck="false" required autofocus>
+  </label>
+  <p class="m-0 text-fine text-muted">{{ __("The server writes the code to its log when it starts with no account.") }}</p>
+  <label class="grid gap-2 text-meta">{{ __("username") }}
+    <input class="w-full" name="username" value="{{ username }}" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required>
+  </label>
+  <label class="grid gap-2 text-meta">{{ __("password") }}
+    <input class="w-full" type="password" name="password" autocomplete="new-password" minlength="8" required>
+  </label>
+  <label class="grid gap-2 text-meta">{{ __("password again") }}
+    <input class="w-full" type="password" name="confirm" autocomplete="new-password" minlength="8" required>
+  </label>
+  <button class="primary">{{ __("make the account") }}</button>
+</form>
+{% endblock %}

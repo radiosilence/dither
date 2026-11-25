@@ -5,14 +5,24 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 
-pub struct Oidc {
-    pub issuer: String,
-    pub client_id: String,
-    pub client_secret: String,
-    /// Where codes are exchanged. The issuer's own endpoint unless a pod
-    /// cannot reach the issuer's public address (Cilium drops a pod's traffic
-    /// to its own node's), when it is the provider's in-cluster service.
-    pub token_url: String,
+/// The Ed25519 key invites are signed with, as PEM.
+pub struct SigningKey {
+    pub private: Vec<u8>,
+    pub public: Vec<u8>,
+    /// Made for this run, with none configured: invites it signs stop working
+    /// when the process does.
+    pub generated: bool,
+}
+
+impl SigningKey {
+    fn generate() -> Result<Self> {
+        let (private, public) = koan_auth::keys::generate_pem()?;
+        Ok(Self {
+            private: private.into_bytes(),
+            public: public.into_bytes(),
+            generated: true,
+        })
+    }
 }
 
 /// Whether videos are taken, and with what.
@@ -61,8 +71,9 @@ pub struct Config {
     /// The object store, by URL: `s3://bucket[/prefix]`, or `memory:///` for
     /// development, which forgets everything when the process stops.
     pub storage: String,
-    /// `None` only with `INSECURE_NO_AUTH=1`, for local development.
-    pub oidc: Option<Oidc>,
+    /// What invites are signed with. A database copy in the store must not
+    /// be enough to forge one, so it is never kept there.
+    pub signing_key: SigningKey,
     pub max_upload_bytes: u64,
     pub max_pixels: u64,
     /// Memory processing may take at once, across every upload. An image
@@ -124,44 +135,35 @@ fn origin(key: &str, value: &str) -> Result<String> {
 }
 
 impl Config {
-    /// The web process's configuration: sign-in is required.
+    /// The web process's configuration.
     pub fn from_env() -> Result<Self> {
         Self::read(false)
     }
 
-    /// A worker's: it serves nothing and signs nobody in, so needs neither
-    /// the provider nor its secret.
+    /// A worker's: it serves nothing and signs nobody in, so needs no key.
     pub fn for_worker() -> Result<Self> {
         Self::read(true)
     }
 
     fn read(worker: bool) -> Result<Self> {
-        let oidc = match (
-            var("OIDC_ISSUER"),
-            var("OIDC_CLIENT_ID"),
-            var("OIDC_CLIENT_SECRET"),
-        ) {
-            (Some(issuer), Some(client_id), Some(client_secret)) => {
-                let issuer = issuer.trim_end_matches('/').to_string();
-                Some(Oidc {
-                    token_url: or("OIDC_TOKEN_URL", &format!("{issuer}/oauth2/token")),
-                    issuer,
-                    client_id,
-                    client_secret,
-                })
-            }
-            (None, None, None) if worker || var("INSECURE_NO_AUTH").as_deref() == Some("1") => None,
-            (None, None, None) => bail!(
-                "OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET are required (or INSECURE_NO_AUTH=1 for local development)"
-            ),
-            _ => bail!("OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET must be set together"),
-        };
         let bind_addr = or("BIND_ADDR", "127.0.0.1:8080");
-        if oidc.is_none() && !worker && !loopback(&bind_addr) {
-            bail!(
-                "INSECURE_NO_AUTH serves the app with no sign-in, so BIND_ADDR must be loopback, not {bind_addr}"
-            );
-        }
+        let signing_key = match var("SIGNING_KEY") {
+            Some(key) => {
+                let private = signing_pem(&key)?;
+                let public = koan_auth::keys::public_from_private(private.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("SIGNING_KEY: {e}"))?;
+                SigningKey {
+                    private: private.into_bytes(),
+                    public: public.into_bytes(),
+                    generated: false,
+                }
+            }
+            // Only this machine reaches it, so a key for the run will do.
+            None if worker || loopback(&bind_addr) => SigningKey::generate()?,
+            None => bail!(
+                "SIGNING_KEY is required: the Ed25519 key invites are signed with, as 32 random bytes in base64 or as PKCS#8 PEM"
+            ),
+        };
         let app_url = origin("APP_URL", &or("APP_URL", &format!("http://{bind_addr}")))?;
         let public_url = origin("PUBLIC_URL", &or("PUBLIC_URL", &app_url))?;
         let state_dir = PathBuf::from(or("STATE_DIR", "data/state"));
@@ -212,7 +214,7 @@ impl Config {
             public_url,
             state_dir,
             storage,
-            oidc,
+            signing_key,
             max_upload_bytes: num("MAX_UPLOAD_BYTES", 64_000_000)?,
             max_pixels: num("MAX_PIXELS", 100_000_000)?,
             process_memory: num("PROCESS_MEMORY_BYTES", 1 << 30)?,
@@ -255,10 +257,6 @@ impl Config {
         (self.video.mode != VideoMode::Off).then_some(self.video.max_bytes)
     }
 
-    pub fn redirect_uri(&self) -> String {
-        format!("{}/auth/callback", self.app_url)
-    }
-
     /// The `Host` header the app answers to, and the one public pages do.
     pub fn app_host(&self) -> &str {
         host_of(&self.app_url)
@@ -277,7 +275,7 @@ impl Config {
         self.app_url.starts_with("https://")
     }
 
-    /// A configuration for tests: no sign-in, a store in memory.
+    /// A configuration for tests: a store in memory, and a key of its own.
     #[cfg(test)]
     pub fn test(state_dir: PathBuf) -> Self {
         Self {
@@ -287,7 +285,7 @@ impl Config {
             public_url: "http://app.test".into(),
             state_dir,
             storage: "memory:///".into(),
-            oidc: None,
+            signing_key: SigningKey::generate().expect("a test signing key"),
             max_upload_bytes: 8 << 20,
             max_pixels: 50_000_000,
             process_memory: 1 << 30,
@@ -315,6 +313,34 @@ impl Config {
     }
 }
 
+/// `SIGNING_KEY` as PKCS#8 PEM: given so, or as the key's 32-byte seed in
+/// base64 (`openssl rand -base64 32`), which is what a secret generator makes.
+fn signing_pem(value: &str) -> Result<String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
+
+    let value = value.trim();
+    if value.starts_with("-----BEGIN") {
+        return Ok(value.to_string());
+    }
+    let seed = STANDARD
+        .decode(value)
+        .map_err(|_| anyhow::anyhow!("SIGNING_KEY must be 32 bytes in base64, or PKCS#8 PEM"))?;
+    if seed.len() != 32 {
+        bail!("SIGNING_KEY's seed must be 32 bytes, not {}", seed.len());
+    }
+    // PKCS#8 for Ed25519 is a fixed prefix and the seed (RFC 8410).
+    let mut der = vec![
+        0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
+        0x20,
+    ];
+    der.extend_from_slice(&seed);
+    Ok(format!(
+        "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+        STANDARD.encode(der)
+    ))
+}
+
 fn loopback(addr: &str) -> bool {
     addr.starts_with("127.0.0.1:") || addr.starts_with("[::1]:") || addr.starts_with("localhost:")
 }
@@ -339,6 +365,23 @@ mod tests {
         );
         assert!(origin("X", "ftp://x").is_err());
         assert!(origin("X", "dither.example").is_err());
+    }
+
+    #[test]
+    fn a_signing_key_is_a_seed_or_a_pem() {
+        use base64::Engine as _;
+        let seed = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        let from_seed = signing_pem(&seed).unwrap();
+        let public = koan_auth::keys::public_from_private(from_seed.as_bytes()).unwrap();
+        // The same key, given as the PEM it makes.
+        assert_eq!(signing_pem(&from_seed).unwrap(), from_seed.trim());
+        assert_eq!(
+            koan_auth::keys::public_from_private(signing_pem(&from_seed).unwrap().as_bytes())
+                .unwrap(),
+            public
+        );
+        assert!(signing_pem("c2hvcnQ=").is_err());
+        assert!(signing_pem("not base64!").is_err());
     }
 
     #[test]

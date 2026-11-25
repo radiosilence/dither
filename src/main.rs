@@ -140,12 +140,27 @@ async fn serve() -> anyhow::Result<()> {
     }
 
     let (stopping_tx, stopping) = watch::channel(false);
+    if config.signing_key.generated {
+        tracing::warn!("SIGNING_KEY is unset: invites made by this run stop working when it stops");
+    }
+    // The first admin is made with a code only the server's operator sees,
+    // since whoever reached an empty server first would otherwise become its
+    // admin.
+    let setup = if db.has_accounts().await.context("reading the accounts")? {
+        None
+    } else {
+        let code = koan_auth::setup::SetupCode::new().context("making the setup code")?;
+        tracing::warn!(
+            code = code.as_str(),
+            "no account yet: make the first admin at {}/setup with this code",
+            config.app_url
+        );
+        Some(code)
+    };
     let state = web::AppState::new(web::Inner {
-        sessions: auth::session::Sessions::new(db.clone()),
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .build()
-            .context("building the HTTP client")?,
+        verifier: koan_auth::password::Verifier::new(),
+        sign_ins: koan_auth::limit::RateLimiter::default(),
+        setup,
         db: db.clone(),
         store: store.clone(),
         uploads: uploads.clone(),

@@ -5,7 +5,7 @@ import { egress, environment, workerEnvironment } from "./dither.ts";
 const base = {
   hostname: "dither.example",
   node: "box",
-  oidc: { issuer: "https://auth.example", clientId: "dither", clientSecret: "s" },
+  signingKey: "k",
   workerToken: "t",
   bucket: { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "a", secretAccessKey: "b" },
 };
@@ -46,7 +46,7 @@ describe("environment", () => {
     expect(e.MAX_VIDEO_SECONDS).toBe("600");
   });
 
-  it("gives a worker the queue and none of the store or the sign-in", () => {
+  it("gives a worker the queue and none of the store or the signing key", () => {
     const w = Object.fromEntries(
       workerEnvironment({ name: "lady", queue: "http://q:8081", token: "t", videoThreads: 4, pictures: 0 }).map(
         (e) => [e.name, e.value],
@@ -56,7 +56,7 @@ describe("environment", () => {
     expect(w.VIDEO_THREADS).toBe("4");
     expect(w.PICTURE_WORKERS).toBe("0");
     expect(w.VIDEO_WORKERS).toBeUndefined();
-    expect(Object.keys(w).some((k) => k.startsWith("OIDC") || k.startsWith("AWS") || k === "STORAGE")).toBe(false);
+    expect(Object.keys(w).some((k) => k === "SIGNING_KEY" || k.startsWith("AWS") || k === "STORAGE")).toBe(false);
   });
 
   it("serves the worker API to workers on other nodes", () => {
@@ -104,44 +104,25 @@ describe("environment", () => {
     expect(env({ ...base, publicHostname: "pics.example" }).PUBLIC_URL).toBe("https://pics.example");
   });
 
-  it("exchanges codes in the cluster when told how", () => {
-    const backchannel = { url: "http://hydra", podLabels: { app: "hydra" }, port: 4444 };
-    expect(env({ ...base, oidc: { ...base.oidc, backchannel } }).OIDC_TOKEN_URL).toBe("http://hydra/oauth2/token");
-    expect(env(base).OIDC_TOKEN_URL).toBeUndefined();
-  });
-
   it("never puts a secret in the plain environment", () => {
     const e = environment({
       ...base,
       bucket: { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "KEY", secretAccessKey: "SECRET" },
     });
-    expect(JSON.stringify(e)).not.toMatch(/KEY|SECRET|"s"|"t"/);
+    expect(JSON.stringify(e)).not.toMatch(/KEY|SECRET|"k"|"t"/);
   });
 });
 
 describe("egress", () => {
-  const backchannel = { url: "http://hydra", podLabels: { app: "hydra" }, port: 4444 };
   const peers = (args: Parameters<typeof egress>[0]) =>
     egress(args).flatMap((rule): Record<string, unknown>[] => [...rule.to]);
 
-  it("reaches the identity provider in its own namespace when it has one", () => {
-    const oidc = { ...base.oidc, backchannel: { ...backchannel, namespace: "auth" } };
-    expect(peers({ oidc, bucket: base.bucket })).toContainEqual({
-      podSelector: { matchLabels: { app: "hydra" } },
-      namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": "auth" } },
-    });
-    expect(peers({ oidc: { ...base.oidc, backchannel }, bucket: base.bucket })).toContainEqual({
-      podSelector: { matchLabels: { app: "hydra" } },
-    });
-  });
-
-  it("leaves the cluster only when something out there is needed", () => {
+  it("leaves the cluster only for a bucket outside it", () => {
     const internet = (args: Parameters<typeof egress>[0]) => peers(args).some((p) => "ipBlock" in p);
     const bucket = { url: "s3://pics", endpoint: "https://r2.example", accessKeyId: "a", secretAccessKey: "b" };
     const inCluster = { ...bucket, endpoint: "http://garage:3900", peer: { podLabels: { app: "garage" }, port: 3900 } };
-    expect(internet({ oidc: { ...base.oidc, backchannel }, bucket: inCluster })).toBe(false);
-    expect(internet({ oidc: { ...base.oidc, backchannel }, bucket })).toBe(true);
-    expect(internet({ oidc: base.oidc, bucket: inCluster })).toBe(true);
+    expect(internet({ bucket: inCluster })).toBe(false);
+    expect(internet({ bucket })).toBe(true);
   });
 
   it("reaches a bucket in the cluster, and nothing beyond it", () => {
@@ -152,7 +133,7 @@ describe("egress", () => {
       secretAccessKey: "b",
       peer: { podLabels: { app: "garage" }, port: 3900 },
     };
-    const rules = egress({ oidc: { ...base.oidc, backchannel }, bucket });
+    const rules = egress({ bucket });
     expect(rules.some((r) => r.to.some((p) => "ipBlock" in p))).toBe(false);
     expect(
       rules.some(

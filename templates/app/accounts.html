@@ -1,0 +1,16 @@
+<div id="accounts" class="mt-8 grid gap-3">
+{% for a in accounts %}
+  <div class="flex flex-wrap items-baseline gap-3">
+    <span class="grow truncate">{{ a.username }}{% if a.me %} <span class="text-fine text-muted">{{ __("(you)") }}</span>{% endif %}</span>
+    <span class="text-fine text-muted">{{ __n("%{count} album", "%{count} albums", *a.albums) }} · {{ a.size }}</span>
+    <select aria-label="{{ __("role") }}" data-on:change="@post('/users/{{ a.id }}/role', {payload: {role: el.value}})">
+      <option value="user"{% if a.role == "user" %} selected{% endif %}>{{ __p("Role", "user") }}</option>
+      <option value="readonly"{% if a.role == "readonly" %} selected{% endif %}>{{ __p("Role", "read-only") }}</option>
+      <option value="admin"{% if a.role == "admin" %} selected{% endif %}>{{ __p("Role", "admin") }}</option>
+    </select>
+    <button class="quiet" data-on:click="@post('/users/{{ a.id }}/invite')">{{ __p("Button: make an invite link", "invite") }}</button>
+    <button class="quiet" data-ask="{{ __("Reset this account's password? It is signed out everywhere, and links already sent stop working.") }}" data-on:click="confirm(el.dataset.ask) && @post('/users/{{ a.id }}/reset')">{{ __("reset password") }}</button>
+    {% if !a.me %}<button class="quiet bad" data-ask="{{ __("Delete this account, with its albums and images? Their links stop working. This can't be undone.") }}" data-on:click="confirm(el.dataset.ask) && @post('/users/{{ a.id }}/delete')">{{ icon("trash", 13.0)|safe }} {{ __p("Button", "delete") }}</button>{% endif %}
+  </div>
+{% endfor %}
+</div>

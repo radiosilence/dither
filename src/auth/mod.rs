@@ -1,13 +1,14 @@
-//! An OAuth client of the estate's identity provider, and nothing more.
+//! Accounts of dither's own, through koan-auth (kōan's accounts and sign-in,
+//! shared as a crate).
 //!
-//! Who may sign in is decided there (a GitHub allowlist in front of Hydra), so
-//! anyone holding a code from that issuer has already passed it. There is no
-//! second allowlist here: a copy would be one more thing to keep in step, and
-//! the one that drifted would be this one. Everyone who signs in gets albums
-//! of their own and sees nobody else's.
+//! An account is a username, a password and a role. An admin manages the
+//! accounts; a user has albums of their own and sees nobody else's; a
+//! readonly account signs in and sees its albums, and changes nothing. The
+//! first admin is made on `/setup` with a code the server logs while it has
+//! no account; everyone else is invited by an admin, and chooses their own
+//! password from the invite.
 
 pub mod cookie;
 pub mod extract;
-pub mod oidc;
 pub mod routes;
 pub mod session;

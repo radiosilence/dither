@@ -1,0 +1,17 @@
+{% extends "sign/layout.html" %}
+{% block title %}{{ __("sign in") }} · dither{% endblock %}
+{% block main %}
+<h1 class="m-0">{{ __("sign in") }}</h1>
+{% include "sign/problem.html" %}
+<form method="post" action="/login" class="grid gap-4">
+  <input type="hidden" name="next" value="{{ next }}">
+  <label class="grid gap-2 text-meta">{{ __("username") }}
+    <input class="w-full" name="username" value="{{ username }}" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+  </label>
+  <label class="grid gap-2 text-meta">{{ __("password") }}
+    <input class="w-full" type="password" name="password" autocomplete="current-password" required>
+  </label>
+  <button class="primary">{{ __("sign in") }}</button>
+</form>
+<p class="m-0 text-fine text-muted">{{ __("Accounts are made by an admin, who sends an invite.") }}</p>
+{% endblock %}

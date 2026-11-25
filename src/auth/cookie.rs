@@ -1,13 +1,12 @@
-//! Cookie names and hardened `Set-Cookie` values.
+//! The session cookie and its hardened `Set-Cookie` values.
 //!
 //! `SameSite=Lax` keeps the session off cross-site posts, and every write also
 //! needs a header a cross-site form cannot set. The `__Host-` prefix makes
-//! browsers refuse either cookie unless it is `Secure`, has `Path=/` and names
-//! no `Domain`, so a sibling subdomain cannot set or shadow it, and a public
+//! browsers refuse the cookie unless it is `Secure`, has `Path=/` and names no
+//! `Domain`, so a sibling subdomain cannot set or shadow it, and a public
 //! image domain of its own never receives it.
 
 pub const SESSION_COOKIE: &str = "__Host-dither-session";
-pub const FLOW_COOKIE: &str = "__Host-dither-flow";
 
 pub fn set_cookie(name: &str, value: &str, max_age_secs: i64) -> String {
     format!("{name}={value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={max_age_secs}")

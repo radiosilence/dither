@@ -1,4 +1,5 @@
-//! SQLite: users, sessions, albums, images and uploads in progress.
+//! SQLite: accounts and sessions (koan-auth's tables), albums, images and
+//! uploads in progress.
 //!
 //! One file in the state directory, reached through a small pool of rusqlite
 //! connections as slsk-mcp reaches its own. rusqlite blocks, so every
@@ -18,6 +19,11 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
+
+use koan_auth::Role;
+use koan_auth::accounts::{self, AccountError};
+use koan_auth::users::UserRow;
 
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use tokio::sync::{broadcast, watch};
@@ -32,6 +38,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_as_recorded.sql"),
     include_str!("../migrations/0004_sessions.sql"),
     include_str!("../migrations/0005_views.sql"),
+    include_str!("../migrations/0006_accounts.sql"),
 ];
 
 /// Idle connections kept: more than the service's usual concurrency, so the
@@ -91,6 +98,9 @@ impl Db {
             configure(&conn)?;
             conn.pragma_update(None, "journal_mode", "WAL")?;
             migrate(&mut conn)?;
+            // After dither's own, the last of which drops the tables
+            // these replace.
+            koan_auth::schema::migrate(&conn)?;
             Ok(Self(Arc::new(Pool {
                 path,
                 idle: parking_lot::Mutex::new(vec![conn]),
@@ -103,12 +113,37 @@ impl Db {
 
     /// A fresh database in a temporary directory, for tests: a file rather
     /// than `:memory:` so every pooled connection sees the same data.
+    ///
+    /// It has the accounts tests act as: `ann`, `bob` and `cat`, and `dev`,
+    /// an admin.
     #[cfg(test)]
     pub async fn temp() -> Self {
         let dir = tempfile::tempdir().expect("temp dir").keep();
-        Self::open(&dir.join("dither.db"))
+        let db = Self::open(&dir.join("dither.db"))
             .await
-            .expect("test database")
+            .expect("test database");
+        db.test_accounts().await;
+        db
+    }
+
+    /// The accounts tests act as, made once.
+    #[cfg(test)]
+    pub async fn test_accounts(&self) {
+        self.run(|c| {
+            for (name, role) in [
+                ("dev", Role::Admin),
+                ("ann", Role::User),
+                ("bob", Role::User),
+                ("cat", Role::User),
+            ] {
+                if koan_auth::users::get_user_by_username(c, name)?.is_none() {
+                    koan_auth::users::create_user(c, name, "a test password", role)?;
+                }
+            }
+            Ok(())
+        })
+        .await
+        .expect("test accounts")
     }
 
     pub fn path(&self) -> &Path {
@@ -472,30 +507,6 @@ fn placeholders(from: usize, n: usize) -> String {
 }
 
 impl Db {
-    pub async fn upsert_user(&self, sub: &str, login: &str) -> Result<()> {
-        let (sub, login) = (sub.to_string(), login.to_string());
-        self.run(move |c| {
-            c.execute(
-                "INSERT INTO users (sub, login, created_at) VALUES (?1, ?2, ?3) \
-                 ON CONFLICT (sub) DO UPDATE SET login = excluded.login",
-                params![sub, login, now()],
-            )
-            .map(drop)
-        })
-        .await
-    }
-
-    pub async fn login_of(&self, sub: &str) -> Result<Option<String>> {
-        let sub = sub.to_string();
-        self.run(move |c| {
-            c.query_row("SELECT login FROM users WHERE sub = ?1", [sub], |r| {
-                r.get(0)
-            })
-            .optional()
-        })
-        .await
-    }
-
     pub async fn create_album(&self, owner: &str, title: &str) -> Result<Album> {
         let album = Album {
             id: crate::id::new(),
@@ -1335,40 +1346,6 @@ impl Db {
         })
         .await
     }
-
-    pub async fn create_session(&self, id_hash: Vec<u8>, sub: &str, expires_at: i64) -> Result<()> {
-        let sub = sub.to_string();
-        self.run(move |c| {
-            // Expired rows go on each sign-in; there are too few for a sweeper.
-            c.execute("DELETE FROM sessions WHERE expires_at < ?1", [now()])?;
-            c.execute(
-                "INSERT INTO sessions (id_hash, sub, expires_at, created_at) VALUES (?1, ?2, ?3, ?4)",
-                params![id_hash, sub, expires_at, now()],
-            )
-            .map(drop)
-        })
-        .await
-    }
-
-    /// Whose session this is and when it was made, while it lasts.
-    pub async fn session(&self, id_hash: Vec<u8>) -> Result<Option<(String, i64)>> {
-        self.run(move |c| {
-            c.prepare_cached(
-                "SELECT sub, created_at FROM sessions WHERE id_hash = ?1 AND expires_at > ?2",
-            )?
-            .query_row(params![id_hash, now()], |r| Ok((r.get(0)?, r.get(1)?)))
-            .optional()
-        })
-        .await
-    }
-
-    pub async fn delete_session(&self, id_hash: Vec<u8>) -> Result<()> {
-        self.run(move |c| {
-            c.execute("DELETE FROM sessions WHERE id_hash = ?1", [id_hash])
-                .map(drop)
-        })
-        .await
-    }
 }
 
 fn images_by_id(c: &Connection, ids: &[String]) -> Result<Vec<Image>> {
@@ -1384,6 +1361,255 @@ fn images_by_id(c: &Connection, ids: &[String]) -> Result<Vec<Image>> {
         }
     }
     Ok(out)
+}
+
+/// An account, as the admins' page lists it, with what its albums hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub id: i64,
+    pub username: String,
+    pub role: Role,
+    pub albums: u64,
+    pub bytes: u64,
+}
+
+/// A new session for `user_id`, lasting `ttl`: the secret its cookie carries.
+/// The table keeps only its SHA-256.
+fn open_session(c: &Connection, user_id: i64, ttl: Duration) -> Result<String> {
+    // Expired sessions go as new ones are made; there are too few for a sweeper.
+    koan_auth::sessions::cleanup_expired_tokens(c)?;
+    let secret = koan_auth::secret::random_token()
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+    let expires = now() / 1000 + ttl.as_secs() as i64;
+    koan_auth::sessions::store_refresh_token(c, &secret, user_id, expires)?;
+    Ok(secret)
+}
+
+/// The account `id`, or why there is none to change.
+fn existing(c: &Connection, id: i64) -> std::result::Result<UserRow, AccountError> {
+    koan_auth::users::get_user_by_id(c, id)?.ok_or_else(|| AccountError::NoSuchUser(id.to_string()))
+}
+
+/// Accounts and sessions, in koan-auth's tables. A session is stored as the
+/// SHA-256 of the secret its cookie carries, so the table alone signs no one
+/// in, and an account's sessions end with a new password or with the account.
+impl Db {
+    /// Run `f` in a transaction that takes the write lock up front, committed
+    /// only if `f` succeeds, so an account's change and dither's own land
+    /// together or not at all.
+    async fn account_write<T, F>(
+        &self,
+        announce: Announce,
+        f: F,
+    ) -> std::result::Result<T, AccountError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&rusqlite::Transaction) -> std::result::Result<T, AccountError> + Send + 'static,
+    {
+        self.exec(announce, move |c| {
+            let tx = c.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let out = f(&tx);
+            if out.is_ok() {
+                tx.commit()?;
+            }
+            Ok(out)
+        })
+        .await?
+    }
+
+    /// The account a session's secret belongs to, as it stands, while the
+    /// session lasts.
+    pub async fn holder(&self, secret: &str) -> Result<Option<UserRow>> {
+        let secret = secret.to_string();
+        self.run(move |c| koan_auth::sessions::holder(c, &secret))
+            .await
+    }
+
+    pub async fn open_session(&self, user_id: i64, ttl: Duration) -> Result<String> {
+        self.run(move |c| open_session(c, user_id, ttl)).await
+    }
+
+    pub async fn end_session(&self, secret: &str) -> Result<()> {
+        let secret = secret.to_string();
+        self.run(move |c| koan_auth::sessions::revoke_refresh_token(c, &secret).map(drop))
+            .await
+    }
+
+    pub async fn account_named(&self, username: &str) -> Result<Option<UserRow>> {
+        let username = username.to_string();
+        self.run(move |c| koan_auth::users::get_user_by_username(c, &username))
+            .await
+    }
+
+    /// Whether anyone can sign in yet: a server with no account waits for its
+    /// first admin.
+    pub async fn has_accounts(&self) -> Result<bool> {
+        self.run(|c| koan_auth::users::has_users(c)).await
+    }
+
+    /// Every account, oldest first.
+    pub async fn accounts(&self) -> Result<Vec<Account>> {
+        self.run(|c| {
+            c.prepare(
+                "SELECT u.id, u.username, u.role, \
+                   (SELECT COUNT(*) FROM albums a WHERE a.owner = u.username), \
+                   (SELECT COALESCE(SUM(i.bytes), 0) FROM images i \
+                      JOIN albums a ON a.id = i.album WHERE a.owner = u.username) \
+                 FROM users u ORDER BY u.id",
+            )?
+            .query_map([], |r| {
+                Ok(Account {
+                    id: r.get(0)?,
+                    username: r.get(1)?,
+                    role: r.get::<_, String>(2)?.parse().unwrap_or(Role::Readonly),
+                    albums: r.get::<_, i64>(3)? as u64,
+                    bytes: r.get::<_, i64>(4)? as u64,
+                })
+            })?
+            .collect()
+        })
+        .await
+    }
+
+    /// Make the first admin, signed in. Refused once any account exists.
+    pub async fn create_first_admin(
+        &self,
+        username: &str,
+        password: &str,
+        ttl: Duration,
+    ) -> std::result::Result<(UserRow, String), AccountError> {
+        let (username, password) = (username.to_string(), password.to_string());
+        self.account_write(Announce::Writes, move |tx| {
+            let id = accounts::create_first_admin(tx, &username, &password)?;
+            let secret = open_session(tx, id, ttl)?;
+            Ok((existing(tx, id)?, secret))
+        })
+        .await
+    }
+
+    /// Make an account whose password nobody is told: the invite sent for it
+    /// is how its owner chooses one.
+    pub async fn create_account(
+        &self,
+        username: &str,
+        role: Role,
+    ) -> std::result::Result<UserRow, AccountError> {
+        let username = username.to_string();
+        self.account_write(Announce::Writes, move |tx| {
+            let made = accounts::create_account(tx, &username, role)?;
+            existing(tx, made.id)
+        })
+        .await
+    }
+
+    /// An invite for the account `id`, signed with `private_pem`, good for a
+    /// week or until the account's password changes.
+    pub async fn invite(
+        &self,
+        id: i64,
+        private_pem: Vec<u8>,
+    ) -> std::result::Result<(UserRow, String), AccountError> {
+        self.run(move |c| {
+            Ok(existing(c, id).and_then(|user| {
+                koan_auth::invite::mint_token(
+                    c,
+                    &private_pem,
+                    id,
+                    koan_auth::invite::TOKEN_TTL_SECS,
+                )
+                .map(|token| (user, token))
+            }))
+        })
+        .await?
+    }
+
+    /// The account an invite names, while the invite still works.
+    pub async fn invited(
+        &self,
+        token: &str,
+        public_pem: Vec<u8>,
+    ) -> std::result::Result<UserRow, AccountError> {
+        let token = token.to_string();
+        self.run(move |c| Ok(koan_auth::invite::invited(c, &public_pem, &token)))
+            .await?
+    }
+
+    /// Give the account an invite names `password`, which spends the invite,
+    /// and sign it in. One transaction: an invite opened twice at once sets
+    /// one password.
+    pub async fn join(
+        &self,
+        token: &str,
+        public_pem: Vec<u8>,
+        password: &str,
+        ttl: Duration,
+    ) -> std::result::Result<(UserRow, String), AccountError> {
+        let (token, password) = (token.to_string(), password.to_string());
+        self.account_write(Announce::Writes, move |tx| {
+            let user = koan_auth::invite::invited(tx, &public_pem, &token)?;
+            // A new password ends every session the account had.
+            accounts::set_password(tx, &user.username, Some(&password))?;
+            let secret = open_session(tx, user.id, ttl)?;
+            Ok((existing(tx, user.id)?, secret))
+        })
+        .await
+    }
+
+    /// Give the account `id` a password nobody is told, which signs it out
+    /// everywhere and withdraws its invites: its next invite sets one.
+    pub async fn reset_password(&self, id: i64) -> std::result::Result<UserRow, AccountError> {
+        self.account_write(Announce::Writes, move |tx| {
+            let user = existing(tx, id)?;
+            accounts::set_password(tx, &user.username, None)?;
+            Ok(user)
+        })
+        .await
+    }
+
+    /// Change the account `id`'s role, refusing to demote the last admin.
+    pub async fn set_role(
+        &self,
+        id: i64,
+        role: Role,
+    ) -> std::result::Result<UserRow, AccountError> {
+        self.account_write(Announce::Writes, move |tx| {
+            let user = existing(tx, id)?;
+            accounts::set_role(tx, &user.username, role)?;
+            Ok(user)
+        })
+        .await
+    }
+
+    /// Delete the account `id` and its albums, refusing to delete the last
+    /// admin. Answers with its images, whose copies are recorded as strays
+    /// until the store confirms them gone.
+    pub async fn delete_account(&self, id: i64) -> std::result::Result<Vec<String>, AccountError> {
+        let owner = self
+            .run(move |c| koan_auth::users::get_user_by_id(c, id))
+            .await?
+            .ok_or_else(|| AccountError::NoSuchUser(id.to_string()))?
+            .username;
+        let o = owner.clone();
+        self.account_write(Announce::Owner(owner.into()), move |tx| {
+            let images = tx
+                .prepare(
+                    "SELECT i.id FROM images i JOIN albums a ON a.id = i.album WHERE a.owner = ?1",
+                )?
+                .query_map([&o], |r| r.get(0))?
+                .collect::<Result<Vec<String>>>()?;
+            let albums = tx
+                .prepare("SELECT id FROM albums WHERE owner = ?1")?
+                .query_map([&o], |r| r.get(0))?
+                .collect::<Result<Vec<String>>>()?;
+            tx.execute("DELETE FROM albums WHERE owner = ?1", [&o])?;
+            strays(tx, &images)?;
+            forget_views(tx, &images)?;
+            forget_views(tx, &albums)?;
+            accounts::delete_account(tx, &o)?;
+            Ok(images)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -1668,8 +1894,7 @@ pub mod tests {
         let mut rx = db.changes();
         let album = db.create_album("ann", "").await.unwrap();
         assert_eq!(&*rx.try_recv().unwrap(), "ann");
-        // Signing in, and a refused edit, change nothing anyone's pages show.
-        db.upsert_user("bob", "bob").await.unwrap();
+        // A refused edit changes nothing anyone's pages show.
         let edit = AlbumEdit {
             title: Some("mine".into()),
             ..Default::default()
@@ -1890,17 +2115,102 @@ pub mod tests {
     }
 
     #[tokio::test]
-    async fn sessions_expire_and_end() {
+    async fn sessions_last_until_they_end() {
         let db = Db::temp().await;
-        db.create_session(vec![1], "ann", now() + 60_000)
+        let ann = db.account_named("ann").await.unwrap().unwrap();
+        let secret = db
+            .open_session(ann.id, Duration::from_secs(60))
             .await
             .unwrap();
-        db.create_session(vec![2], "ann", now() - 1).await.unwrap();
-        let (sub, since) = db.session(vec![1]).await.unwrap().unwrap();
-        assert_eq!(sub, "ann");
-        assert!(now() - since < 60_000);
-        assert_eq!(db.session(vec![2]).await.unwrap(), None);
-        db.delete_session(vec![1]).await.unwrap();
-        assert_eq!(db.session(vec![1]).await.unwrap(), None);
+        assert_eq!(db.holder(&secret).await.unwrap().unwrap().username, "ann");
+        assert!(db.holder("not a session").await.unwrap().is_none());
+        db.end_session(&secret).await.unwrap();
+        assert!(db.holder(&secret).await.unwrap().is_none());
+        let lapsed = db.open_session(ann.id, Duration::ZERO).await.unwrap();
+        assert!(db.holder(&lapsed).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_invite_sets_a_password_once_and_signs_in() {
+        let db = Db::temp().await;
+        let (private, public) = koan_auth::keys::generate_pem().unwrap();
+        let eve = db.create_account("eve", Role::User).await.unwrap();
+        let (_, token) = db.invite(eve.id, private.into_bytes()).await.unwrap();
+        let public = public.into_bytes();
+        assert_eq!(
+            db.invited(&token, public.clone()).await.unwrap().username,
+            "eve"
+        );
+        let minute = Duration::from_secs(60);
+        assert!(matches!(
+            db.join(&token, public.clone(), "short", minute).await,
+            Err(AccountError::ShortPassword)
+        ));
+        let (user, secret) = db
+            .join(&token, public.clone(), "a long password", minute)
+            .await
+            .unwrap();
+        assert_eq!(user.username, "eve");
+        assert_eq!(db.holder(&secret).await.unwrap().unwrap().id, eve.id);
+        // Spent: the password it set changed what it was made against.
+        assert!(matches!(
+            db.join(&token, public, "another password", minute).await,
+            Err(AccountError::BadInvite)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_reset_signs_out_and_withdraws_invites() {
+        let db = Db::temp().await;
+        let (private, public) = koan_auth::keys::generate_pem().unwrap();
+        let ann = db.account_named("ann").await.unwrap().unwrap();
+        let secret = db
+            .open_session(ann.id, Duration::from_secs(60))
+            .await
+            .unwrap();
+        let (_, token) = db.invite(ann.id, private.into_bytes()).await.unwrap();
+        db.reset_password(ann.id).await.unwrap();
+        assert!(db.holder(&secret).await.unwrap().is_none());
+        assert!(matches!(
+            db.invited(&token, public.into_bytes()).await,
+            Err(AccountError::BadInvite)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_account_goes_with_its_albums_and_their_copies() {
+        let db = Db::temp().await;
+        let bob = db.account_named("bob").await.unwrap().unwrap();
+        let album = db.create_album("bob", "trip").await.unwrap();
+        db.create_album("ann", "kept").await.unwrap();
+        let secret = db
+            .open_session(bob.id, Duration::from_secs(60))
+            .await
+            .unwrap();
+        db.delete_account(bob.id).await.unwrap();
+        assert!(db.album(&album.id).await.unwrap().is_none());
+        assert!(db.holder(&secret).await.unwrap().is_none());
+        assert!(db.account_named("bob").await.unwrap().is_none());
+        assert_eq!(db.cards("ann").await.unwrap().len(), 1);
+        // The last admin stays, albums and all.
+        let dev = db.account_named("dev").await.unwrap().unwrap();
+        assert!(matches!(
+            db.delete_account(dev.id).await,
+            Err(AccountError::LastAdmin)
+        ));
+        let names: Vec<String> = db
+            .accounts()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|a| a.username)
+            .collect();
+        assert_eq!(names, ["dev", "ann", "cat"]);
+    }
+
+    #[tokio::test]
+    async fn an_album_names_an_account_that_exists() {
+        let db = Db::temp().await;
+        assert!(db.create_album("nobody", "trip").await.is_err());
     }
 }

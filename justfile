@@ -1,7 +1,8 @@
 # dither: an image host
 
-# Run it on http://127.0.0.1:8080 with no sign-in, the images in memory and
-# a state directory of its own, so each run starts empty. A laptop's disk is
+# Run it on http://127.0.0.1:8080 with the images in memory and a state
+# directory of its own, so each run starts empty: its first page makes the
+# admin, with the setup code it logs. A laptop's disk is
 # usually fuller than a server's, so uploads stop at 1 GB free here rather
 # than at the default share. A worker beside it makes uploads' copies,
 # reaching it over the worker API on loopback.
@@ -10,7 +11,7 @@ dev:
     set -euo pipefail
     # Images in memory, and a state directory made for this run, so a restart
     # starts empty rather than with rows naming images that are gone.
-    export INSECURE_NO_AUTH=1 MIN_FREE_BYTES=1000000000 STORAGE=memory:///
+    export MIN_FREE_BYTES=1000000000 STORAGE=memory:///
     export STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/dither-dev.XXXXXX")"
     cargo build
     cargo run -q -- worker &

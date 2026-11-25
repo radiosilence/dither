@@ -20,6 +20,9 @@ flate2 = "1.1.11"
 futures-util = "0.3.34"
 http = "1.5.0"
 httpdate = "1.0.3"
+# Accounts and signing in, shared with kōan (crates/koan-auth there), pinned to
+# a commit until a kōan release publishes it.
+koan-auth = { git = "https://github.com/radiosilence/koan", rev = "3696a21a3bb0b7eae9b227a1212eed966c74f98b" }
 ipnet = "2.12.2"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 object_store = { version = "0.14.2", features = ["aws"] }

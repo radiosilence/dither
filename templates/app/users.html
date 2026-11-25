@@ -1,0 +1,17 @@
+{% extends "app/layout.html" %}
+{% block title %}{{ __("accounts") }} · dither{% endblock %}
+{% block main %}
+<h1>{{ __("accounts") }}</h1>
+<p class="text-meta text-muted">{{ __("Each account has albums of its own and sees nobody else's. Admins manage the accounts; a read-only account sees its albums and changes nothing.") }}</p>
+<div class="mt-6 flex flex-wrap gap-3" data-signals="{newuser: '', newrole: 'user'}">
+  <input data-bind:newuser placeholder="{{ __("username") }}" aria-label="{{ __("username") }}" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="64">
+  <select data-bind:newrole aria-label="{{ __("role") }}">
+    <option value="user">{{ __p("Role", "user") }}</option>
+    <option value="readonly">{{ __p("Role", "read-only") }}</option>
+    <option value="admin">{{ __p("Role", "admin") }}</option>
+  </select>
+  <button class="primary" data-on:click="@post('/users')">{{ __("make an account") }}</button>
+</div>
+{{ result|safe }}
+{{ list|safe }}
+{% endblock %}
