@@ -1558,15 +1558,30 @@ impl Db {
     /// Give the account `id` the password its owner chose, which ends every
     /// session it has, and open a new one for the browser that chose it: one
     /// transaction, so the account is never left with neither.
+    ///
+    /// Refused as `NoSuchUser` unless the account still has the password hash
+    /// its current password was checked against, and `secret` is still one of
+    /// its sessions: a reset, or a change from another browser, made while
+    /// this one was being checked wins.
     pub async fn change_password(
         &self,
         id: i64,
+        checked_hash: &str,
+        secret: &str,
         password: &str,
         ttl: Duration,
     ) -> std::result::Result<String, AccountError> {
-        let password = password.to_string();
+        let (checked_hash, secret, password) = (
+            checked_hash.to_string(),
+            secret.to_string(),
+            password.to_string(),
+        );
         self.account_write(Announce::Writes, move |tx| {
             let user = existing(tx, id)?;
+            let holder = koan_auth::sessions::holder(tx, &secret)?;
+            if user.password_hash != checked_hash || holder.is_none_or(|h| h.id != id) {
+                return Err(AccountError::NoSuchUser(id.to_string()));
+            }
             accounts::set_password(tx, &user.username, Some(&password))?;
             Ok(open_session(tx, id, ttl)?)
         })

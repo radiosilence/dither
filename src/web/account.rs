@@ -1,8 +1,7 @@
 //! `/account`: who is signed in, and changing their own password.
 //!
 //! A cut-down kōan account page. Changing the password needs the current one,
-//! and a wrong one counts against the account's budget of failures, as a
-//! sign-in does. The browser it is changed from stays signed in with a new
+//! and every try counts against a budget of the page's own, per account. The browser it is changed from stays signed in with a new
 //! session; every other session of the account ends, since a new password is
 //! how someone shuts out whoever else had the old one. A read-only account
 //! changes its own password too: it is the one write it may make.
@@ -10,7 +9,7 @@
 use askama::Template;
 use askama_gettext::Translate as _;
 use axum::extract::State;
-use axum::http::{HeaderValue, header};
+use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
@@ -20,7 +19,7 @@ use koan_auth::password::Refused;
 use super::AppState;
 use super::Helpers as _;
 use super::app::{Shell, shell};
-use crate::auth::cookie::{SESSION_COOKIE, set_cookie};
+use crate::auth::cookie::{SESSION_COOKIE, session_id, set_cookie};
 use crate::auth::session::{SESSION_TTL, Session};
 use crate::error::{AppError, AppResult};
 
@@ -48,6 +47,8 @@ enum Outcome {
     Short,
     TooMany,
     Busy,
+    /// The session ended, or the password changed elsewhere, meanwhile.
+    Lapsed,
 }
 
 #[derive(Template)]
@@ -101,13 +102,15 @@ fn answer(outcome: Outcome, secret: Option<&str>) -> AppResult<Response> {
         );
     }
     let mut response = askama_datastar::events(events);
-    if let Some(secret) = secret
-        && let Ok(cookie) = HeaderValue::from_str(&set_cookie(
+    if let Some(secret) = secret {
+        // Every other session has ended: without this one, nor would this
+        // browser stay signed in.
+        let cookie = HeaderValue::from_str(&set_cookie(
             SESSION_COOKIE,
             secret,
             SESSION_TTL.as_secs() as i64,
         ))
-    {
+        .map_err(|e| AppError::Internal(e.into()))?;
         response.headers_mut().append(header::SET_COOKIE, cookie);
     }
     Ok(response)
@@ -116,17 +119,27 @@ fn answer(outcome: Outcome, secret: Option<&str>) -> AppResult<Response> {
 pub async fn change_password(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
+    headers: HeaderMap,
     Json(new): Json<NewPassword>,
 ) -> AppResult<Response> {
     if new.password != new.confirm {
         return answer(Outcome::Mismatch, None);
     }
-    // Not a sign-in, so the networks the account signed in from are not
-    // spared: a guesser on one of them would otherwise try without limit.
-    if state.verifier.exhausted(&session.username) {
+    if koan_auth::accounts::valid_password(&new.password).is_err() {
+        return answer(Outcome::Short, None);
+    }
+    // Every try counts, on a budget of this page's own: each costs two argon2
+    // runs, and a budget shared with sign-in would let someone failing to
+    // sign in as this account stop its owner changing the password.
+    if state.password_changes.exhausted(&session.user_id) {
         return answer(Outcome::TooMany, None);
     }
+    state.password_changes.record(session.user_id);
+    let Some(secret) = session_id(&headers).map(str::to_string) else {
+        return answer(Outcome::Lapsed, None);
+    };
     let user = state.db.account_named(&session.username).await?;
+    let checked_hash = user.as_ref().map(|u| u.password_hash.clone());
     let checking = state.clone();
     let (name, current) = (session.username.clone(), new.current);
     let checked =
@@ -135,15 +148,21 @@ pub async fn change_password(
             .map_err(|e| AppError::Internal(e.into()))?;
     match checked {
         Ok(_) => {}
-        Err(Refused::Wrong) => {
-            state.verifier.failed(&session.username);
-            return answer(Outcome::Wrong, None);
-        }
+        Err(Refused::Wrong) => return answer(Outcome::Wrong, None),
         Err(Refused::Busy) => return answer(Outcome::Busy, None),
     }
+    let Some(checked_hash) = checked_hash else {
+        return answer(Outcome::Lapsed, None);
+    };
     match state
         .db
-        .change_password(session.user_id, &new.password, SESSION_TTL)
+        .change_password(
+            session.user_id,
+            &checked_hash,
+            &secret,
+            &new.password,
+            SESSION_TTL,
+        )
         .await
     {
         Ok(secret) => {
@@ -151,6 +170,7 @@ pub async fn change_password(
             answer(Outcome::Changed, Some(&secret))
         }
         Err(AccountError::ShortPassword) => answer(Outcome::Short, None),
+        Err(AccountError::NoSuchUser(_)) => answer(Outcome::Lapsed, None),
         Err(e) => Err(AppError::Internal(e.into())),
     }
 }

@@ -86,6 +86,7 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
     let state = AppState::new(Inner {
         verifier: koan_auth::password::Verifier::new(),
         sign_ins: koan_auth::limit::RateLimiter::default(),
+        password_changes: koan_auth::limit::FailureLimiter::new(5),
         setup: Some(koan_auth::setup::SetupCode::new().unwrap()),
         db,
         store,
@@ -876,6 +877,31 @@ async fn an_account_changes_its_own_password_and_signs_out_elsewhere() {
     assert!(short.text().contains("at least 8"));
     // Nothing refused ended a session.
     assert_eq!(app.get_as("/", &here).await.status, StatusCode::OK);
+    // A reset made meanwhile wins: the session that asked is gone.
+    let bob = app.session("bob").await;
+    let bob_id = app.state.db.account_named("bob").await.unwrap().unwrap().id;
+    let checked = app
+        .state
+        .db
+        .account_named("bob")
+        .await
+        .unwrap()
+        .unwrap()
+        .password_hash;
+    app.state.db.reset_password(bob_id).await.unwrap();
+    assert!(matches!(
+        app.state
+            .db
+            .change_password(
+                bob_id,
+                &checked,
+                &bob,
+                "a new password",
+                std::time::Duration::from_secs(60)
+            )
+            .await,
+        Err(koan_auth::accounts::AccountError::NoSuchUser(_))
+    ));
 
     let changed = app
         .write(

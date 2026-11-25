@@ -251,7 +251,9 @@ msgid "Signed in as %{name}, an admin."
 msgstr ""
 
 #: templates/app/account.html
-msgid "Signed in as %{name}, read-only: you see your albums and change nothing."
+msgid ""
+"Signed in as %{name}, read-only: you see your albums, and change nothing but "
+"your password."
 msgstr ""
 
 #: templates/app/account.html
@@ -336,6 +338,10 @@ msgstr ""
 
 #: templates/app/password.html
 msgid "Your password is changed, and you are signed out everywhere else."
+msgstr ""
+
+#: templates/app/password.html
+msgid "Your password was changed or reset meanwhile. Sign in again."
 msgstr ""
 
 #: templates/app/picker.html

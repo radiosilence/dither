@@ -160,6 +160,7 @@ async fn serve() -> anyhow::Result<()> {
     let state = web::AppState::new(web::Inner {
         verifier: koan_auth::password::Verifier::new(),
         sign_ins: koan_auth::limit::RateLimiter::default(),
+        password_changes: koan_auth::limit::FailureLimiter::new(5),
         setup,
         db: db.clone(),
         store: store.clone(),

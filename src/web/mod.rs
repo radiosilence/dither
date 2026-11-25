@@ -39,6 +39,9 @@ pub struct Inner {
     pub verifier: koan_auth::password::Verifier,
     /// Posts to the sign-in pages, per address.
     pub sign_ins: koan_auth::limit::RateLimiter,
+    /// Tries at changing a password, per account, whatever their outcome:
+    /// each is two argon2 runs, one under the write lock.
+    pub password_changes: koan_auth::limit::FailureLimiter<i64>,
     /// The code `/setup` asks for, logged at start while there is no
     /// account; `None` once there was one then.
     pub setup: Option<koan_auth::setup::SetupCode>,
