@@ -7,6 +7,7 @@
 //! or receives a cookie. Every route behind sign-in sits under one session
 //! layer, so a route added there later is protected by where it is added.
 
+pub mod account;
 pub mod api;
 pub mod app;
 pub mod assets;
@@ -91,6 +92,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/uploads/{id}/finish", post(api::finish))
         .merge(users::router())
+        .layer(middleware::from_fn(crate::auth::extract::require_writer))
+        // Its own password is a readonly account's one write.
+        .merge(account::router())
         .layer(middleware::from_fn(marked_writes))
         .layer(middleware::from_fn_with_state(
             state.clone(),

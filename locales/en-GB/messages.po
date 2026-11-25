@@ -90,6 +90,10 @@ msgstr ""
 msgid "Add a description"
 msgstr ""
 
+#: templates/app/account.html
+msgid "Changing it signs you out everywhere but here."
+msgstr ""
+
 #: templates/sign/join.html
 msgid "Choose a password for your account. The invite works once."
 msgstr ""
@@ -222,7 +226,7 @@ msgid ""
 "everywhere."
 msgstr ""
 
-#: templates/sign/problem.html
+#: templates/app/password.html templates/sign/problem.html
 msgid "Passwords are at least 8 characters."
 msgstr ""
 
@@ -242,6 +246,18 @@ msgid ""
 "week."
 msgstr ""
 
+#: templates/app/account.html
+msgid "Signed in as %{name}, an admin."
+msgstr ""
+
+#: templates/app/account.html
+msgid "Signed in as %{name}, read-only: you see your albums and change nothing."
+msgstr ""
+
+#: templates/app/account.html
+msgid "Signed in as %{name}."
+msgstr ""
+
 #: templates/app/invite.html
 msgid "That account no longer exists."
 msgstr ""
@@ -250,15 +266,23 @@ msgstr ""
 msgid "That isn't the setup code. It is in the server's log."
 msgstr ""
 
+#: templates/app/password.html
+msgid "The current password is wrong."
+msgstr ""
+
 #: templates/app/invite.html
 msgid "The last admin can't be removed or made anything else."
+msgstr ""
+
+#: templates/app/password.html
+msgid "The new passwords don't match."
 msgstr ""
 
 #: templates/sign/problem.html
 msgid "The passwords don't match."
 msgstr ""
 
-#: templates/sign/problem.html
+#: templates/app/password.html templates/sign/problem.html
 msgid "The server is busy. Try again in a moment."
 msgstr ""
 
@@ -298,7 +322,7 @@ msgstr ""
 msgid "This video can't play here."
 msgstr ""
 
-#: templates/sign/problem.html
+#: templates/app/password.html templates/sign/problem.html
 msgid "Too many tries. Wait a minute and try again."
 msgstr ""
 
@@ -310,12 +334,20 @@ msgstr ""
 msgid "Wrong username or password."
 msgstr ""
 
+#: templates/app/password.html
+msgid "Your password is changed, and you are signed out everywhere else."
+msgstr ""
+
 #: templates/app/picker.html
 msgid "a new album"
 msgstr ""
 
 #: templates/player.html templates/public/layout.html
 msgid "a video"
+msgstr ""
+
+#: templates/app/account.html
+msgid "account"
 msgstr ""
 
 #: templates/app/layout.html templates/app/users.html
@@ -350,6 +382,10 @@ msgstr ""
 msgid "caption"
 msgstr ""
 
+#: templates/app/account.html
+msgid "change password"
+msgstr ""
+
 #: templates/app/library.html
 msgid "choose images"
 msgstr ""
@@ -380,6 +416,10 @@ msgstr ""
 
 #: templates/app/grid.html
 msgid "couldn't process"
+msgstr ""
+
+#: templates/app/account.html
+msgid "current password"
 msgstr ""
 
 #: templates/app/album.html
@@ -470,6 +510,14 @@ msgstr ""
 msgid "new album"
 msgstr ""
 
+#: templates/app/account.html
+msgid "new password"
+msgstr ""
+
+#: templates/app/account.html
+msgid "new password again"
+msgstr ""
+
 #: templates/app/viewer.html
 msgid "next image"
 msgstr ""
@@ -514,7 +562,7 @@ msgstr ""
 msgid "other sites"
 msgstr ""
 
-#: templates/sign/join.html templates/sign/login.html templates/sign/setup.html
+#: templates/app/account.html templates/sign/join.html templates/sign/login.html templates/sign/setup.html
 msgid "password"
 msgstr ""
 
@@ -584,7 +632,7 @@ msgstr ""
 msgid "sign in"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/app/account.html templates/app/layout.html
 msgid "sign out"
 msgstr ""
 
@@ -636,7 +684,7 @@ msgstr ""
 msgid "uploads"
 msgstr ""
 
-#: templates/app/users.html templates/sign/join.html templates/sign/login.html templates/sign/setup.html
+#: templates/app/account.html templates/app/users.html templates/sign/join.html templates/sign/login.html templates/sign/setup.html
 msgid "username"
 msgstr ""
 
@@ -646,6 +694,10 @@ msgstr ""
 
 #: templates/player.html
 msgid "volume"
+msgstr ""
+
+#: templates/app/layout.html
+msgid "your account"
 msgstr ""
 
 #: templates/app/layout.html

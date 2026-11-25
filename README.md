@@ -359,7 +359,11 @@ kōan's accounts and sign-in as a crate. Nobody signs up: an admin makes an
 account, with a username and a role, and sends its owner an invite link, with
 which they choose their password. Each account has albums of its own and sees
 nobody else's. An admin also manages the accounts on `/users`; a read-only
-account signs in and sees its albums, and changes nothing.
+account signs in and sees its albums, and changes nothing but its own password.
+
+Everyone changes their own password on `/account`, giving the current one, of
+which a wrong guess counts against the account as a failed sign-in does. The
+browser it is changed from stays signed in, and every other session ends.
 
 A server with no account asks for its first admin on `/setup`, with a code it
 writes to its log at start. Whoever reached an empty server first would

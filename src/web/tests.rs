@@ -839,6 +839,108 @@ async fn a_deleted_account_takes_its_albums_and_sessions() {
 }
 
 #[tokio::test]
+async fn an_account_changes_its_own_password_and_signs_out_elsewhere() {
+    let app = app().await;
+    let here = app.session("ann").await;
+    let elsewhere = app.session("ann").await;
+    let page = app.get_as("/account", &here).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text().contains("ann"));
+    let change = |current: &str, password: &str, confirm: &str| json!({ "current": current, "password": password, "confirm": confirm });
+    let wrong = app
+        .write(
+            "POST",
+            "/account/password",
+            change("not it", "a new password", "a new password"),
+            Some(&here),
+        )
+        .await;
+    assert!(wrong.text().contains("The current password is wrong."));
+    let mismatch = app
+        .write(
+            "POST",
+            "/account/password",
+            change("a test password", "a new password", "another one"),
+            Some(&here),
+        )
+        .await;
+    assert!(mismatch.text().contains("match"));
+    let short = app
+        .write(
+            "POST",
+            "/account/password",
+            change("a test password", "short", "short"),
+            Some(&here),
+        )
+        .await;
+    assert!(short.text().contains("at least 8"));
+    // Nothing refused ended a session.
+    assert_eq!(app.get_as("/", &here).await.status, StatusCode::OK);
+
+    let changed = app
+        .write(
+            "POST",
+            "/account/password",
+            change("a test password", "a new password", "a new password"),
+            Some(&here),
+        )
+        .await;
+    assert!(changed.text().contains("Your password is changed"));
+    // This browser stays signed in with a new session; the others end.
+    let renewed = opened(&changed);
+    assert_eq!(app.get_as("/", &renewed).await.status, StatusCode::OK);
+    assert_eq!(app.get_as("/", &here).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        app.get_as("/", &elsewhere).await.status,
+        StatusCode::SEE_OTHER
+    );
+    let signed_in = app
+        .send(form(
+            "/login",
+            "username=ann&password=a+new+password&next=%2F",
+            None,
+        ))
+        .await;
+    assert_eq!(signed_in.status, StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn a_readonly_account_still_changes_its_own_password() {
+    let app = app().await;
+    let ann = app.session("ann").await;
+    let id = app.state.db.account_named("ann").await.unwrap().unwrap().id;
+    app.write(
+        "POST",
+        &format!("/users/{id}/role"),
+        json!({ "role": "readonly" }),
+        None,
+    )
+    .await;
+    let changed = app
+        .write(
+            "POST",
+            "/account/password",
+            json!({
+                "current": "a test password",
+                "password": "a new password",
+                "confirm": "a new password"
+            }),
+            Some(&ann),
+        )
+        .await;
+    assert!(
+        changed.text().contains("Your password is changed"),
+        "{}",
+        changed.text()
+    );
+    let renewed = opened(&changed);
+    let write = app
+        .write("POST", "/api/albums", json!({}), Some(&renewed))
+        .await;
+    assert_eq!(write.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn a_readonly_account_sees_and_changes_nothing() {
     let app = app().await;
     let ann = app.session("ann").await;

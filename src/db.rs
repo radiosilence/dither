@@ -1555,6 +1555,24 @@ impl Db {
         .await
     }
 
+    /// Give the account `id` the password its owner chose, which ends every
+    /// session it has, and open a new one for the browser that chose it: one
+    /// transaction, so the account is never left with neither.
+    pub async fn change_password(
+        &self,
+        id: i64,
+        password: &str,
+        ttl: Duration,
+    ) -> std::result::Result<String, AccountError> {
+        let password = password.to_string();
+        self.account_write(Announce::Writes, move |tx| {
+            let user = existing(tx, id)?;
+            accounts::set_password(tx, &user.username, Some(&password))?;
+            Ok(open_session(tx, id, ttl)?)
+        })
+        .await
+    }
+
     /// Give the account `id` a password nobody is told, which signs it out
     /// everywhere and withdraws its invites: its next invite sets one.
     pub async fn reset_password(&self, id: i64) -> std::result::Result<UserRow, AccountError> {

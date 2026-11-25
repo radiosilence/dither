@@ -1,0 +1,22 @@
+{% extends "app/layout.html" %}
+{% block title %}{{ __("account") }} · dither{% endblock %}
+{% block main %}
+<h1>{{ __("account") }}</h1>
+<p class="text-meta text-muted">{% match role %}{% when "admin" %}{{ __("Signed in as %{name}, an admin.").with("name", shell.login) }}{% when "readonly" %}{{ __("Signed in as %{name}, read-only: you see your albums and change nothing.").with("name", shell.login) }}{% else %}{{ __("Signed in as %{name}.").with("name", shell.login) }}{% endmatch %} <a class="text-muted hover:text-ink" href="/auth/logout">{{ __("sign out") }}</a></p>
+<h2>{{ __("password") }}</h2>
+<p class="text-meta text-muted">{{ __("Changing it signs you out everywhere but here.") }}</p>
+<form class="grid max-w-form gap-3" data-signals="{current: '', password: '', confirm: ''}" data-on:submit__prevent="@post('/account/password')">
+  <input type="text" class="w-full" value="{{ shell.login }}" autocomplete="username" aria-label="{{ __("username") }}" readonly>
+  <label class="grid gap-2 text-meta">{{ __("current password") }}
+    <input type="password" class="w-full" data-bind:current autocomplete="current-password" required>
+  </label>
+  <label class="grid gap-2 text-meta">{{ __("new password") }}
+    <input type="password" class="w-full" data-bind:password autocomplete="new-password" minlength="8" required>
+  </label>
+  <label class="grid gap-2 text-meta">{{ __("new password again") }}
+    <input type="password" class="w-full" data-bind:confirm autocomplete="new-password" minlength="8" required>
+  </label>
+  <button class="primary">{{ __("change password") }}</button>
+</form>
+{{ result|safe }}
+{% endblock %}
