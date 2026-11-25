@@ -314,20 +314,16 @@ fn counted(
     response
 }
 
-/// What is not there yet, an upload still being made: a 404 that nothing
-/// keeps, since its link is handed out before it is ready.
-async fn not_yet() -> Response {
-    let mut response = not_found().await;
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-}
-
+/// A 404 that nothing keeps. What is missing to one person can be there for
+/// another (a private album's owner) or a moment later (an upload, whose
+/// link is handed out before it is ready), and a shared cache keys neither.
 pub async fn not_found() -> Response {
     let html = Missing.render().unwrap_or_default();
     let mut response = page(html, false, false);
     *response.status_mut() = StatusCode::NOT_FOUND;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
@@ -472,7 +468,7 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
         Shown::Recheck => return recheck(&format!("/{id}")),
     }
     if !image.ready() {
-        return not_yet().await;
+        return not_found().await;
     }
     let siblings = state.db.count(&album.id).await.unwrap_or(1);
     let public = &state.config.public_url;
@@ -585,7 +581,7 @@ async fn file(
         return not_found().await;
     }
     if !image.ready() {
-        return not_yet().await;
+        return not_found().await;
     }
     // A video's display copy is what plays, an image's a smaller picture.
     let display = if image.is_video() { "mp4" } else { "webp" };

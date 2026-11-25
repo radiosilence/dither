@@ -78,7 +78,7 @@ pub async fn serve(Path(name): Path<String>, RawQuery(query): RawQuery) -> Respo
         "geist-mono.woff2" => respond(GEIST_MONO, "font/woff2", Some("v=")),
         "icon.svg" => respond(ICON_SVG, "image/svg+xml", q),
         "icon-180.png" => respond(ICON_PNG, "image/png", q),
-        _ => StatusCode::NOT_FOUND.into_response(),
+        _ => (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]).into_response(),
     }
 }
 

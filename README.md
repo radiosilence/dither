@@ -149,11 +149,17 @@ two days counts once on each. A restart draws a new salt, so someone seen
 before and after a restart counts twice that day. The client's address is the
 last `X-Forwarded-For` entry outside `TRUSTED_PROXIES`, or else the
 connection's. The proxy in front (Traefik, as deployed) appends the address it
-saw. Behind a CDN that address is the CDN edge's, so list the CDN's ranges in
-`TRUSTED_PROXIES` and have the proxy keep the `X-Forwarded-For` the CDN sends,
-where the CDN has appended the client's address. Anything a client sends sits
-to the left of both and is never chosen. The address is used only inside the
-hash. A day remembers at most 500,000 visitors; past
+saw, which behind a CDN is the CDN edge's, so list the CDN's ranges in
+`TRUSTED_PROXIES`. If the proxy keeps the `X-Forwarded-For` the CDN sends, the
+client's address is the entry the CDN appended, and anything a client sends
+sits to the left of it and is never chosen. If it does not (keeping it for
+every site on the CDN would let any of them claim any address), set
+`ADDRESS_HEADER` to the header the CDN puts the client's address in
+(`CF-Connecting-IP`); it is read only when the last entry is in
+`TRUSTED_PROXIES`, so a request that skipped the CDN cannot choose its
+address. With `ADDRESS_HEADER` set, list only the proxies that set it: any
+other trusted proxy would let a request through it name its own address. The
+address is used only inside the hash. A day remembers at most 500,000 visitors; past
 that, new ones are not counted until midnight.
 
 A CDN in front serves what it has cached without asking dither, so those
@@ -395,6 +401,9 @@ name out of public repositories, closes both.
   (see *Signing in*).
 - A file's type is decided by its signature, never by its name or the type
   the browser claims. Decoding is limited in pixels and allocation.
+- A 404 is never cached, since a private album's files are missing to
+  everyone but their owner, who would otherwise be shown a 404 a shared cache
+  kept from someone else's request.
 - Files in an album that is not private are cached by browsers for a year and
   by shared caches (a CDN in front) for ten minutes, so making an album
   private or deleting an image stops it being served within ten minutes. A
@@ -422,6 +431,7 @@ startup.
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |
 | `DISK_CACHE_BYTES` | 0 | With a bucket, images kept on this machine's disk as well; 0 for none. |
 | `TRUSTED_PROXIES` | unset | Comma-separated addresses or CIDR ranges of a CDN in front, passed over in `X-Forwarded-For` when counting visitors. |
+| `ADDRESS_HEADER` | unset | The header a trusted proxy puts the client's address in (`CF-Connecting-IP`), read only on requests from `TRUSTED_PROXIES`. |
 | `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |

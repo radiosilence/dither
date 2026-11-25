@@ -1,0 +1,1 @@
+- **Client address from a trusted proxy's header.** `ADDRESS_HEADER` (`addressHeader`) names the header a trusted proxy puts the client's address in, such as `CF-Connecting-IP`, for an ingress that does not keep the CDN's `X-Forwarded-For`; it is read only on requests from `TRUSTED_PROXIES`.
