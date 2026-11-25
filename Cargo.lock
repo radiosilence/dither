@@ -1592,7 +1592,7 @@ dependencies = [
 [[package]]
 name = "koan-auth"
 version = "0.75.1"
-source = "git+https://github.com/radiosilence/koan?rev=3696a21a3bb0b7eae9b227a1212eed966c74f98b#3696a21a3bb0b7eae9b227a1212eed966c74f98b"
+source = "git+https://github.com/radiosilence/koan?rev=cfda38adc6f1161001fbe7d6c9e7dcbec42caba6#cfda38adc6f1161001fbe7d6c9e7dcbec42caba6"
 dependencies = [
  "argon2",
  "base64",
