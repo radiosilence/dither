@@ -1,0 +1,1 @@
+- **Filled primary actions.** Add images, choose images and move are filled with the accent.
