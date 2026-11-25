@@ -155,8 +155,10 @@ client's address is the entry the CDN appended, and anything a client sends
 sits to the left of it and is never chosen. If it does not (keeping it for
 every site on the CDN would let any of them claim any address), set
 `ADDRESS_HEADER` to the header the CDN puts the client's address in
-(`CF-Connecting-IP`); it is read only when the last entry is a trusted
-proxy's, so a request that skipped the CDN cannot choose its address. The
+(`CF-Connecting-IP`); it is read only when the last entry is in
+`TRUSTED_PROXIES`, so a request that skipped the CDN cannot choose its
+address. With `ADDRESS_HEADER` set, list only the proxies that set it: any
+other trusted proxy would let a request through it name its own address. The
 address is used only inside the hash. A day remembers at most 500,000 visitors; past
 that, new ones are not counted until midnight.
 

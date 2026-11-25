@@ -214,10 +214,12 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
         .collect();
     let given = match (&state.config.address_header, hops.first()) {
         (Some(name), Some(last)) if trusted(last) => h
-            .get(name)
+            .get_all(name)
+            .iter()
+            .next_back()
             .and_then(|v| v.to_str().ok())
             .map(str::trim)
-            .filter(|a| !a.is_empty()),
+            .filter(|a| a.parse::<std::net::IpAddr>().is_ok()),
         _ => None,
     };
     let forwarded = given

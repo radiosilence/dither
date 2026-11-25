@@ -183,6 +183,28 @@ impl Config {
             None if worker => "memory:///".into(),
             None => bail!("STORAGE is required: s3://bucket, or memory:/// for development"),
         };
+        let trusted_proxies: Vec<ipnet::IpNet> = var("TRUSTED_PROXIES")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                v.parse::<ipnet::IpNet>()
+                    .or_else(|_| v.parse::<std::net::IpAddr>().map(Into::into))
+                    .map_err(|_| {
+                        anyhow::anyhow!("TRUSTED_PROXIES must be addresses or CIDR ranges, not {v}")
+                    })
+            })
+            .collect::<Result<_>>()?;
+        let address_header = var("ADDRESS_HEADER")
+            .map(|v| {
+                axum::http::HeaderName::from_bytes(v.trim().as_bytes())
+                    .map_err(|_| anyhow::anyhow!("ADDRESS_HEADER must be a header name"))
+            })
+            .transpose()?;
+        if address_header.is_some() && trusted_proxies.is_empty() {
+            bail!("ADDRESS_HEADER is read only from TRUSTED_PROXIES, so it needs them");
+        }
         Ok(Self {
             bind_addr,
             metrics_addr: var("METRICS_ADDR"),
@@ -203,27 +225,8 @@ impl Config {
                         .map_err(|_| anyhow::anyhow!("MIN_FREE_BYTES must be a number"))
                 })
                 .transpose()?,
-            trusted_proxies: var("TRUSTED_PROXIES")
-                .unwrap_or_default()
-                .split(',')
-                .map(str::trim)
-                .filter(|v| !v.is_empty())
-                .map(|v| {
-                    v.parse::<ipnet::IpNet>()
-                        .or_else(|_| v.parse::<std::net::IpAddr>().map(Into::into))
-                        .map_err(|_| {
-                            anyhow::anyhow!(
-                                "TRUSTED_PROXIES must be addresses or CIDR ranges, not {v}"
-                            )
-                        })
-                })
-                .collect::<Result<_>>()?,
-            address_header: var("ADDRESS_HEADER")
-                .map(|v| {
-                    axum::http::HeaderName::from_bytes(v.trim().as_bytes())
-                        .map_err(|_| anyhow::anyhow!("ADDRESS_HEADER must be a header name"))
-                })
-                .transpose()?,
+            trusted_proxies,
+            address_header,
             video: Video {
                 mode: match or("VIDEO", "auto").as_str() {
                     "auto" => VideoMode::Auto,
