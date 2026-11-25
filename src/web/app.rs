@@ -35,36 +35,33 @@ fn cut(s: &str, max: usize) -> String {
 }
 
 /// Facts the layout needs on every page.
-struct Shell {
-    login: String,
-    max_upload: u64,
+pub(crate) struct Shell {
+    pub(crate) login: String,
+    /// Whether to offer the accounts page.
+    pub(crate) admin: bool,
+    pub(crate) max_upload: u64,
     /// The limit for a video; `None` when the server takes none.
-    max_video: Option<u64>,
-    chunk: u64,
+    pub(crate) max_video: Option<u64>,
+    pub(crate) chunk: u64,
     /// The running version, shown to the signed-in only: the public pages do
     /// not say what they run.
-    version: &'static str,
+    pub(crate) version: &'static str,
 }
 
 impl Shell {
-    fn max_label(&self) -> String {
+    pub(crate) fn max_label(&self) -> String {
         human(self.max_upload)
     }
 
-    fn max_video_label(&self) -> String {
+    pub(crate) fn max_video_label(&self) -> String {
         self.max_video.map(human).unwrap_or_default()
     }
 }
 
-async fn shell(state: &AppState, session: &Session) -> Shell {
+pub(crate) async fn shell(state: &AppState, session: &Session) -> Shell {
     Shell {
-        login: state
-            .db
-            .login_of(&session.sub)
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| session.sub.clone()),
+        login: session.username.clone(),
+        admin: session.admin(),
         max_upload: state.config.max_upload_bytes,
         max_video: state.uploads.max_video_bytes(),
         chunk: CHUNK,
@@ -294,11 +291,8 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response
     if on_public_host(&state.config, &headers) {
         return crate::web::public::landing().await;
     }
-    let Some(session) = crate::auth::extract::current(&state, &headers)
-        .await
-        .filter(|s| !crate::auth::extract::stale(&state, s))
-    else {
-        return Redirect::to("/auth/login").into_response();
+    let Some(session) = crate::auth::extract::current(&state, &headers).await else {
+        return Redirect::to("/login").into_response();
     };
     match library(&state, &session).await {
         Ok(html) => Html(html).into_response(),
@@ -317,11 +311,11 @@ async fn library(state: &AppState, session: &Session) -> AppResult<String> {
 
 /// The library's live parts: the albums, and what they add up to.
 async fn library_parts(state: &AppState, session: &Session) -> AppResult<(String, String)> {
-    let cards = state.db.cards(&session.sub).await?;
+    let cards = state.db.cards(&session.username).await?;
     let albums = render(&Albums {
         cards: cards.iter().map(CardView::new).collect(),
     })?;
-    let (images, bytes) = state.db.usage(&session.sub).await?;
+    let (images, bytes) = state.db.usage(&session.username).await?;
     let usage = render(&Usage {
         albums: cards.len() as u64,
         images,
@@ -335,7 +329,7 @@ async fn owned(state: &AppState, session: &Session, id: &str) -> AppResult<crate
         return Err(AppError::NotFound);
     }
     match state.db.album(id).await? {
-        Some(album) if album.owner == session.sub => Ok(album),
+        Some(album) if album.owner == session.username => Ok(album),
         _ => Err(AppError::NotFound),
     }
 }
@@ -369,14 +363,8 @@ pub async fn album(
         let path = uri.path_and_query().map_or("/", |p| p.as_str());
         Redirect::to(&crate::auth::routes::login_url(path)).into_response()
     };
-    // A day-old sign-in goes back through the provider before a page is
-    // drawn for it, as behind the session layer.
-    let stale = session
-        .as_ref()
-        .is_some_and(|s| crate::auth::extract::stale(&state, s));
     Ok(match (session, found) {
-        (Some(_), _) if stale && page_load => sign_in(),
-        (Some(session), Some(album)) if album.owner == session.sub => {
+        (Some(session), Some(album)) if album.owner == session.username => {
             Html(editor(&state, &session, album).await?).into_response()
         }
         (None, _) if app_request => StatusCode::UNAUTHORIZED.into_response(),
@@ -443,7 +431,7 @@ pub async fn album_meta(
 ) -> AppResult<StatusCode> {
     edit.title = edit.title.map(|t| cut(&t, TITLE_MAX));
     edit.description = edit.description.map(|d| cut(&d, TEXT_MAX));
-    if state.db.edit_album(&session.sub, &id, edit).await? {
+    if state.db.edit_album(&session.username, &id, edit).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)
@@ -461,7 +449,7 @@ pub async fn reorder(
     Path(id): Path<String>,
     Json(body): Json<Ids>,
 ) -> AppResult<StatusCode> {
-    if state.db.reorder(&session.sub, &id, body.ids).await? {
+    if state.db.reorder(&session.username, &id, body.ids).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AppError::NotFound)
@@ -482,7 +470,7 @@ pub async fn cover(
 ) -> AppResult<Response> {
     if !state
         .db
-        .set_cover(&session.sub, &id, body.image.as_deref())
+        .set_cover(&session.username, &id, body.image.as_deref())
         .await?
     {
         return Err(AppError::NotFound);
@@ -500,7 +488,7 @@ pub async fn delete_album(
 ) -> AppResult<StatusCode> {
     let images = state
         .db
-        .delete_album(&session.sub, &id)
+        .delete_album(&session.username, &id)
         .await?
         .ok_or(AppError::NotFound)?;
     let count = images.len();
@@ -523,7 +511,7 @@ pub async fn caption(
 ) -> AppResult<StatusCode> {
     if state
         .db
-        .set_caption(&session.sub, &id, &cut(&body.caption, TEXT_MAX))
+        .set_caption(&session.username, &id, &cut(&body.caption, TEXT_MAX))
         .await?
     {
         Ok(StatusCode::NO_CONTENT)
@@ -551,12 +539,15 @@ pub async fn move_images(
         None => {
             state
                 .db
-                .create_album(&session.sub, &cut(&body.title, TITLE_MAX))
+                .create_album(&session.username, &cut(&body.title, TITLE_MAX))
                 .await?
                 .id
         }
     };
-    let moved = state.db.move_images(&session.sub, body.ids, &to).await?;
+    let moved = state
+        .db
+        .move_images(&session.username, body.ids, &to)
+        .await?;
     Ok(Json(serde_json::json!({ "moved": moved, "to": to })))
 }
 
@@ -565,7 +556,7 @@ pub async fn delete_images(
     Extension(session): Extension<Session>,
     Json(body): Json<Ids>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let deleted = state.db.delete_images(&session.sub, body.ids).await?;
+    let deleted = state.db.delete_images(&session.username, body.ids).await?;
     let count = deleted.len();
     state.uploads.jobs.forget(&deleted).await;
     crate::store::discard(&state.store, &state.db, deleted).await;
@@ -578,7 +569,7 @@ pub async fn picker(
     Extension(session): Extension<Session>,
     Path(id): Path<String>,
 ) -> AppResult<Html<String>> {
-    let cards = state.db.cards(&session.sub).await?;
+    let cards = state.db.cards(&session.username).await?;
     Ok(Html(render(&Picker {
         albums: cards
             .iter()
@@ -603,7 +594,7 @@ async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult
         return Err(AppError::NotFound);
     }
     let (image, album) = state.db.image(id).await?.ok_or(AppError::NotFound)?;
-    if album.owner != session.sub {
+    if album.owner != session.username {
         return Err(AppError::NotFound);
     }
     let images = state.db.images(&album.id).await?;
@@ -700,8 +691,12 @@ pub async fn stream(
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     let mut changes = state.db.changes();
     let mut ticks = state.uploads.jobs.ticks();
-    let me: std::sync::Arc<str> = session.sub.as_str().into();
+    let me: std::sync::Arc<str> = session.username.as_str().into();
     let mut stopping = state.stopping.clone();
+    // A change to the account (a new role or password, its deletion) since
+    // its session was read ends the stream; the page's next request is
+    // authenticated as things then stand.
+    let account = session.mark;
     let events = async_stream::stream! {
         let mut sent: HashMap<&'static str, String> = HashMap::new();
         // The album's images as last drawn: progress is sent for these.
@@ -749,6 +744,7 @@ pub async fn stream(
                     },
                     tick = ticks.recv(), if q.album.is_some() => tick,
                     _ = stopping.wait_for(|s| *s) => break false,
+                    () = koan_auth::changes::account_changed_since(session.user_id, account) => break false,
                 };
                 if let Ok(tick) = tick
                     && tick.owner == me

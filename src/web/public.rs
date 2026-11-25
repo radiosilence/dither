@@ -343,33 +343,16 @@ pub async fn robots() -> Response {
 
 /// Whether the person asking may see `album`. A private album is its
 /// owner's alone, and never on the public domain, which carries no session.
-/// Whether `album` is shown to who is asking.
-#[derive(PartialEq)]
-enum Shown {
-    Yes,
-    No,
-    /// To its owner, whose sign-in is a day old: a page load goes back
-    /// through the identity provider first, as the app's pages do.
-    Recheck,
-}
-
-async fn visible(state: &AppState, headers: &HeaderMap, album: &Album) -> Shown {
+async fn visible(state: &AppState, headers: &HeaderMap, album: &Album) -> bool {
     if !album.private {
-        return Shown::Yes;
+        return true;
     }
     if on_public_host(&state.config, headers) {
-        return Shown::No;
+        return false;
     }
-    match crate::auth::extract::current(state, headers).await {
-        Some(s) if s.sub == album.owner && crate::auth::extract::stale(state, &s) => Shown::Recheck,
-        Some(s) if s.sub == album.owner => Shown::Yes,
-        _ => Shown::No,
-    }
-}
-
-/// A page of a private album its owner asked for on a day-old sign-in.
-fn recheck(path: &str) -> Response {
-    axum::response::Redirect::to(&crate::auth::routes::login_url(path)).into_response()
+    crate::auth::extract::current(state, headers)
+        .await
+        .is_some_and(|s| s.username == album.owner)
 }
 
 pub async fn album(
@@ -383,10 +366,8 @@ pub async fn album(
     let Ok(Some(album)) = state.db.album(&id).await else {
         return not_found().await;
     };
-    match visible(&state, &headers, &album).await {
-        Shown::Yes => {}
-        Shown::No => return not_found().await,
-        Shown::Recheck => return recheck(&format!("/a/{id}")),
+    if !visible(&state, &headers, &album).await {
+        return not_found().await;
     }
     let Ok(images) = state.db.images(&id).await else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -462,10 +443,8 @@ async fn image_page(state: &AppState, headers: &HeaderMap, id: &str) -> Response
     let Ok(Some((image, album))) = state.db.image(id).await else {
         return not_found().await;
     };
-    match visible(state, headers, &album).await {
-        Shown::Yes => {}
-        Shown::No => return not_found().await,
-        Shown::Recheck => return recheck(&format!("/{id}")),
+    if !visible(state, headers, &album).await {
+        return not_found().await;
     }
     if !image.ready() {
         return not_found().await;
@@ -577,7 +556,7 @@ async fn file(
     let Ok(Some((image, album))) = state.db.image(id).await else {
         return not_found().await;
     };
-    if visible(state, headers, &album).await == Shown::No {
+    if !visible(state, headers, &album).await {
         return not_found().await;
     }
     if !image.ready() {

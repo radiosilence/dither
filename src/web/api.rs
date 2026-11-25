@@ -57,7 +57,7 @@ pub async fn create_album(
         .chars()
         .take(300)
         .collect();
-    let album = state.db.create_album(&session.sub, &title).await?;
+    let album = state.db.create_album(&session.username, &title).await?;
     Ok(Json(json!({ "id": album.id })))
 }
 
@@ -165,7 +165,7 @@ pub async fn begin(
         .collect();
     match state
         .db
-        .begin_uploads(&session.sub, &album, files, batch.as_recorded)
+        .begin_uploads(&session.username, &album, files, batch.as_recorded)
         .await
     {
         Ok(Some(uploads)) => Json(json!({
@@ -184,7 +184,7 @@ async fn mine(state: &AppState, session: &Session, id: &str) -> AppResult<Upload
         return Err(AppError::NotFound);
     }
     match state.db.upload(id).await? {
-        Some(u) if u.owner == session.sub => Ok(u),
+        Some(u) if u.owner == session.username => Ok(u),
         _ => Err(AppError::NotFound),
     }
 }

@@ -6,7 +6,7 @@ msgstr ""
 "Language: en-GB\n"
 "Plural-Forms: nplurals=2; plural=n != 1;\n"
 
-#: templates/app/usage.html
+#: templates/app/accounts.html templates/app/usage.html
 msgid "%{count} album"
 msgid_plural "%{count} albums"
 msgstr[0] ""
@@ -36,6 +36,12 @@ msgstr ""
 
 #: templates/app/layout.html
 msgid "%{done} uploaded, %{failed} failed"
+msgstr ""
+
+#: templates/app/invite.html
+msgid ""
+"%{name}'s password is reset: they are signed out everywhere, and earlier "
+"links no longer work. Send them this link to choose a new one."
 msgstr ""
 
 #: templates/app/viewer.html
@@ -68,12 +74,24 @@ msgstr ""
 msgid "%{why}; retrying"
 msgstr ""
 
+#: templates/app/accounts.html
+msgid "(you)"
+msgstr ""
+
+#: templates/sign/login.html
+msgid "Accounts are made by an admin, who sends an invite."
+msgstr ""
+
 #: templates/app/viewer.html
 msgid "Add a caption"
 msgstr ""
 
 #: templates/app/album.html
 msgid "Add a description"
+msgstr ""
+
+#: templates/sign/join.html
+msgid "Choose a password for your account. The invite works once."
 msgstr ""
 
 #: templates/app/layout.html
@@ -110,6 +128,12 @@ msgstr ""
 msgid "Couldn't set the cover."
 msgstr ""
 
+#: templates/app/accounts.html
+msgid ""
+"Delete this account, with its albums and images? Their links stop working. "
+"This can't be undone."
+msgstr ""
+
 #: templates/app/layout.html
 msgid ""
 "Delete this album and its image? Its link stops working. This can't be "
@@ -133,6 +157,12 @@ msgstr[1] ""
 
 #: templates/player.html
 msgid "Download it"
+msgstr ""
+
+#: templates/app/users.html
+msgid ""
+"Each account has albums of its own and sees nobody else's. Admins manage the "
+"accounts; a read-only account sees its albums and changes nothing."
 msgstr ""
 
 #: templates/app/layout.html
@@ -178,6 +208,10 @@ msgstr[1] ""
 msgid "No albums yet. Drop some images in to start one."
 msgstr ""
 
+#: templates/app/invite.html
+msgid "Not your own account: another admin can do that."
+msgstr ""
+
 #: templates/app/grid.html
 msgid "Nothing here yet."
 msgstr ""
@@ -188,12 +222,62 @@ msgid ""
 "everywhere."
 msgstr ""
 
+#: templates/sign/problem.html
+msgid "Passwords are at least 8 characters."
+msgstr ""
+
 #: templates/app/viewer.html
 msgid "Processing. It can be shared once it's done."
 msgstr ""
 
+#: templates/app/accounts.html
+msgid ""
+"Reset this account's password? It is signed out everywhere, and links "
+"already sent stop working."
+msgstr ""
+
+#: templates/app/invite.html
+msgid ""
+"Send %{name} this link. They choose a password with it; it works once, for a "
+"week."
+msgstr ""
+
+#: templates/app/invite.html
+msgid "That account no longer exists."
+msgstr ""
+
+#: templates/sign/problem.html
+msgid "That isn't the setup code. It is in the server's log."
+msgstr ""
+
+#: templates/app/invite.html
+msgid "The last admin can't be removed or made anything else."
+msgstr ""
+
+#: templates/sign/problem.html
+msgid "The passwords don't match."
+msgstr ""
+
+#: templates/sign/problem.html
+msgid "The server is busy. Try again in a moment."
+msgstr ""
+
+#: templates/sign/setup.html
+msgid "The server writes the code to its log when it starts with no account."
+msgstr ""
+
+#: templates/app/invite.html
+msgid "There is already an account with that name."
+msgstr ""
+
 #: templates/app/deleted.html
 msgid "This album has been deleted."
+msgstr ""
+
+#: templates/sign/problem.html
+msgid ""
+"This invite isn't valid any more: it has been used or has expired. Ask for "
+"another."
 msgstr ""
 
 #: templates/public/missing.html
@@ -204,8 +288,26 @@ msgstr ""
 msgid "This server can't process videos."
 msgstr ""
 
+#: templates/sign/setup.html
+msgid ""
+"This server has no account yet. Make the first one: it is an admin, and "
+"invites everyone else."
+msgstr ""
+
 #: templates/player.html
 msgid "This video can't play here."
+msgstr ""
+
+#: templates/sign/problem.html
+msgid "Too many tries. Wait a minute and try again."
+msgstr ""
+
+#: templates/app/invite.html templates/sign/problem.html
+msgid "Usernames are 1 to 64 characters, without spaces."
+msgstr ""
+
+#: templates/sign/problem.html
+msgid "Wrong username or password."
 msgstr ""
 
 #: templates/app/picker.html
@@ -214,6 +316,10 @@ msgstr ""
 
 #: templates/player.html templates/public/layout.html
 msgid "a video"
+msgstr ""
+
+#: templates/app/layout.html templates/app/users.html
+msgid "accounts"
 msgstr ""
 
 #: templates/app/album.html
@@ -248,7 +354,7 @@ msgstr ""
 msgid "choose images"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/app/album.html templates/app/invite.html
 msgid "copy link"
 msgstr ""
 
@@ -284,7 +390,7 @@ msgstr ""
 msgid "description"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/app/layout.html templates/sign/layout.html
 msgid "dither: your albums"
 msgstr ""
 
@@ -302,6 +408,14 @@ msgstr ""
 
 #: templates/app/grid.html
 msgid "has a caption"
+msgstr ""
+
+#: templates/app/invite.html
+msgid "invite link"
+msgstr ""
+
+#: templates/sign/join.html
+msgid "join"
 msgstr ""
 
 #: templates/app/album.html templates/app/library.html
@@ -332,8 +446,16 @@ msgstr ""
 msgid "linked from"
 msgstr ""
 
+#: templates/app/users.html
+msgid "make an account"
+msgstr ""
+
 #: templates/app/viewer.html
 msgid "make cover"
+msgstr ""
+
+#: templates/sign/setup.html
+msgid "make the account"
 msgstr ""
 
 #: templates/app/layout.html
@@ -392,6 +514,14 @@ msgstr ""
 msgid "other sites"
 msgstr ""
 
+#: templates/sign/join.html templates/sign/login.html templates/sign/setup.html
+msgid "password"
+msgstr ""
+
+#: templates/sign/join.html templates/sign/setup.html
+msgid "password again"
+msgstr ""
+
 #: templates/app/layout.html
 msgid "pasted image"
 msgstr ""
@@ -430,8 +560,28 @@ msgstr ""
 msgid "refused (%{status})"
 msgstr ""
 
+#: templates/app/accounts.html
+msgid "reset password"
+msgstr ""
+
+#: templates/app/accounts.html templates/app/users.html
+msgid "role"
+msgstr ""
+
+#: templates/sign/setup.html
+msgid "set up"
+msgstr ""
+
+#: templates/sign/setup.html
+msgid "setup code"
+msgstr ""
+
 #: templates/app/views.html
 msgid "shared on"
+msgstr ""
+
+#: templates/sign/login.html
+msgid "sign in"
 msgstr ""
 
 #: templates/app/layout.html
@@ -486,6 +636,10 @@ msgstr ""
 msgid "uploads"
 msgstr ""
 
+#: templates/app/users.html templates/sign/join.html templates/sign/login.html templates/sign/setup.html
+msgid "username"
+msgstr ""
+
 #: templates/app/grid.html
 msgid "video"
 msgstr ""
@@ -504,7 +658,7 @@ msgctxt "An upload's state"
 msgid "processing"
 msgstr ""
 
-#: templates/app/album.html templates/app/layout.html templates/app/viewer.html
+#: templates/app/accounts.html templates/app/album.html templates/app/layout.html templates/app/viewer.html
 msgctxt "Button"
 msgid "delete"
 msgstr ""
@@ -537,6 +691,11 @@ msgstr ""
 #: templates/player.html
 msgctxt "Button: let a video be heard"
 msgid "unmute"
+msgstr ""
+
+#: templates/app/accounts.html
+msgctxt "Button: make an invite link"
+msgid "invite"
 msgstr ""
 
 #: templates/app/album.html
@@ -617,6 +776,21 @@ msgstr ""
 #: templates/app/grid.html
 msgctxt "Mark on the album's cover image"
 msgid "cover"
+msgstr ""
+
+#: templates/app/accounts.html templates/app/users.html
+msgctxt "Role"
+msgid "admin"
+msgstr ""
+
+#: templates/app/accounts.html templates/app/users.html
+msgctxt "Role"
+msgid "read-only"
+msgstr ""
+
+#: templates/app/accounts.html templates/app/users.html
+msgctxt "Role"
+msgid "user"
 msgstr ""
 
 #: templates/app/viewer.html

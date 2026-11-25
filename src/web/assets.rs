@@ -16,6 +16,8 @@ const APP_CSS: &str = include_str!("../../assets/app.css");
 const APP_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/app.js"));
 /// browser/player.ts, likewise: the video player, on public pages too.
 const PLAYER_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/player.js"));
+/// browser/join.ts: moves an invite from the address into the join form.
+const JOIN_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/join.js"));
 /// The typeface @radiosilence/theme sets; app.css names it by a URL relative
 /// to itself.
 const GEIST_MONO: &[u8] = include_bytes!("../../assets/geist-mono.woff2");
@@ -38,6 +40,8 @@ static APP_JS_URL: LazyLock<String> =
     LazyLock::new(|| format!("/assets/app.js?v={}", fingerprint(APP_JS.as_bytes())));
 static PLAYER_JS_URL: LazyLock<String> =
     LazyLock::new(|| format!("/assets/player.js?v={}", fingerprint(PLAYER_JS.as_bytes())));
+static JOIN_JS_URL: LazyLock<String> =
+    LazyLock::new(|| format!("/assets/join.js?v={}", fingerprint(JOIN_JS.as_bytes())));
 
 pub fn css_url() -> &'static str {
     &CSS_URL
@@ -53,6 +57,10 @@ pub fn app_js_url() -> &'static str {
 
 pub fn player_js_url() -> &'static str {
     &PLAYER_JS_URL
+}
+
+pub fn join_js_url() -> &'static str {
+    &JOIN_JS_URL
 }
 
 fn respond(body: impl IntoResponse, kind: &'static str, query: Option<&str>) -> Response {
@@ -75,6 +83,7 @@ pub async fn serve(Path(name): Path<String>, RawQuery(query): RawQuery) -> Respo
         "app.css" => respond(APP_CSS, "text/css; charset=utf-8", q),
         "app.js" => respond(APP_JS, "text/javascript; charset=utf-8", q),
         "player.js" => respond(PLAYER_JS, "text/javascript; charset=utf-8", q),
+        "join.js" => respond(JOIN_JS, "text/javascript; charset=utf-8", q),
         "geist-mono.woff2" => respond(GEIST_MONO, "font/woff2", Some("v=")),
         "icon.svg" => respond(ICON_SVG, "image/svg+xml", q),
         "icon-180.png" => respond(ICON_PNG, "image/png", q),

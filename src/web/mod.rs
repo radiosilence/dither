@@ -12,6 +12,7 @@ pub mod app;
 pub mod assets;
 pub mod clip;
 pub mod public;
+pub mod users;
 pub mod work;
 
 use std::sync::Arc;
@@ -23,7 +24,6 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 
-use crate::auth::session::Sessions;
 use crate::config::Config;
 use crate::db::Db;
 use crate::store::Store;
@@ -33,8 +33,14 @@ pub struct Inner {
     pub config: Config,
     pub db: Db,
     pub store: Store,
-    pub sessions: Sessions,
-    pub http: reqwest::Client,
+    /// Every password checked goes through this, with its ceiling on argon2
+    /// and its budget of failures per account.
+    pub verifier: koan_auth::password::Verifier,
+    /// Posts to the sign-in pages, per address.
+    pub sign_ins: koan_auth::limit::RateLimiter,
+    /// The code `/setup` asks for, logged at start while there is no
+    /// account; `None` once there was one then.
+    pub setup: Option<koan_auth::setup::SetupCode>,
     pub uploads: Arc<Uploads>,
     /// What the public routes served, counted anonymously.
     pub views: crate::views::Views,
@@ -84,6 +90,7 @@ pub fn router(state: AppState) -> Router {
             put(api::chunk).get(api::status).delete(api::cancel),
         )
         .route("/api/uploads/{id}/finish", post(api::finish))
+        .merge(users::router())
         .layer(middleware::from_fn(marked_writes))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -176,12 +183,8 @@ fn fetcher(agent: &str) -> Option<&'static str> {
 /// outermost layer, so the bytes counted are the ones sent, compressed or
 /// not.
 ///
-/// The client's address is the last `X-Forwarded-For` entry outside the
-/// trusted proxies' ranges, else the peer's. Traefik appends the address it
-/// saw, and a CDN in front (trusted) appends the client's before that, so
-/// whatever a client sends sits to the left of both and is never chosen.
-/// Where the last entry is a trusted proxy's, the address header it set
-/// comes first. It goes into the visitor's hash and nowhere else.
+/// The client's address ([`forwarded`], else the peer's) goes into the
+/// visitor's hash and nowhere else.
 async fn count(State(state): State<AppState>, request: Request, next: Next) -> Response {
     if request.method() != Method::GET {
         return next.run(request).await;
@@ -194,37 +197,7 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
     };
     let session = crate::auth::cookie::session_id(h).map(str::to_string);
     let agent = text(header::USER_AGENT).to_string();
-    let trusted = |a: &str| {
-        a.parse::<std::net::IpAddr>().is_ok_and(|ip| {
-            state
-                .config
-                .trusted_proxies
-                .iter()
-                .any(|net| net.contains(&ip))
-        })
-    };
-    let hops: Vec<&str> = h
-        .get_all("x-forwarded-for")
-        .iter()
-        .rev()
-        .filter_map(|v| v.to_str().ok())
-        .flat_map(|v| v.rsplit(','))
-        .map(str::trim)
-        .filter(|a| !a.is_empty())
-        .collect();
-    let given = match (&state.config.address_header, hops.first()) {
-        (Some(name), Some(last)) if trusted(last) => h
-            .get_all(name)
-            .iter()
-            .next_back()
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
-            .filter(|a| a.parse::<std::net::IpAddr>().is_ok()),
-        _ => None,
-    };
-    let forwarded = given
-        .or_else(|| hops.iter().copied().find(|a| !trusted(a)))
-        .map(str::to_string);
+    let forwarded = forwarded(&state.config, h);
     let own = [
         crate::views::host_only(state.config.app_host()),
         crate::views::host_only(state.config.public_host()),
@@ -248,10 +221,12 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
     };
     if let Some(id) = session
         && state
-            .sessions
-            .get(&id)
+            .db
+            .holder(&id)
             .await
-            .is_some_and(|s| s.sub == counted.owner)
+            .ok()
+            .flatten()
+            .is_some_and(|u| u.username == counted.owner)
     {
         return response;
     }
@@ -276,6 +251,74 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
             .insert(header::CONTENT_LENGTH, HeaderValue::from(n));
     }
     Response::from_parts(parts, state.views.counting(body, counted, visit))
+}
+
+/// The client's address as `X-Forwarded-For` gives it: the last entry outside
+/// the trusted proxies' ranges. Traefik appends the address it saw, and a CDN
+/// in front (trusted) appends the client's before that, so whatever a client
+/// sends sits to the left of both and is never chosen. Where the last entry is
+/// a trusted proxy's, the address header it set comes first. `None` for a
+/// request that came with no proxy.
+fn forwarded(config: &Config, h: &HeaderMap) -> Option<String> {
+    let trusted = |a: &str| {
+        a.parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| config.trusted_proxies.iter().any(|net| net.contains(&ip)))
+    };
+    let hops: Vec<&str> = h
+        .get_all("x-forwarded-for")
+        .iter()
+        .rev()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.rsplit(','))
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .collect();
+    let given = match (&config.address_header, hops.first()) {
+        (Some(name), Some(last)) if trusted(last) => h
+            .get_all(name)
+            .iter()
+            .next_back()
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .filter(|a| a.parse::<std::net::IpAddr>().is_ok()),
+        _ => None,
+    };
+    given
+        .or_else(|| hops.iter().copied().find(|a| !trusted(a)))
+        .map(str::to_string)
+}
+
+/// The address a request came from, for limits on what one address may try.
+/// What the proxies say ([`forwarded`]) is believed only from a peer that can
+/// be a proxy in front of dither: a private or loopback address (an ingress
+/// in the cluster, a tunnel on the host) or a trusted proxy's. Anyone else
+/// could name any address in the header, and take a fresh allowance, or an
+/// account's own network, with every try. Unspecified with no peer, as in a
+/// test, which then shares one allowance.
+pub fn client_ip(
+    config: &Config,
+    h: &HeaderMap,
+    extensions: &axum::http::Extensions,
+) -> std::net::IpAddr {
+    let peer = extensions
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip().to_canonical());
+    let proxy = peer.is_some_and(|ip| {
+        let internal = match ip {
+            std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback(),
+            std::net::IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
+        };
+        internal || config.trusted_proxies.iter().any(|net| net.contains(&ip))
+    });
+    proxy
+        .then(|| forwarded(config, h))
+        .flatten()
+        .and_then(|a| a.parse::<std::net::IpAddr>().ok())
+        .or(peer)
+        .map_or(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            |ip| ip.to_canonical(),
+        )
 }
 
 /// What a link preview's fetcher asked for and was answered, logged: a
@@ -372,6 +415,10 @@ pub trait Helpers {
         assets::player_js_url()
     }
 
+    fn join_js_url(&self) -> &'static str {
+        assets::join_js_url()
+    }
+
     fn icon(&self, name: &str, px: f32) -> String {
         crate::icon::named(name, px)
     }
@@ -412,6 +459,31 @@ mod tests;
 #[cfg(test)]
 mod unit {
     use super::*;
+
+    #[test]
+    fn a_proxys_address_is_believed_only_from_a_peer_that_can_be_one() {
+        let mut config = Config::test(std::path::PathBuf::new());
+        config.trusted_proxies = vec!["198.51.100.0/24".parse().unwrap()];
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "192.0.2.7".parse().unwrap());
+        let from = |peer: Option<&str>| {
+            let mut ext = axum::http::Extensions::new();
+            if let Some(peer) = peer {
+                ext.insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                    peer.parse().unwrap(),
+                    443,
+                )));
+            }
+            client_ip(&config, &h, &ext).to_string()
+        };
+        // A client reaching dither directly names whatever it likes.
+        assert_eq!(from(Some("203.0.113.9")), "203.0.113.9");
+        // An ingress in the cluster, a tunnel on the host, a trusted proxy.
+        assert_eq!(from(Some("10.42.0.7")), "192.0.2.7");
+        assert_eq!(from(Some("127.0.0.1")), "192.0.2.7");
+        assert_eq!(from(Some("198.51.100.5")), "192.0.2.7");
+        assert_eq!(from(None), "0.0.0.0");
+    }
 
     #[test]
     fn sizes_read_as_people_say_them() {

@@ -13,7 +13,6 @@ use tower::ServiceExt;
 
 use super::{AppState, Inner};
 use crate::auth::cookie::SESSION_COOKIE;
-use crate::auth::session::Sessions;
 use crate::config::Config;
 use crate::db::Db;
 use crate::store::{self, Store, Variant};
@@ -22,6 +21,9 @@ use crate::upload::Uploads;
 struct App {
     router: Router,
     state: AppState,
+    /// The session of `dev`, an admin, which requests carry unless they name
+    /// another.
+    cookie: String,
     _dir: tempfile::TempDir,
 }
 
@@ -38,6 +40,12 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
     std::fs::create_dir_all(&config.state_dir).unwrap();
     let store = Store::memory();
     let db = Db::open(&config.state_dir.join("dither.db")).await.unwrap();
+    db.test_accounts().await;
+    let dev = db.account_named("dev").await.unwrap().unwrap();
+    let cookie = db
+        .open_session(dev.id, std::time::Duration::from_secs(3600))
+        .await
+        .unwrap();
     let jobs = Arc::new(crate::jobs::Hub::new(db.clone(), store.clone(), &config).unwrap());
     let hub = jobs.clone();
     let uploads = Arc::new(Uploads::new(db.clone(), store.clone(), &config, jobs).unwrap());
@@ -76,8 +84,9 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
     // Kept for the life of the test: a dropped sender reads as stopping.
     std::mem::forget(stop);
     let state = AppState::new(Inner {
-        sessions: Sessions::new(db.clone()),
-        http: reqwest::Client::new(),
+        verifier: koan_auth::password::Verifier::new(),
+        sign_ins: koan_auth::limit::RateLimiter::default(),
+        setup: Some(koan_auth::setup::SetupCode::new().unwrap()),
         db,
         store,
         uploads,
@@ -88,6 +97,7 @@ async fn app_with(edit: impl Fn(&mut Config)) -> App {
     App {
         router: super::router(state.clone()),
         state,
+        cookie,
         _dir: dir,
     }
 }
@@ -133,6 +143,11 @@ impl App {
     }
 
     async fn get(&self, uri: &str) -> Reply {
+        self.get_as(uri, &self.cookie).await
+    }
+
+    /// As someone signed in to nothing.
+    async fn get_anonymous(&self, uri: &str) -> Reply {
         self.send(
             Request::get(uri)
                 .header(header::HOST, "app.test")
@@ -160,9 +175,8 @@ impl App {
             .header(header::HOST, "app.test")
             .header("x-dither", "1")
             .header(header::CONTENT_TYPE, "application/json");
-        if let Some(c) = cookie {
-            req = req.header(header::COOKIE, format!("{SESSION_COOKIE}={c}"));
-        }
+        let cookie = cookie.unwrap_or(&self.cookie);
+        req = req.header(header::COOKIE, format!("{SESSION_COOKIE}={cookie}"));
         self.send(req.body(Body::from(body.to_string())).unwrap())
             .await
     }
@@ -176,6 +190,7 @@ impl App {
         self.send(
             Request::put(format!("/api/uploads/{upload}"))
                 .header(header::HOST, "app.test")
+                .header(header::COOKIE, format!("{SESSION_COOKIE}={}", self.cookie))
                 .header("x-dither", "1")
                 .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}"))
                 .body(Body::from(bytes.to_vec()))
@@ -244,10 +259,19 @@ impl App {
         out
     }
 
-    async fn session(&self, sub: &str) -> String {
-        self.state
-            .sessions
-            .create(sub, std::time::Duration::from_secs(60))
+    /// A session for the account `name`, made a user's if it is new.
+    async fn session(&self, name: &str) -> String {
+        let db = &self.state.db;
+        let id = match db.account_named(name).await.unwrap() {
+            Some(user) => user.id,
+            None => {
+                db.create_account(name, koan_auth::Role::User)
+                    .await
+                    .unwrap()
+                    .id
+            }
+        };
+        db.open_session(id, std::time::Duration::from_secs(3600))
             .await
             .unwrap()
     }
@@ -296,10 +320,13 @@ async fn another_site_cannot_sign_anyone_out() {
     };
     for elsewhere in ["cross-site", "same-site"] {
         app.send(from(elsewhere)).await;
-        assert!(app.state.sessions.get(&ann).await.is_some(), "{elsewhere}");
+        assert!(
+            app.state.db.holder(&ann).await.unwrap().is_some(),
+            "{elsewhere}"
+        );
     }
     app.send(from("same-origin")).await;
-    assert!(app.state.sessions.get(&ann).await.is_none());
+    assert!(app.state.db.holder(&ann).await.unwrap().is_none());
 }
 
 fn image_id(reply: &Reply) -> String {
@@ -470,7 +497,7 @@ async fn a_private_album_is_its_owners_alone() {
         // A shared cache keeping it would show the owner the same.
         assert_eq!(missing.header("cache-control"), "no-store", "{uri}");
     }
-    // The owner (with no identity provider, everyone without a cookie is "dev") sees it, uncached.
+    // The owner sees it, uncached.
     let mine = app.get(&format!("/{id}.jpg")).await;
     assert_eq!(mine.status, StatusCode::OK);
     assert_eq!(mine.header("cache-control"), "private, no-store");
@@ -553,6 +580,7 @@ async fn a_write_without_the_marker_header_is_refused() {
         .send(
             Request::post("/api/albums")
                 .header(header::HOST, "app.test")
+                .header(header::COOKIE, format!("{SESSION_COOKIE}={}", app.cookie))
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from("title=x"))
                 .unwrap(),
@@ -566,67 +594,269 @@ async fn without_a_session_pages_go_to_sign_in_and_everything_else_is_refused() 
     let app = app().await;
     let page = app.get_as("/albums/aaaaaaaaaa", "expired").await;
     assert_eq!(page.status, StatusCode::SEE_OTHER);
-    assert!(page.header("location").starts_with("/auth/login?next="));
+    assert!(page.header("location").starts_with("/login?next="));
     let api = app
         .write("POST", "/api/albums", json!({}), Some("expired"))
         .await;
     assert_eq!(api.status, StatusCode::UNAUTHORIZED);
 }
 
+/// A form's post from this origin, as a browser sends one.
+fn form(uri: &str, body: &str, cookie: Option<&str>) -> Request<Body> {
+    let mut req = Request::post(uri)
+        .header(header::HOST, "app.test")
+        .header("sec-fetch-site", "same-origin")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if let Some(c) = cookie {
+        req = req.header(header::COOKIE, format!("{SESSION_COOKIE}={c}"));
+    }
+    req.body(Body::from(body.to_string())).unwrap()
+}
+
+/// The session a response's `Set-Cookie` opens.
+fn opened(reply: &Reply) -> String {
+    let set = reply.header("set-cookie");
+    set.strip_prefix(&format!("{SESSION_COOKIE}="))
+        .and_then(|rest| rest.split(';').next())
+        .unwrap_or_else(|| panic!("no session cookie in {set:?}"))
+        .to_string()
+}
+
 #[tokio::test]
-async fn a_day_old_sign_in_is_checked_again_on_a_page_load_but_not_mid_upload() {
-    let app = app_with(|c| {
-        c.oidc = Some(crate::config::Oidc {
-            issuer: "https://auth.test".into(),
-            client_id: "dither".into(),
-            client_secret: "secret".into(),
-            token_url: "https://auth.test/oauth2/token".into(),
-        });
-    })
-    .await;
+async fn a_password_signs_in_and_a_wrong_one_does_not() {
+    let app = app().await;
+    let wrong = app
+        .send(form("/login", "username=ann&password=nope&next=%2F", None))
+        .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
+    assert!(wrong.text().contains("Wrong username or password."));
+    let right = app
+        .send(form(
+            "/login",
+            "username=ann&password=a+test+password&next=%2Falbums",
+            None,
+        ))
+        .await;
+    assert_eq!(right.status, StatusCode::SEE_OTHER);
+    assert_eq!(right.header("location"), "/albums");
+    let ann = opened(&right);
+    assert_eq!(app.get_as("/", &ann).await.status, StatusCode::OK);
+    // Another site's form signs nobody in.
+    let mut forged = form("/login", "username=ann&password=a+test+password", None);
+    forged
+        .headers_mut()
+        .insert("sec-fetch-site", "cross-site".parse().unwrap());
+    assert_eq!(app.send(forged).await.status, StatusCode::FORBIDDEN);
+    // Signing out ends the session.
+    app.get_as("/auth/logout", &ann).await;
+    assert_eq!(app.get_as("/", &ann).await.status, StatusCode::SEE_OTHER);
+}
+
+#[tokio::test]
+async fn the_first_admin_needs_the_logged_code_and_is_made_once() {
+    let app = app().await;
+    app.state
+        .db
+        .run(|c| c.execute("DELETE FROM users", []).map(drop))
+        .await
+        .unwrap();
+    let login = app.get_anonymous("/login").await;
+    assert_eq!(login.header("location"), "/setup");
+    let code = app.state.setup.as_ref().unwrap().as_str().to_string();
+    let wrong = app
+        .send(form(
+            "/setup",
+            "code=nope&username=ada&password=long+enough&confirm=long+enough",
+            None,
+        ))
+        .await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST);
+    assert!(wrong.text().contains("the setup code"), "{}", wrong.text());
+    let mismatch = app
+        .send(form(
+            "/setup",
+            &format!("code={code}&username=ada&password=long+enough&confirm=other+enough"),
+            None,
+        ))
+        .await;
+    assert_eq!(mismatch.status, StatusCode::BAD_REQUEST);
+    let made = app
+        .send(form(
+            "/setup",
+            &format!("code={code}&username=ada&password=long+enough&confirm=long+enough"),
+            None,
+        ))
+        .await;
+    assert_eq!(made.status, StatusCode::SEE_OTHER);
+    let ada = opened(&made);
+    assert_eq!(app.get_as("/users", &ada).await.status, StatusCode::OK);
+    // Once there is an account, there is no setup.
+    let again = app
+        .send(form(
+            "/setup",
+            &format!("code={code}&username=eve&password=long+enough&confirm=long+enough"),
+            None,
+        ))
+        .await;
+    assert_eq!(again.header("location"), "/login");
+    assert!(app.state.db.account_named("eve").await.unwrap().is_none());
+}
+
+/// The invite link the accounts page answered with.
+fn invite_link(reply: &Reply) -> (String, String) {
+    let text = reply.text();
+    let at = text.find("/join#invite=").expect("an invite link");
+    let fragment = &text[at + "/join#".len()..];
+    let fragment = &fragment[..fragment.find('"').unwrap()];
+    let fragment = fragment.replace("&#38;", "&").replace("&amp;", "&");
+    let mut invite = String::new();
+    let mut username = String::new();
+    for (k, v) in url::form_urlencoded::parse(fragment.as_bytes()) {
+        match &*k {
+            "invite" => invite = v.into_owned(),
+            "username" => username = v.into_owned(),
+            _ => {}
+        }
+    }
+    (invite, username)
+}
+
+#[tokio::test]
+async fn an_invite_is_spent_by_choosing_a_password() {
+    let app = app().await;
+    let made = app
+        .write(
+            "POST",
+            "/users",
+            json!({ "newuser": "eve", "newrole": "user" }),
+            None,
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.text());
+    let (invite, username) = invite_link(&made);
+    assert_eq!(username, "eve");
+    let body = |password: &str| {
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("invite", &invite)
+            .append_pair("password", password)
+            .append_pair("confirm", password)
+            .finish()
+    };
+    let short = app.send(form("/join", &body("short"), None)).await;
+    assert_eq!(short.status, StatusCode::BAD_REQUEST);
+    let joined = app
+        .send(form("/join", &body("a long password"), None))
+        .await;
+    assert_eq!(joined.status, StatusCode::SEE_OTHER);
+    let eve = opened(&joined);
+    assert_eq!(app.get_as("/", &eve).await.status, StatusCode::OK);
+    // Used once: the password it set spent it.
+    let again = app
+        .send(form("/join", &body("another password"), None))
+        .await;
+    assert_eq!(again.status, StatusCode::BAD_REQUEST);
+    // Taken names are refused.
+    let taken = app
+        .write(
+            "POST",
+            "/users",
+            json!({ "newuser": "eve", "newrole": "user" }),
+            None,
+        )
+        .await;
+    assert!(taken.text().contains("already an account"));
+    // An unknown role is refused, not taken as a user.
+    let unknown = app
+        .write(
+            "POST",
+            "/users",
+            json!({ "newuser": "fay", "newrole": "Readonly" }),
+            None,
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn only_admins_reach_the_accounts_page() {
+    let app = app().await;
     let ann = app.session("ann").await;
+    assert_eq!(
+        app.get_as("/users", &ann).await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        app.write(
+            "POST",
+            "/users",
+            json!({ "newuser": "x", "newrole": "user" }),
+            Some(&ann)
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let page = app.get("/users").await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text().contains("ann"));
+}
+
+#[tokio::test]
+async fn a_deleted_account_takes_its_albums_and_sessions() {
+    let app = app().await;
+    let bob = app.session("bob").await;
     let album = app
-        .write("POST", "/api/albums", json!({}), Some(&ann))
+        .write("POST", "/api/albums", json!({}), Some(&bob))
         .await
         .json()["id"]
         .as_str()
         .unwrap()
         .to_string();
-    let page = format!("/albums/{album}");
-    assert_eq!(app.get_as(&page, &ann).await.status, StatusCode::OK);
-    assert_eq!(app.get_as("/", &ann).await.status, StatusCode::OK);
+    let id = app.state.db.account_named("bob").await.unwrap().unwrap().id;
+    let gone = app
+        .write("POST", &format!("/users/{id}/delete"), json!({}), None)
+        .await;
+    assert_eq!(gone.status, StatusCode::OK);
+    assert!(app.state.db.album(&album).await.unwrap().is_none());
+    assert_eq!(app.get_as("/", &bob).await.status, StatusCode::SEE_OTHER);
+    // An admin does not delete themselves here.
+    let dev = app.state.db.account_named("dev").await.unwrap().unwrap().id;
+    let mine = app
+        .write("POST", &format!("/users/{dev}/delete"), json!({}), None)
+        .await;
+    assert!(mine.text().contains("your own account"), "{}", mine.text());
+    // Nor resets their own password, which would sign them out.
+    let reset = app
+        .write("POST", &format!("/users/{dev}/reset"), json!({}), None)
+        .await;
+    assert!(
+        reset.text().contains("your own account"),
+        "{}",
+        reset.text()
+    );
+    assert_eq!(app.get("/").await.status, StatusCode::OK);
+    assert!(app.state.db.account_named("dev").await.unwrap().is_some());
+}
 
-    // A day on, a page load goes back through the provider first.
-    let day = crate::auth::routes::REVERIFY.as_millis() as i64;
-    app.state
-        .db
-        .run(move |c| {
-            c.execute("UPDATE sessions SET created_at = created_at - ?1", [day])
-                .map(drop)
-        })
-        .await
-        .unwrap();
-    let again = app.get_as(&page, &ann).await;
-    assert_eq!(again.status, StatusCode::SEE_OTHER);
-    assert_eq!(
-        again.header("location"),
-        crate::auth::routes::login_url(&page)
-    );
-    assert_eq!(
-        app.get_as("/", &ann).await.header("location"),
-        "/auth/login"
-    );
-    // Behind the session layer too.
-    let picker = format!("/albums/{album}/picker");
-    assert_eq!(
-        app.get_as(&picker, &ann).await.header("location"),
-        crate::auth::routes::login_url(&picker)
-    );
-    // What a page already open is doing carries on.
-    let api = app
+#[tokio::test]
+async fn a_readonly_account_sees_and_changes_nothing() {
+    let app = app().await;
+    let ann = app.session("ann").await;
+    let id = app.state.db.account_named("ann").await.unwrap().unwrap().id;
+    let changed = app
+        .write(
+            "POST",
+            &format!("/users/{id}/role"),
+            json!({ "role": "readonly" }),
+            None,
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK);
+    assert_eq!(app.get_as("/", &ann).await.status, StatusCode::OK);
+    let write = app
         .write("POST", "/api/albums", json!({}), Some(&ann))
         .await;
-    assert_eq!(api.status, StatusCode::OK);
+    assert_eq!(write.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -829,6 +1059,7 @@ async fn the_live_stream_opens_with_the_grid() {
         .oneshot(
             Request::get(format!("/stream?album={album}"))
                 .header(header::HOST, "app.test")
+                .header(header::COOKIE, format!("{SESSION_COOKIE}={}", app.cookie))
                 .header(header::ACCEPT, "text/event-stream")
                 .body(Body::empty())
                 .unwrap(),
@@ -868,7 +1099,7 @@ async fn a_public_domain_of_its_own_serves_nothing_but_public_pages() {
     );
     for hidden in [
         format!("/albums/{album}"),
-        "/auth/login".into(),
+        "/login".into(),
         "/api/uploads/aaaaaaaaaa".into(),
     ] {
         assert_eq!(
@@ -1202,7 +1433,7 @@ async fn an_albums_app_address_sends_anyone_but_its_owner_to_its_link() {
     assert_eq!(lapsed.status, StatusCode::SEE_OTHER);
     let to = lapsed.header("location");
     assert!(
-        to.starts_with("/auth/login?next=") && to.contains("x%3D1"),
+        to.starts_with("/login?next=") && to.contains("x%3D1"),
         "{to}"
     );
     let fetched = app

@@ -1,8 +1,8 @@
 # dither
 
 An image host: albums of images and videos with captions, uploaded behind a sign-in and
-shared by unlisted links that preview anywhere a link can. It has no feed, no
-accounts of its own, no ads and no tracking.
+shared by unlisted links that preview anywhere a link can. Accounts are by
+invite; it has no feed, no sign-up, no ads and no tracking.
 
 It ships as a container image, `ghcr.io/radiosilence/dither`, a static Linux
 binary on each release, and a Pulumi component in `deploy/pulumi`
@@ -353,20 +353,38 @@ its own components.
 
 ## Signing in
 
-dither is an OAuth client of an OpenID Connect provider (`OIDC_ISSUER`) and
-has no allowlist of its own: who may sign in is the provider's decision.
-Every person who signs in gets albums of their own and sees nobody else's.
-Sessions are opaque ids in `__Host-` cookies, stored hashed. A sign-in lasts
-two days, and a page load a day after it goes back through the provider,
-which remembers the person and asks nothing, but decides again whether they
-may sign in: someone the provider stops letting in is out of dither within a
-day. An upload or a live page already going carries on for the second day.
+Accounts are dither's own, through
+[koan-auth](https://github.com/radiosilence/koan/tree/main/crates/koan-auth),
+kōan's accounts and sign-in as a crate. Nobody signs up: an admin makes an
+account, with a username and a role, and sends its owner an invite link, with
+which they choose their password. Each account has albums of its own and sees
+nobody else's. An admin also manages the accounts on `/users`; a read-only
+account signs in and sees its albums, and changes nothing.
 
-The id_token is taken from the token endpoint in answer to a request dither
-makes, never from the browser, so its signature is not checked; its issuer,
-audience and expiry are. That trusts whatever answers at the token endpoint:
-the issuer itself over TLS, or, with `OIDC_TOKEN_URL` pointing at the
-provider's service inside a cluster, the cluster's network.
+A server with no account asks for its first admin on `/setup`, with a code it
+writes to its log at start. Whoever reached an empty server first would
+otherwise become its admin, and its database can be empty for a worse reason
+than a new install: a bucket with no copy to restore starts a fresh one.
+
+An invite is signed with `SIGNING_KEY` and names the account and a mark of its
+password, so choosing a password spends it, and it lapses after a week.
+Inviting an account again changes nothing; resetting its password signs it out
+everywhere and withdraws every link sent before, which is how a link that went
+to the wrong place is taken back. The key is kept out of the database, whose
+copies sit in the bucket: with both, anyone who could read the bucket could
+forge an invite for any account. The link carries the invite in its fragment,
+which browsers never send, so no log holds it.
+
+Passwords are stored as argon2id hashes. Every sign-in goes through one
+verifier, which runs a few argon2 checks at once, refuses an address's
+eleventh try in a minute, and refuses an account's sixty-first failure in a
+minute from anywhere but the networks it signed in from in the last week. The
+address is what the proxy in front reports (see `TRUSTED_PROXIES`), believed
+only from a private, loopback or trusted peer, else the peer's own. Sessions are
+opaque ids in `__Host-` cookies, stored hashed, and last thirty days; a new
+password, a deleted account or signing out ends them, and the account's role is
+read with every request. A live page whose account changes stops and picks up
+the change when it next asks.
 
 ## A domain of its own
 
@@ -397,8 +415,11 @@ name out of public repositories, closes both.
   at a lower priority, with a time limit, and confined by Landlock, seccomp
   and resource limits to the files it was given (see *Videos*).
 - The web process decodes nothing: every picture is made by the worker.
-- Sign-ins are checked with the provider again a day after they are made
-  (see *Signing in*).
+- Sign-in forms prove they came from this origin the way a browser does
+  (`Sec-Fetch-Site`, or an `Origin` naming the host), and every password check
+  is limited per address and per account (see *Signing in*).
+- A deleted account's albums go with it, through the same deletion as an
+  album's, so its images' copies are recorded and swept from the store.
 - A file's type is decided by its signature, never by its name or the type
   the browser claims. Decoding is limited in pixels and allocation.
 - A 404 is never cached, since a private album's files are missing to
@@ -420,8 +441,7 @@ startup.
 |---|---|---|
 | `APP_URL` | `http://<BIND_ADDR>` | Where the app is used and signed in to. |
 | `PUBLIC_URL` | `APP_URL` | What share links name. |
-| `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET` | — | Required. `INSECURE_NO_AUTH=1` disables sign-in and is only accepted with a loopback `BIND_ADDR`. |
-| `OIDC_TOKEN_URL` | the issuer's | Where codes are exchanged, when the issuer's public address is unreachable from the pod. |
+| `SIGNING_KEY` | — | The Ed25519 key invites are signed with: 32 random bytes in base64 (`openssl rand -base64 32`), or PKCS#8 PEM. Required unless `BIND_ADDR` is loopback, when each run makes its own and its invites end with it. A new key withdraws every invite already sent, and nothing else. |
 | `STORAGE` | required | The bucket (`s3://bucket[/prefix]`, with the `AWS_*` variables), or `memory:///` for development. A worker does not use it. |
 | `AWS_ENDPOINT`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | — | For an `s3://` store. R2's region is `auto`. |
 | `STATE_DIR` | `data/state` | The database and uploads in progress, on a local disk. |
@@ -445,7 +465,7 @@ startup.
 ## Development
 
 ```sh
-just dev     # http://127.0.0.1:8080, no sign-in, everything under ./data
+just dev     # http://127.0.0.1:8080, empty each run: /setup with the code it logs
 just check   # fmt, clippy, tests, the Pulumi package, the stylesheet, the script's types, changelog, versions
 just css     # after changing styles/, a template's classes or class strings in src/
 just i18n    # after changing a template's words

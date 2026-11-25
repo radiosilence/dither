@@ -8,15 +8,7 @@ import { VERSIONS } from "./versions.ts";
  */
 export type Route = { service: string; hostname: string };
 
-/**
- * The OAuth client this needs registered for it. Returned rather than
- * configured, because the callback path is dither's own and the host comes
- * from the hostname it was told to publish at, so the redirect URI cannot name
- * somewhere it is not.
- */
-export type OidcClient = { id: string; name: string; redirectUri: string };
-
-export type Deployed = { routes: Route[]; oidc?: OidcClient };
+export type Deployed = { routes: Route[] };
 
 const NAME = "dither";
 const PORT = 8080;
@@ -43,23 +35,14 @@ export type DitherArgs = {
   node: string;
   /** Where on that node the database, uploads in progress and the disk cache live. */
   statePath?: string;
-  oidc: {
-    issuer: string;
-    clientId: string;
-    clientSecret: pulumi.Input<string>;
-    /**
-     * The provider's service inside the cluster, for exchanging codes when
-     * the pod shares a node with the ingress: Cilium drops a pod's traffic to
-     * its own node's public address.
-     */
-    backchannel?: {
-      url: string;
-      podLabels: Record<string, string>;
-      port: number;
-      /** The provider's namespace, when it is not this one; `url` then names it too. */
-      namespace?: string;
-    };
-  };
+  /**
+   * The Ed25519 key invites are signed with: 32 random bytes in base64, such
+   * as `new random.RandomBytes("dither-signing-key", { length: 32 }).base64`,
+   * or a PKCS#8 PEM. It is kept in a Secret, never beside the database's
+   * copies in the bucket, so a copy of the bucket cannot forge an invite. A
+   * new key withdraws every invite already sent.
+   */
+  signingKey: pulumi.Input<string>;
   /**
    * The S3-compatible bucket the images, uploads waiting for a worker and the
    * database's copies live in: Garage or MinIO in the cluster (with `peer`),
@@ -210,28 +193,18 @@ export function environment(args: DitherArgs) {
     ...(args.maxVideoSeconds ? [{ name: "MAX_VIDEO_SECONDS", value: String(args.maxVideoSeconds) }] : []),
     // Reached by workers on any node, with the token.
     { name: "WORKER_ADDR", value: `0.0.0.0:${WORK_PORT}` },
-    { name: "OIDC_ISSUER", value: args.oidc.issuer },
-    { name: "OIDC_CLIENT_ID", value: args.oidc.clientId },
-    ...(args.oidc.backchannel ? [{ name: "OIDC_TOKEN_URL", value: `${args.oidc.backchannel.url}/oauth2/token` }] : []),
     { name: "RUST_LOG", value: "info" },
   ];
 }
 
 /**
- * What the pod may call: the cluster's resolver, the identity provider's
- * token endpoint, and HTTPS beyond the cluster when a bucket or a provider
- * reached at its public address needs it. Exported for its test.
+ * What the pod may call: the cluster's resolver, the bucket's pods when it
+ * runs in the cluster, and HTTPS beyond the cluster when it does not.
+ * Exported for its test.
  */
-export function egress(args: Pick<DitherArgs, "oidc" | "bucket">) {
-  const backchannel = args.oidc.backchannel;
-  // A pod selector alone matches pods in this namespace only.
-  const provider = backchannel && {
-    podSelector: { matchLabels: backchannel.podLabels },
-    ...(backchannel.namespace
-      ? { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": backchannel.namespace } } }
-      : {}),
-  };
+export function egress(args: Pick<DitherArgs, "bucket">) {
   const bucketPeer = args.bucket.peer;
+  // A pod selector alone matches pods in this namespace only.
   const peer = bucketPeer && {
     podSelector: { matchLabels: bucketPeer.podLabels },
     ...(bucketPeer.namespace
@@ -246,9 +219,8 @@ export function egress(args: Pick<DitherArgs, "oidc" | "bucket">) {
         { protocol: "TCP", port: 53 },
       ],
     },
-    ...(backchannel && provider ? [{ to: [provider], ports: [{ protocol: "TCP", port: backchannel.port }] }] : []),
     ...(peer && bucketPeer ? [{ to: [peer], ports: [{ protocol: "TCP", port: bucketPeer.port }] }] : []),
-    ...(!backchannel || !args.bucket.peer
+    ...(!bucketPeer
       ? [{ to: [{ ipBlock: { cidr: "0.0.0.0/0", except: PRIVATE } }], ports: [{ protocol: "TCP", port: 443 }] }]
       : []),
   ];
@@ -269,7 +241,7 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
     {
       metadata: { name: SECRETS, namespace },
       stringData: {
-        "oidc-client-secret": pulumi.output(args.oidc.clientSecret),
+        "signing-key": pulumi.output(args.signingKey),
         "worker-token": pulumi.output(args.workerToken),
         "s3-access-key-id": pulumi.output(args.bucket.accessKeyId),
         "s3-secret-access-key": pulumi.output(args.bucket.secretAccessKey),
@@ -341,7 +313,7 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
                 env: [
                   ...environment(args),
                   { name: "WORKER_TOKEN", ...secretRef("worker-token") },
-                  { name: "OIDC_CLIENT_SECRET", ...secretRef("oidc-client-secret") },
+                  { name: "SIGNING_KEY", ...secretRef("signing-key") },
                   { name: "AWS_ACCESS_KEY_ID", ...secretRef("s3-access-key-id") },
                   { name: "AWS_SECRET_ACCESS_KEY", ...secretRef("s3-secret-access-key") },
                 ],
@@ -407,11 +379,6 @@ export function createDither(provider: k8s.Provider, namespace: pulumi.Input<str
   const hosts = [...new Set([args.hostname, args.publicHostname ?? args.hostname])];
   return {
     routes: hosts.map((hostname) => ({ service: NAME, hostname })),
-    oidc: {
-      id: args.oidc.clientId,
-      name: NAME,
-      redirectUri: `https://${args.hostname}/auth/callback`,
-    },
     deployment,
     /** Where workers reach the worker API: give it to `createDitherWorker`. */
     queue: pulumi.interpolate`http://${work.metadata.name}.${namespace}.svc.cluster.local:${WORK_PORT}`,

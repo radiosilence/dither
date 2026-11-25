@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block head %}
+<meta name="robots" content="noindex">
+{% block script %}{% endblock %}
+{% endblock %}
+{% block body %}
+<body class="public">
+<main class="mx-auto grid max-w-form gap-4 px-[22px] py-24">
+  <a href="/" class="wordmark" aria-label="{{ __("dither: your albums") }}">dither</a>
+  {% block main %}{% endblock %}
+</main>
+</body>
+{% endblock %}
