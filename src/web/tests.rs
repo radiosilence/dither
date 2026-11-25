@@ -1319,39 +1319,31 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
 #[tokio::test]
 async fn a_cdn_in_front_names_the_visitor() {
     let app = app_with(|c| {
-        c.address_header = Some(header::HeaderName::from_static("cf-connecting-ip"));
+        c.trusted_proxies = vec!["198.51.100.0/24".parse().unwrap()];
     })
     .await;
     let (_, done) = app.upload(&[&jpeg(300, 200)]).await;
     let id = image_id(&done[0]);
     let page = format!("/{id}");
     let forwarded = header::HeaderName::from_static("x-forwarded-for");
-    let client = header::HeaderName::from_static("cf-connecting-ip");
-    // One visitor through two of the CDN's edges, another through the first,
-    // and a request that reached the server without the CDN.
-    for (address, edge) in [
-        ("192.0.2.1", "198.51.100.1"),
-        ("192.0.2.1", "198.51.100.2"),
-        ("192.0.2.2", "198.51.100.1"),
+    // One visitor through two of the CDN's edges, once claiming to be someone
+    // else; another through the first edge; and a request that reached the
+    // server without the CDN, claiming a third's address.
+    for chain in [
+        "192.0.2.1, 198.51.100.1",
+        "192.0.2.9, 192.0.2.1, 198.51.100.2",
+        "192.0.2.2, 198.51.100.1",
+        "192.0.2.1, 203.0.113.7",
     ] {
         app.get_with(
             &page,
             &[
                 (header::USER_AGENT, "a browser"),
-                (client.clone(), address),
-                (forwarded.clone(), edge),
+                (forwarded.clone(), chain),
             ],
         )
         .await;
     }
-    app.get_with(
-        &page,
-        &[
-            (header::USER_AGENT, "a browser"),
-            (forwarded.clone(), "198.51.100.1"),
-        ],
-    )
-    .await;
     app.state.views.flush(&app.state.db, true).await;
     let stats = app.state.db.view_stats(&id, 0).await.unwrap();
     assert_eq!(stats.all.views, 4);

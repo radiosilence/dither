@@ -176,11 +176,11 @@ fn fetcher(agent: &str) -> Option<&'static str> {
 /// outermost layer, so the bytes counted are the ones sent, compressed or
 /// not.
 ///
-/// The client's address is the configured address header's, as a CDN in
-/// front sets it; else the last `X-Forwarded-For` entry, the one the single
-/// proxy in front (Traefik) appends; else the peer's. It goes into the
-/// visitor's hash and nowhere else, so a forged header can do no more than
-/// inflate a count.
+/// The client's address is the last `X-Forwarded-For` entry outside the
+/// trusted proxies' ranges, else the peer's. Traefik appends the address it
+/// saw, and a CDN in front (trusted) appends the client's before that, so
+/// whatever a client sends sits to the left of both and is never chosen. It
+/// goes into the visitor's hash and nowhere else.
 async fn count(State(state): State<AppState>, request: Request, next: Next) -> Response {
     if request.method() != Method::GET {
         return next.run(request).await;
@@ -193,22 +193,19 @@ async fn count(State(state): State<AppState>, request: Request, next: Next) -> R
     };
     let session = crate::auth::cookie::session_id(h).map(str::to_string);
     let agent = text(header::USER_AGENT).to_string();
-    let given = state
-        .config
-        .address_header
-        .as_ref()
-        .and_then(|name| h.get(name))
-        .and_then(|v| v.to_str().ok());
-    let forwarded = given
-        .or_else(|| {
-            h.get_all("x-forwarded-for")
-                .iter()
-                .next_back()
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.rsplit(',').next())
-        })
+    let trusted = &state.config.trusted_proxies;
+    let forwarded = h
+        .get_all("x-forwarded-for")
+        .iter()
+        .rev()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.rsplit(','))
         .map(str::trim)
         .filter(|a| !a.is_empty())
+        .find(|a| {
+            !a.parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| trusted.iter().any(|net| net.contains(&ip)))
+        })
         .map(str::to_string);
     let own = [
         crate::views::host_only(state.config.app_host()),

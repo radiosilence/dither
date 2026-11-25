@@ -147,19 +147,19 @@ the day's hashes stay in memory only to tell a new visitor from one already
 counted, and the database is given the number of distinct ones. A visitor on
 two days counts once on each. A restart draws a new salt, so someone seen
 before and after a restart counts twice that day. The client's address is the
-header named by `ADDRESS_HEADER` when it is set and present, else the last
-`X-Forwarded-For` entry, else the connection's. Without `ADDRESS_HEADER` that
-assumes exactly one proxy in front (Traefik, as deployed), which appends the
-address it saw; behind a CDN every visitor would share the CDN edge's address,
-so set `ADDRESS_HEADER` to the header the CDN puts the client's address in
-(`CF-Connecting-IP` for Cloudflare). The address is used only inside the hash,
-so a forged header can inflate the count and do nothing else.
+last `X-Forwarded-For` entry outside `TRUSTED_PROXIES`, or else the
+connection's. The proxy in front (Traefik, as deployed) appends the address it
+saw. Behind a CDN that address is the CDN edge's, so list the CDN's ranges in
+`TRUSTED_PROXIES` and have the proxy keep the `X-Forwarded-For` the CDN sends,
+where the CDN has appended the client's address. Anything a client sends sits
+to the left of both and is never chosen. The address is used only inside the
+hash. A day remembers at most 500,000 visitors; past
+that, new ones are not counted until midnight.
 
 A CDN in front serves what it has cached without asking dither, so those
-requests are not counted: during a burst on one image, its counts show
-roughly one hit per CDN location every ten minutes for each file, and one a
-minute for its page. A day remembers at most 500,000 visitors; past
-that, new ones are not counted until midnight.
+requests are not counted: during a burst on one image, its counts show a few
+hits for each file every ten minutes, and, where the CDN caches pages, a few
+for its page every minute.
 
 A referring site is the host of the `Referer` header, without its path or
 query, and dither's own hosts are ignored; past the first 50 hosts in a day
@@ -421,7 +421,7 @@ startup.
 | `PROCESS_MEMORY_BYTES` | 1 GiB | Memory a worker's pictures take at once. A picture that needs more alone is refused when its upload finishes. |
 | `CACHE_BYTES` | 256 MiB | Recently served images kept in memory. |
 | `DISK_CACHE_BYTES` | 0 | With a bucket, images kept on this machine's disk as well; 0 for none. |
-| `ADDRESS_HEADER` | unset | A header a CDN in front sets to the client's address (`CF-Connecting-IP`), used for counting visitors in place of `X-Forwarded-For`. |
+| `TRUSTED_PROXIES` | unset | Comma-separated addresses or CIDR ranges of a CDN in front, passed over in `X-Forwarded-For` when counting visitors. |
 | `VIDEO` | `auto` | `auto` takes videos when ffmpeg and ffprobe run; `on` fails startup without them; `off` takes none. |
 | `FFMPEG`, `FFPROBE` | `ffmpeg`, `ffprobe` | The tools, by path or on `PATH`. The image sets both. |
 | `MAX_VIDEO_BYTES`, `MAX_VIDEO_SECONDS` | 1 000 000 000, 1800 | Per video. |
