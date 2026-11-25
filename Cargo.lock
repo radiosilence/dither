@@ -1591,8 +1591,9 @@ dependencies = [
 
 [[package]]
 name = "koan-auth"
-version = "0.75.1"
-source = "git+https://github.com/radiosilence/koan?rev=cfda38adc6f1161001fbe7d6c9e7dcbec42caba6#cfda38adc6f1161001fbe7d6c9e7dcbec42caba6"
+version = "0.75.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8820b55a477387835c2c59543a165cfe2a82873b72c23966c8f52348b2b6cbe9"
 dependencies = [
  "argon2",
  "base64",
