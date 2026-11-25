@@ -580,6 +580,7 @@ async fn a_write_without_the_marker_header_is_refused() {
         .send(
             Request::post("/api/albums")
                 .header(header::HOST, "app.test")
+                .header(header::COOKIE, format!("{SESSION_COOKIE}={}", app.cookie))
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from("title=x"))
                 .unwrap(),
@@ -707,7 +708,7 @@ fn invite_link(reply: &Reply) -> (String, String) {
     let at = text.find("/join#invite=").expect("an invite link");
     let fragment = &text[at + "/join#".len()..];
     let fragment = &fragment[..fragment.find('"').unwrap()];
-    let fragment = fragment.replace("&amp;", "&");
+    let fragment = fragment.replace("&#38;", "&").replace("&amp;", "&");
     let mut invite = String::new();
     let mut username = String::new();
     for (k, v) in url::form_urlencoded::parse(fragment.as_bytes()) {
@@ -1028,6 +1029,7 @@ async fn the_live_stream_opens_with_the_grid() {
         .oneshot(
             Request::get(format!("/stream?album={album}"))
                 .header(header::HOST, "app.test")
+                .header(header::COOKIE, format!("{SESSION_COOKIE}={}", app.cookie))
                 .header(header::ACCEPT, "text/event-stream")
                 .body(Body::empty())
                 .unwrap(),

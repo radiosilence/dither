@@ -6,6 +6,15 @@
 INSERT OR REPLACE INTO strays (id, since) SELECT id, 0 FROM images;
 DELETE FROM uploads;
 DELETE FROM images;
+DELETE FROM views;
+DELETE FROM visitors;
+DELETE FROM referrers;
+DELETE FROM fetchers;
+
+-- Before anything names koan-auth's `users`: dropping a table another
+-- table's foreign key names checks that key against it.
+DROP TABLE sessions;
+DROP TABLE users;
 
 -- Rebuilt to name its owner's account: SQLite adds a foreign key to no
 -- existing column. An account cannot be deleted while it has albums, so its
@@ -24,11 +33,3 @@ CREATE TABLE albums (
 ) STRICT;
 
 CREATE INDEX albums_by_owner ON albums (owner, created_at DESC);
-
-DELETE FROM views;
-DELETE FROM visitors;
-DELETE FROM referrers;
-DELETE FROM fetchers;
-
-DROP TABLE sessions;
-DROP TABLE users;

@@ -2208,6 +2208,46 @@ pub mod tests {
         assert_eq!(names, ["dev", "ann", "cat"]);
     }
 
+    /// A database as the identity provider's sign-in left it: its people's
+    /// sessions, albums and images, with foreign keys enforced as a running
+    /// server has them.
+    #[tokio::test]
+    async fn a_database_from_before_accounts_starts_them_afresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dither.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            configure(&conn).unwrap();
+            for sql in &MIGRATIONS[..5] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 5).unwrap();
+            conn.execute_batch(
+                "INSERT INTO users (sub, login, created_at) VALUES ('github:1', 'ann', 0);
+                 INSERT INTO sessions (id_hash, sub, expires_at) VALUES (x'01', 'github:1', 0);
+                 INSERT INTO albums (id, owner, created_at, updated_at) VALUES ('AAAAAAAAAA', 'github:1', 0, 0);
+                 INSERT INTO images (id, album, position, kind, width, height, bytes, sha256, created_at)
+                   VALUES ('BBBBBBBBBB', 'AAAAAAAAAA', 0, 'jpeg', 1, 1, 1, x'00', 0);",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).await.unwrap();
+        assert!(db.album("AAAAAAAAAA").await.unwrap().is_none());
+        assert!(!db.has_accounts().await.unwrap());
+        let strays: Vec<String> = db
+            .run(|c| {
+                c.prepare("SELECT id FROM strays")?
+                    .query_map([], |r| r.get(0))?
+                    .collect()
+            })
+            .await
+            .unwrap();
+        assert_eq!(strays, ["BBBBBBBBBB"]);
+        // And the accounts work on it.
+        db.test_accounts().await;
+        db.create_album("ann", "trip").await.unwrap();
+    }
+
     #[tokio::test]
     async fn an_album_names_an_account_that_exists() {
         let db = Db::temp().await;
