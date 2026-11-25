@@ -4,7 +4,7 @@
  *
  * The look is kōan's (radiosilence/koan, docs/design/koan-theme.md): Geist Mono throughout, square corners, no
  * shadows, blur or gradients, regions told apart by space or a hairline, the app's own words in lower case and what a
- * person wrote in its own. The tokens, the element defaults and the controls come from @radiosilence/theme's kit;
+ * person wrote in its own. The tokens, the element defaults and the controls come from @radiosilence/koan-kit-web's kit;
  * what is here is dither's accent, its layout and the components particular to it.
  */
 @import "tailwindcss" source(none);
@@ -12,7 +12,7 @@
 @source "../src";
 @source "../browser/app.ts";
 @source "../browser/player.ts";
-@import "@radiosilence/theme";
+@import "@radiosilence/koan-kit-web";
 
 /* dither's accent is magenta rather than the theme's green; the light value is the same hue darkened to read on white.
  * Both are over 5:1 on --surface. */

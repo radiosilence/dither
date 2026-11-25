@@ -346,7 +346,7 @@ changed. Titles, descriptions and captions save as they are typed. Images are
 reordered by dragging (on a touch screen, hold a tile to lift it), selected
 for moving or deleting, and opened in a viewer with their caption and the
 links to share them by (page, file, Markdown, BBCode, HTML). The look is
-kōan's: [@radiosilence/theme](https://github.com/radiosilence/theme) supplies
+kōan's: [@radiosilence/koan-kit-web](https://github.com/radiosilence/koan/tree/main/koan-kit-web) supplies
 the tokens, the element defaults and the controls (button weights, the meter,
 notices, sheets), and `styles/app.css` holds only dither's accent, layout and
 its own components.
@@ -477,7 +477,7 @@ just i18n    # after changing a template's words
 
 The stylesheet is compiled by Tailwind and committed, as is the theme's
 typeface, because the binary embeds them; building dither needs no Node.
-`just css` installs `@radiosilence/theme` from GitHub Packages, which needs a
+`just css` installs `@radiosilence/koan-kit-web` from GitHub Packages, which needs a
 token even to read (`just auth` writes it from the gh login). It runs the
 theme's kit-check first (`just kit`), which fails on classes outside the look:
 Tailwind's palette, radii, shadows and type sizes are removed by the theme, so

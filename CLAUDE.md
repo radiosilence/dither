@@ -39,7 +39,7 @@ just css     # after changing styles/, a template or class strings in src/
 
 ## Frontend
 
-- Tailwind v4, standalone CLI from mise, with `@radiosilence/theme` for the tokens. Class names written in Rust or `browser/*.ts` must be literal strings so Tailwind's `@source` finds them.
+- Tailwind v4, standalone CLI from mise, with `@radiosilence/koan-kit-web` for the tokens. Class names written in Rust or `browser/*.ts` must be literal strings so Tailwind's `@source` finds them.
 - The CSP has no `unsafe-inline`: no `style=""` and no inline scripts. The script may set styles through the CSSOM (`el.style`, `el.animate`), which the CSP allows.
 - The script is TypeScript, typechecked by `just js` and stripped by `build.rs` (oxc) into what the binary embeds. Keep it erasable syntax only (no enums, namespaces or parameter properties), which `erasableSyntaxOnly` enforces.
 - Every word a page or the script shows is a gettext message in a template (`__`, `__p` for a context, `__n` for plurals), never a string in Rust or the script. The script reads its words from the layout's `<template id="copy">` by key, a counted line once per plural form (`data-n`). `just i18n` after changing a template's words.
@@ -47,4 +47,4 @@ just css     # after changing styles/, a template or class strings in src/
 - Template structs get the gettext vocabulary from `i18n::translated!`; a new template struct goes in its list or its words fail to compile.
 - Templates call helpers as methods (`{{ icon("copy", 13.0) }}`): askama makes a call in a template a method on the template, which `web::Helpers` supplies to every one.
 - The look is kōan's (radiosilence/koan, `docs/design/koan-theme.md`): square, flat, Geist Mono, the app's own words lowercase. Icons are koan's glyphs, in `src/icon.rs`.
-- The kit in `@radiosilence/theme` draws the elements and controls (button weights, `field`, `notice`, `status`, `meter`, `sheet`, `toast`); `styles/app.css` keeps only what is dither's own. Use the kit's classes before writing a rule, and the type roles (`fine`, `meta`, `control`, `body`, `title-sm`, `title`, `display`) rather than Tailwind's sizes. `just kit` checks the templates, `src` and `browser`; a deliberate exception carries `kit: raw` and its reason.
+- The kit in `@radiosilence/koan-kit-web` draws the elements and controls (button weights, `field`, `notice`, `status`, `meter`, `sheet`, `toast`); `styles/app.css` keeps only what is dither's own. Use the kit's classes before writing a rule, and the type roles (`fine`, `meta`, `control`, `body`, `title-sm`, `title`, `display`) rather than Tailwind's sizes. `just kit` checks the templates, `src` and `browser`; a deliberate exception carries `kit: raw` and its reason.
