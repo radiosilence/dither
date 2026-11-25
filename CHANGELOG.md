@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.0
+
+### Changed
+
+- **Filled primary actions.** Add images, choose images and move are filled with the accent.
+
 ## 0.13.0
 
 ### Added
