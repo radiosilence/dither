@@ -76,6 +76,9 @@ pub struct Config {
     /// free, so a full image store never fills the disk the rest of the
     /// machine depends on. Unset, each disk keeps 15% of its size free.
     pub min_free_bytes: Option<u64>,
+    /// A header the proxy in front sets to the client's address alone, such
+    /// as a CDN's `CF-Connecting-IP`, read in place of `X-Forwarded-For`.
+    pub address_header: Option<axum::http::HeaderName>,
     pub video: Video,
     pub workers: Workers,
     /// Where the web process serves the worker API. Loopback unless workers
@@ -194,6 +197,12 @@ impl Config {
                         .map_err(|_| anyhow::anyhow!("MIN_FREE_BYTES must be a number"))
                 })
                 .transpose()?,
+            address_header: var("ADDRESS_HEADER")
+                .map(|v| {
+                    axum::http::HeaderName::from_bytes(v.trim().as_bytes())
+                        .map_err(|_| anyhow::anyhow!("ADDRESS_HEADER must be a header name"))
+                })
+                .transpose()?,
             video: Video {
                 mode: match or("VIDEO", "auto").as_str() {
                     "auto" => VideoMode::Auto,
@@ -261,6 +270,7 @@ impl Config {
             cache_bytes: 16 << 20,
             disk_cache_bytes: 0,
             min_free_bytes: Some(0),
+            address_header: None,
             video: Video {
                 mode: VideoMode::Auto,
                 ffmpeg: PathBuf::from("ffmpeg"),

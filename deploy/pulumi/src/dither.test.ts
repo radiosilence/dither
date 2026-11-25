@@ -91,6 +91,11 @@ describe("environment", () => {
     expect(env({ ...base, bucket: { url: "s3://p", endpoint: "https://r2", accessKeyId: "a", secretAccessKey: "b" } }).AWS_ALLOW_HTTP).toBeUndefined();
   });
 
+  it("names the visitor by the CDN's header when there is one", () => {
+    expect(env({ ...base, addressHeader: "CF-Connecting-IP" }).ADDRESS_HEADER).toBe("CF-Connecting-IP");
+    expect(env(base).ADDRESS_HEADER).toBeUndefined();
+  });
+
   it("links to the public domain when there is one", () => {
     expect(env(base).PUBLIC_URL).toBe("https://dither.example");
     expect(env({ ...base, publicHostname: "pics.example" }).PUBLIC_URL).toBe("https://pics.example");

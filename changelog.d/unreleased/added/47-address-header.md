@@ -1,0 +1,1 @@
+- **Visitors counted behind a CDN.** `ADDRESS_HEADER` (the Pulumi component's `addressHeader`) names the header a CDN puts the client's address in, such as `CF-Connecting-IP`, so visitors are counted by their own address rather than the CDN edge's.

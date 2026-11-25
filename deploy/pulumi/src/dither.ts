@@ -93,6 +93,12 @@ export type DitherArgs = {
    * of its size free, above the kubelet's 10% eviction threshold.
    */
   minFreeBytes?: number;
+  /**
+   * The header a CDN in front puts the client's address in, such as
+   * Cloudflare's `CF-Connecting-IP`, so visitors are counted by their own
+   * address rather than the CDN edge's.
+   */
+  addressHeader?: string;
   maxUploadBytes?: number;
   /** The largest video taken (1 GB by default); `video: false` takes none. */
   maxVideoBytes?: number;
@@ -189,6 +195,7 @@ export function environment(args: DitherArgs) {
     ...(args.bucket.peer && args.bucket.endpoint.startsWith("http://") ? [{ name: "AWS_ALLOW_HTTP", value: "true" }] : []),
     ...(args.diskCacheBytes ? [{ name: "DISK_CACHE_BYTES", value: String(args.diskCacheBytes) }] : []),
     ...(args.minFreeBytes === undefined ? [] : [{ name: "MIN_FREE_BYTES", value: String(args.minFreeBytes) }]),
+    ...(args.addressHeader ? [{ name: "ADDRESS_HEADER", value: args.addressHeader }] : []),
     ...(args.maxUploadBytes ? [{ name: "MAX_UPLOAD_BYTES", value: String(args.maxUploadBytes) }] : []),
     ...(args.video === false ? [{ name: "VIDEO", value: "off" }] : []),
     ...(args.maxVideoBytes ? [{ name: "MAX_VIDEO_BYTES", value: String(args.maxVideoBytes) }] : []),
