@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.15.0
+
+### Added
+
+- **Accounts of its own, by invite.** dither no longer signs in through an OpenID Connect provider: an admin makes accounts and sends invite links, the first admin is made on `/setup` with a code the server logs, and accounts are admins, users or read-only. `SIGNING_KEY` replaces `OIDC_*` and `INSECURE_NO_AUTH`, and the Pulumi component's `signingKey` replaces `oidc`. Albums made before are not kept.
+- **Change your own password.** `/account`, from the username in the top bar, takes the current password and a new one; the browser it is changed from stays signed in and every other session ends. Read-only accounts change theirs too.
+
 ## 0.14.0
 
 ### Changed
