@@ -1,3 +1,4 @@
+import * as pulumi from "@pulumi/pulumi";
 import { describe, expect, it } from "vitest";
 import { egress, environment, workerEnvironment } from "./dither.ts";
 
@@ -89,6 +90,12 @@ describe("environment", () => {
     expect(e.AWS_REGION).toBe("garage");
     expect(e.DISK_CACHE_BYTES).toBe("4096");
     expect(env({ ...base, bucket: { url: "s3://p", endpoint: "https://r2", accessKeyId: "a", secretAccessKey: "b" } }).AWS_ALLOW_HTTP).toBeUndefined();
+  });
+
+  it("passes over a CDN's edges when there is one", async () => {
+    const ranges = env({ ...base, trustedProxies: ["173.245.48.0/20", "2400:cb00::/32"] }).TRUSTED_PROXIES;
+    expect(await new Promise((r) => pulumi.output(ranges).apply(r))).toBe("173.245.48.0/20,2400:cb00::/32");
+    expect(env(base).TRUSTED_PROXIES).toBeUndefined();
   });
 
   it("links to the public domain when there is one", () => {

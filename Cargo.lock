@@ -664,6 +664,7 @@ dependencies = [
  "httpdate",
  "icu_provider",
  "image",
+ "ipnet",
  "landlock",
  "libc",
  "object_store",

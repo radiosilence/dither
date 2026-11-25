@@ -1,0 +1,1 @@
+- **Visitors counted behind a CDN.** `TRUSTED_PROXIES` (the Pulumi component's `trustedProxies`) lists a CDN's edge ranges, which are passed over in `X-Forwarded-For`, so visitors are counted by their own address rather than the edge's.

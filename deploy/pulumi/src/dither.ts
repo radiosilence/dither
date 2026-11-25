@@ -93,6 +93,12 @@ export type DitherArgs = {
    * of its size free, above the kubelet's 10% eviction threshold.
    */
   minFreeBytes?: number;
+  /**
+   * A CDN's edge ranges, when one is in front, so visitors are counted by
+   * their own address rather than the edge's. The ingress must keep the
+   * `X-Forwarded-For` these send.
+   */
+  trustedProxies?: pulumi.Input<string[]>;
   maxUploadBytes?: number;
   /** The largest video taken (1 GB by default); `video: false` takes none. */
   maxVideoBytes?: number;
@@ -189,6 +195,9 @@ export function environment(args: DitherArgs) {
     ...(args.bucket.peer && args.bucket.endpoint.startsWith("http://") ? [{ name: "AWS_ALLOW_HTTP", value: "true" }] : []),
     ...(args.diskCacheBytes ? [{ name: "DISK_CACHE_BYTES", value: String(args.diskCacheBytes) }] : []),
     ...(args.minFreeBytes === undefined ? [] : [{ name: "MIN_FREE_BYTES", value: String(args.minFreeBytes) }]),
+    ...(args.trustedProxies
+      ? [{ name: "TRUSTED_PROXIES", value: pulumi.output(args.trustedProxies).apply((r) => r.join(",")) }]
+      : []),
     ...(args.maxUploadBytes ? [{ name: "MAX_UPLOAD_BYTES", value: String(args.maxUploadBytes) }] : []),
     ...(args.video === false ? [{ name: "VIDEO", value: "off" }] : []),
     ...(args.maxVideoBytes ? [{ name: "MAX_VIDEO_BYTES", value: String(args.maxVideoBytes) }] : []),
