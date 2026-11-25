@@ -94,8 +94,10 @@ async fn signed_in(state: &AppState, headers: &HeaderMap, secret: &str, to: &str
     )
 }
 
+/// A post from another site: a status alone, since words here would be
+/// outside the templates, for a request nobody meant to make.
 fn cross_site() -> Response {
-    (StatusCode::FORBIDDEN, "cross-site request refused").into_response()
+    StatusCode::FORBIDDEN.into_response()
 }
 
 /// Why a sign-in page is shown again. Each is said in the template's words.
@@ -150,9 +152,10 @@ struct SetupPage {
 #[derive(Template)]
 #[template(path = "sign/join.html")]
 struct JoinPage {
-    /// Put back after a refused post; the page's script fills it from the
-    /// link the first time.
+    /// Put back after a refused post; the page's script fills it, and the
+    /// username, from the link the first time.
     invite: String,
+    username: String,
     problem: Option<Problem>,
 }
 
@@ -335,6 +338,7 @@ async fn join_form() -> AppResult<Response> {
     page(
         &JoinPage {
             invite: String::new(),
+            username: String::new(),
             problem: None,
         },
         None,
@@ -360,10 +364,20 @@ async fn join(
     if !koan_auth::web::same_origin(&headers) {
         return Ok(cross_site());
     }
+    let public = state.config.signing_key.public.clone();
+    // Whose account it is, from the invite rather than the form, for the
+    // page shown again.
+    let username = state
+        .db
+        .invited(f.invite.trim(), public.clone())
+        .await
+        .map(|user| user.username)
+        .unwrap_or_default();
     let refused = |problem| {
         page(
             &JoinPage {
                 invite: f.invite.clone(),
+                username: username.clone(),
                 problem: Some(problem),
             },
             Some(problem),
@@ -376,7 +390,6 @@ async fn join(
     if f.password != f.confirm {
         return refused(Problem::Mismatch);
     }
-    let public = state.config.signing_key.public.clone();
     match state
         .db
         .join(f.invite.trim(), public, &f.password, SESSION_TTL)

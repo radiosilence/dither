@@ -7,5 +7,5 @@
     </div>
   </div>
 {% when Shown::Problem with (p) %}
-  <p class="notice bad m-0" role="alert">{% match p %}{% when Problem::Taken %}{{ __("There is already an account with that name.") }}{% when Problem::BadUsername %}{{ __("Usernames are 1 to 64 characters, without spaces.") }}{% when Problem::LastAdmin %}{{ __("The last admin can't be removed or made anything else.") }}{% when Problem::Yourself %}{{ __("You can't delete your own account.") }}{% when Problem::Gone %}{{ __("That account no longer exists.") }}{% endmatch %}</p>
+  <p class="notice bad m-0" role="alert">{% match p %}{% when Problem::Taken %}{{ __("There is already an account with that name.") }}{% when Problem::BadUsername %}{{ __("Usernames are 1 to 64 characters, without spaces.") }}{% when Problem::LastAdmin %}{{ __("The last admin can't be removed or made anything else.") }}{% when Problem::Yourself %}{{ __("Not your own account: another admin can do that.") }}{% when Problem::Gone %}{{ __("That account no longer exists.") }}{% endmatch %}</p>
 {% endmatch %}</div>

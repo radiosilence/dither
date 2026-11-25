@@ -208,6 +208,10 @@ msgstr[1] ""
 msgid "No albums yet. Drop some images in to start one."
 msgstr ""
 
+#: templates/app/invite.html
+msgid "Not your own account: another admin can do that."
+msgstr ""
+
 #: templates/app/grid.html
 msgid "Nothing here yet."
 msgstr ""
@@ -304,10 +308,6 @@ msgstr ""
 
 #: templates/sign/problem.html
 msgid "Wrong username or password."
-msgstr ""
-
-#: templates/app/invite.html
-msgid "You can't delete your own account."
 msgstr ""
 
 #: templates/app/picker.html

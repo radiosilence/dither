@@ -187,7 +187,10 @@ pub async fn create(
     Extension(session): Extension<Session>,
     Json(new): Json<NewAccount>,
 ) -> AppResult<Response> {
-    let role = new.newrole.parse().unwrap_or(Role::User);
+    let role: Role = new
+        .newrole
+        .parse()
+        .map_err(|_| AppError::BadRequest("unknown role".into()))?;
     let shown = match state.db.create_account(&new.newuser, role).await {
         Ok(user) => {
             tracing::info!(username = %user.username, %role, by = %session.username, "account made");
@@ -217,6 +220,10 @@ pub async fn reset(
     Extension(session): Extension<Session>,
     Path(id): Path<i64>,
 ) -> AppResult<Response> {
+    // It would sign them out, with the link shown once the only way back in.
+    if id == session.user_id {
+        return answer(Shown::Problem(Problem::Yourself), None);
+    }
     let shown = match state.db.reset_password(id).await {
         Ok(user) => {
             tracing::info!(username = %user.username, by = %session.username, "password reset");

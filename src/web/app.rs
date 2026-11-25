@@ -693,9 +693,10 @@ pub async fn stream(
     let mut ticks = state.uploads.jobs.ticks();
     let me: std::sync::Arc<str> = session.username.as_str().into();
     let mut stopping = state.stopping.clone();
-    // A change to the account (a new role or password, its deletion) ends the
-    // stream; the page's next request is authenticated as things then stand.
-    let account = koan_auth::changes::account_mark();
+    // A change to the account (a new role or password, its deletion) since
+    // its session was read ends the stream; the page's next request is
+    // authenticated as things then stand.
+    let account = session.mark;
     let events = async_stream::stream! {
         let mut sent: HashMap<&'static str, String> = HashMap::new();
         // The album's images as last drawn: progress is sent for these.

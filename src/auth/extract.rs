@@ -35,6 +35,7 @@ pub fn is_page_load(headers: &HeaderMap) -> bool {
 /// sign-in page is the safe answer to not knowing.
 pub async fn current(state: &AppState, headers: &HeaderMap) -> Option<Session> {
     let secret = session_id(headers)?;
+    let mark = koan_auth::changes::account_mark();
     state
         .db
         .holder(secret)
@@ -42,7 +43,7 @@ pub async fn current(state: &AppState, headers: &HeaderMap) -> Option<Session> {
         .inspect_err(|e| tracing::warn!(error = %e, "session lookup failed"))
         .ok()
         .flatten()
-        .map(Session::from)
+        .map(|user| Session::new(user, mark))
 }
 
 pub async fn require_session(

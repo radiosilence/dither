@@ -757,9 +757,24 @@ async fn an_invite_is_spent_by_choosing_a_password() {
     assert_eq!(again.status, StatusCode::BAD_REQUEST);
     // Taken names are refused.
     let taken = app
-        .write("POST", "/users", json!({ "newuser": "eve" }), None)
+        .write(
+            "POST",
+            "/users",
+            json!({ "newuser": "eve", "newrole": "user" }),
+            None,
+        )
         .await;
     assert!(taken.text().contains("already an account"));
+    // An unknown role is refused, not taken as a user.
+    let unknown = app
+        .write(
+            "POST",
+            "/users",
+            json!({ "newuser": "fay", "newrole": "Readonly" }),
+            None,
+        )
+        .await;
+    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -771,9 +786,14 @@ async fn only_admins_reach_the_accounts_page() {
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        app.write("POST", "/users", json!({ "newuser": "x" }), Some(&ann))
-            .await
-            .status,
+        app.write(
+            "POST",
+            "/users",
+            json!({ "newuser": "x", "newrole": "user" }),
+            Some(&ann)
+        )
+        .await
+        .status,
         StatusCode::FORBIDDEN
     );
     let page = app.get("/users").await;
@@ -804,7 +824,17 @@ async fn a_deleted_account_takes_its_albums_and_sessions() {
     let mine = app
         .write("POST", &format!("/users/{dev}/delete"), json!({}), None)
         .await;
-    assert!(mine.text().contains("your own account"));
+    assert!(mine.text().contains("your own account"), "{}", mine.text());
+    // Nor resets their own password, which would sign them out.
+    let reset = app
+        .write("POST", &format!("/users/{dev}/reset"), json!({}), None)
+        .await;
+    assert!(
+        reset.text().contains("your own account"),
+        "{}",
+        reset.text()
+    );
+    assert_eq!(app.get("/").await.status, StatusCode::OK);
     assert!(app.state.db.account_named("dev").await.unwrap().is_some());
 }
 

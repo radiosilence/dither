@@ -379,7 +379,8 @@ Passwords are stored as argon2id hashes. Every sign-in goes through one
 verifier, which runs a few argon2 checks at once, refuses an address's
 eleventh try in a minute, and refuses an account's sixty-first failure in a
 minute from anywhere but the networks it signed in from in the last week. The
-address is the one view counts use (see `TRUSTED_PROXIES`). Sessions are
+address is what the proxy in front reports (see `TRUSTED_PROXIES`), believed
+only from a private, loopback or trusted peer, else the peer's own. Sessions are
 opaque ids in `__Host-` cookies, stored hashed, and last thirty days; a new
 password, a deleted account or signing out ends them, and the account's role is
 read with every request. A live page whose account changes stops and picks up

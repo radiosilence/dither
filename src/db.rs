@@ -1584,13 +1584,10 @@ impl Db {
     /// admin. Answers with its images, whose copies are recorded as strays
     /// until the store confirms them gone.
     pub async fn delete_account(&self, id: i64) -> std::result::Result<Vec<String>, AccountError> {
-        let owner = self
-            .run(move |c| koan_auth::users::get_user_by_id(c, id))
-            .await?
-            .ok_or_else(|| AccountError::NoSuchUser(id.to_string()))?
-            .username;
-        let o = owner.clone();
-        self.account_write(Announce::Owner(owner.into()), move |tx| {
+        // Its own pages end with its sessions (koan-auth's account changes),
+        // so no one's are told to redraw.
+        self.account_write(Announce::Writes, move |tx| {
+            let o = existing(tx, id)?.username;
             let images = tx
                 .prepare(
                     "SELECT i.id FROM images i JOIN albums a ON a.id = i.album WHERE a.owner = ?1",

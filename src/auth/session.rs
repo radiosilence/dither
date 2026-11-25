@@ -18,19 +18,22 @@ pub struct Session {
     /// The account's name: whose albums these are.
     pub username: String,
     pub role: Role,
+    /// Where account changes stood before the session was read
+    /// (`koan_auth::changes::account_mark`): a change to this account since is
+    /// one the session did not see.
+    pub mark: u64,
 }
 
-impl From<UserRow> for Session {
-    fn from(user: UserRow) -> Self {
+impl Session {
+    pub fn new(user: UserRow, mark: u64) -> Self {
         Self {
             user_id: user.id,
             username: user.username,
             role: user.role,
+            mark,
         }
     }
-}
 
-impl Session {
     /// Whether the account may change anything: a readonly one may not.
     pub fn writes(&self) -> bool {
         self.role.has_permission(Role::User)
