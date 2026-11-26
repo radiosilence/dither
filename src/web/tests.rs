@@ -415,12 +415,11 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
         app.get(&format!("/p/{id}.webp")).await.status,
         StatusCode::NOT_FOUND
     );
-    assert!(html.contains("<meta name=\"robots\" content=\"noindex\">"));
+    assert!(html.contains("<meta name=\"robots\" content=\"noindex, nofollow\">"));
     assert!(!html.contains("<script"), "public pages carry no script");
     assert!(
-        !page
-            .header("content-security-policy")
-            .contains("script-src"),
+        page.header("content-security-policy")
+            .contains("script-src 'none'"),
         "nor may they load any"
     );
     assert_eq!(page.header("x-robots-tag"), "noindex");

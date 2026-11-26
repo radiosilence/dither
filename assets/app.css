@@ -2150,6 +2150,14 @@
     padding-bottom: max(16px, env(safe-area-inset-bottom));
   }
 
+  .viewer-panel .combo {
+    display: flex;
+  }
+
+  .viewer-panel .combo > input {
+    min-width: 0;
+  }
+
   .views {
     column-gap: calc(var(--spacing) * 3);
     row-gap: var(--spacing);

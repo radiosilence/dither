@@ -307,6 +307,16 @@
     padding-bottom: max(16px, env(safe-area-inset-bottom));
   }
 
+  /* The links' copy fields fill their column and shrink with it: the kit's keeps its input at the input's own width,
+   * wider than the panel. */
+  .viewer-panel .combo {
+    @apply flex;
+  }
+
+  .viewer-panel .combo > input {
+    @apply min-w-0;
+  }
+
   .views {
     @apply m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-fine text-muted;
   }
