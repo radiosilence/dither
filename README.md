@@ -348,8 +348,8 @@ for moving or deleting, and opened in a viewer with their caption and the
 links to share them by (page, file, Markdown, BBCode, HTML). The look is
 kōan's: [koan-kit-web](https://github.com/radiosilence/koan/tree/main/koan-kit-web)'s
 components write the controls' markup (buttons, fields, the page's one
-question before a delete, notices, meters, copy fields) and its stylesheet
-draws them, so dither draws them as kōan's other servers do;
+question before a delete, notices, meters, copy fields, the video player's
+buttons and the ensō it shows while it waits) and its stylesheet draws them, so dither draws them as kōan's other servers do;
 `styles/app.css` holds only dither's accent, layout and its own components.
 
 ## Signing in

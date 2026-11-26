@@ -119,29 +119,13 @@ async function json<T>(res: Response) {
 // ── Messages over the page ───────────────────────────────────────────────
 
 /**
- * A message in the page's flash region (`kit::Flash::region`), drawn as the kit
- * draws one a handler sends: a confirmation fades by itself, and an error stays
- * until it is pressed. One with a link to follow stays too.
+ * A message in the page's flash region (`kit::Flash::region`), which draws it
+ * as one a handler sends: a confirmation fades by itself, while an error and
+ * one with a link to follow stay until pressed.
  */
-function flash(text: string, bad = false, link?: { href: string; label: string }) {
-  const region = $("#flash");
-  if (!region) return;
-  const toast = document.createElement("p");
-  toast.className = bad ? "toast bad" : link ? "toast" : "toast brief";
-  if (bad) toast.setAttribute("role", "alert");
-  toast.append(text);
-  if (link) {
-    const a = document.createElement("a");
-    a.href = link.href;
-    a.textContent = link.label;
-    toast.append(" ", a);
-  }
-  if (bad || link) {
-    toast.addEventListener("click", (ev) => {
-      if (!(ev.target as Element).closest("a")) toast.remove();
-    });
-  }
-  region.replaceChildren(toast);
+function flash(message: string, bad = false, link?: { href: string; label: string }) {
+  const detail = { message, bad, href: link?.href, link: link?.label };
+  window.dispatchEvent(new CustomEvent("kit-flash", { detail }));
 }
 
 // ── Dialogs ──────────────────────────────────────────────────────────────
@@ -257,6 +241,12 @@ function paintSelection() {
   if (remove && remove.dataset["url"] !== url) remove.dataset["url"] = url;
   if (remove && remove.dataset["ask"] !== ask) remove.dataset["ask"] = ask;
 }
+
+// The chosen images are deleted once the page's question closes on it; the
+// live stream redraws the grid after.
+document.addEventListener("kit-confirmed", (ev) => {
+  if (ev.target instanceof Element && ev.target.closest("[data-delete]")) selecting(false);
+});
 
 function selecting(on: boolean) {
   body.classList.toggle("selecting", on);

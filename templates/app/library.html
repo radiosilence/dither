@@ -16,6 +16,6 @@
   {% if shell.max_video.is_some() %}{{ kit::Check::new("as-recorded", __("keep videos as recorded")).class("text-fine").attr("title", __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.")).data("as-recorded", "") }}{% endif %}
 </div>
 <div hidden{{ live() }}></div>
-{{ albums|safe }}
-{{ usage|safe }}
+{{ albums }}
+{{ usage }}
 {% endblock %}

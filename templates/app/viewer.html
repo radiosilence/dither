@@ -28,19 +28,19 @@
     {% if progress.is_none() && failure.is_none() %}
     {%- let copied = __p("A copy button, after copying", "copied") %}
     {%- let copy = __p("A copy button", "copy") %}
-    {%- let page = kit::Pairs::new().pair(__p("Share link: the image's page", "page"), kit::CopyField::new(__("link to the image's page"), links.page, copy.clone()).copied(copied.clone())).pair(__p("Share link: the image file", "image"), kit::CopyField::new(__("link to the image file"), links.file, copy.clone()).copied(copied.clone())) %}
+    {%- let page = kit::Pairs::new().pair(__p("Share link: the image's page", "page"), kit::CopyField::new(__("link to the image's page"), links.page, copy.clone()).copied(copied.clone()).name("page").icon_only().compact()).pair(__p("Share link: the image file", "image"), kit::CopyField::new(__("link to the image file"), links.file, copy.clone()).copied(copied.clone()).name("file").icon_only().compact()) %}
     {%- if video %}
-    {{ page.pair(__p("Share link: the image in HTML", "html"), kit::CopyField::new(__("the image in HTML"), links.html, copy).copied(copied)) }}
+    {{ page.pair(__p("Share link: the image in HTML", "html"), kit::CopyField::new(__("the image in HTML"), links.html, copy).copied(copied).name("html").icon_only().compact()) }}
     {%- else %}
-    {{ page.pair(__p("Share link: the image in Markdown", "markdown"), kit::CopyField::new(__("the image in Markdown"), links.markdown, copy.clone()).copied(copied.clone())).pair(__p("Share link: the image in forum BBCode", "bbcode"), kit::CopyField::new(__("the image in BBCode"), links.bbcode, copy.clone()).copied(copied.clone())).pair(__p("Share link: the image in HTML", "html"), kit::CopyField::new(__("the image in HTML"), links.html, copy).copied(copied)) }}
+    {{ page.pair(__p("Share link: the image in Markdown", "markdown"), kit::CopyField::new(__("the image in Markdown"), links.markdown, copy.clone()).copied(copied.clone()).name("markdown").icon_only().compact()).pair(__p("Share link: the image in forum BBCode", "bbcode"), kit::CopyField::new(__("the image in BBCode"), links.bbcode, copy.clone()).copied(copied.clone()).name("bbcode").icon_only().compact()).pair(__p("Share link: the image in HTML", "html"), kit::CopyField::new(__("the image in HTML"), links.html, copy).copied(copied).name("html").icon_only().compact()) }}
     {%- endif %}
     {% endif %}
-    <div class="flex flex-wrap gap-2">
+    <div class="compact flex flex-wrap gap-2">
       {% if is_cover %}{{ kit::Button::bordered(__("album cover")).disabled(true) }}{% else %}{{ kit::Button::bordered(__("make cover")).post(self.cover_url()) }}{% endif %}
       {{ kit::Button::bordered(__p("Button: move images to another album", "move")).icon(kit::icon::ALBUM).data("move-one", id) }}
       {{ kit::Button::bordered(__p("Button", "delete")).bad().icon(kit::icon::TRASH).post(self.delete_url()).confirm(__n("Delete this image? Links to it stop working. This can't be undone.", "Delete these %{n} images? Links to them stop working. This can't be undone.", 1), __p("Button", "delete")) }}
     </div>
-    {{ views|safe }}
+    {{ views }}
     <p class="m-0 text-fine break-all text-muted">{{ name }}{% if progress.is_none() && failure.is_none() %} · {{ width_full }}×{{ height_full }}{% endif %}{% if let Some(length) = length.as_ref() %} · {{ length }}{% endif %} · {{ size }}{% if animated %} · {{ __("animated") }}{% endif %}</p>
   </div>
 </div>

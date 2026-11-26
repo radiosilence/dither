@@ -58,7 +58,7 @@
     @apply my-6 grid justify-items-start gap-3 border border-rule px-5 py-6;
   }
 
-  .dropzone.compact {
+  .dropzone.short {
     @apply flex flex-wrap items-center gap-x-4 gap-y-2 py-4;
   }
 
@@ -77,10 +77,6 @@
 
   .tray-line {
     @apply flex items-center gap-2;
-  }
-
-  .tray-line button {
-    @apply px-1.5 py-0.5 text-fine;
   }
 
   .tray-title {
@@ -132,10 +128,6 @@
     @apply opacity-60;
   }
 
-  .tray-item button {
-    @apply px-1.5 py-0.5 text-fine;
-  }
-
   /* ── The library ───────────────────────────────────────────────────── */
 
   .albums {
@@ -180,10 +172,6 @@
     @apply w-full resize-none border-0 border-b border-transparent bg-transparent px-0 py-1 text-body whitespace-pre-wrap hover:border-rule focus:border-brand focus:outline-none;
     field-sizing: content;
     min-height: 2lh;
-  }
-
-  .share {
-    @apply mt-5 flex flex-wrap items-center gap-2;
   }
 
   /* The album's link to copy takes the row's room. */
@@ -317,39 +305,17 @@
     @apply min-w-0;
   }
 
+  /* The view counts, quieter than the panel's own pairs. */
   .views {
-    @apply m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-fine text-muted;
-  }
-
-  .views dt {
-    @apply lowercase;
-  }
-
-  .views dd {
-    @apply m-0 min-w-0;
+    @apply text-fine text-muted;
   }
 
   /* ── The move picker ───────────────────────────────────────────────── */
 
   .picker {
-    @apply grid max-h-[50dvh] gap-1 overflow-y-auto overscroll-contain;
+    @apply grid max-h-[50dvh] overflow-y-auto overscroll-contain;
   }
 
-  .choice {
-    @apply grid cursor-pointer grid-cols-[auto_48px_minmax(0,1fr)] items-center gap-3 px-1 py-1.5 hover:bg-hover/30;
-  }
-
-  .choice .thumb {
-    @apply grid size-12 place-items-center overflow-hidden bg-surface text-muted;
-  }
-
-  .choice .thumb img {
-    @apply size-full object-cover;
-  }
-
-  .choice:has(input:checked) {
-    @apply bg-surface;
-  }
 
   /* ── Public pages ──────────────────────────────────────────────────── */
 
@@ -495,17 +461,21 @@
     @apply absolute inset-0 m-auto grid size-16 place-items-center border border-ink/60 bg-bg/70 p-0 text-ink hover:bg-bg/90;
   }
 
+  .player-start > .icon {
+    @apply size-[30px];
+  }
+
   .player.started .player-start {
     @apply hidden;
   }
 
-  /* The kit's spinner, larger, over the middle of the picture. */
+  /* The kit's spinner over the picture, while the video waits for data. */
   .player-busy {
-    @apply pointer-events-none absolute inset-0 m-auto hidden size-7 text-ink;
+    @apply hidden text-ink;
   }
 
   .player.busy .player-busy {
-    @apply block;
+    @apply inline-block;
   }
 
   .player-jump {
@@ -535,20 +505,6 @@
 
   .player.idle .player-controls {
     @apply pointer-events-none opacity-0;
-  }
-
-  /* A toggle shows the glyph for what it does now. */
-  .player-controls .icon-button svg + svg,
-  .player.playing [data-act="toggle"] svg:first-child,
-  .player.muted [data-act="mute"] svg:first-child,
-  .player.full [data-act="full"] svg:first-child {
-    @apply hidden;
-  }
-
-  .player.playing [data-act="toggle"] svg + svg,
-  .player.muted [data-act="mute"] svg + svg,
-  .player.full [data-act="full"] svg + svg {
-    @apply block;
   }
 
   .player-time {

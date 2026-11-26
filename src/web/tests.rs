@@ -1073,9 +1073,14 @@ async fn deleting_an_album_deletes_its_files() {
         .post(&format!("/albums/{album}/delete"), json!({}))
         .await;
     assert_eq!(deleted.status, StatusCode::OK);
-    // The page's question closes, and the page goes to the albums.
-    assert!(deleted.text().contains("_kitconfirm"), "{}", deleted.text());
-    assert!(deleted.text().contains("location.assign('/')"));
+    // The page it was asked on is gone, so the browser goes to the albums.
+    assert!(
+        deleted
+            .text()
+            .contains("data-href=\"/\" data-init=\"location.assign(el.dataset.href)\""),
+        "{}",
+        deleted.text()
+    );
     for id in &ids {
         assert_eq!(
             app.get(&format!("/{id}.jpg")).await.status,

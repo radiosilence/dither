@@ -19,7 +19,7 @@
 </main>
 <footer class="py-6 text-center">{{ kit::Release::new("dither", shell.version, "https://github.com/radiosilence/dither") }}</footer>
 <div id="drop" class="drop" hidden><p>{{ __("drop to upload") }}</p></div>
-<section id="tray" class="tray" hidden aria-label="{{ __("uploads") }}"></section>
+<section id="tray" class="tray compact" hidden aria-label="{{ __("uploads") }}"></section>
 <dialog id="viewer" class="viewer" aria-label="{{ __p("Dialog name", "image") }}"><div id="viewer-body" class="viewer-body"></div></dialog>
 {#- The albums to move images to are read into it as it opens (`app.ts`). #}
 {% filter kit::wrap(kit::Sheet::new("mover", __("move to")).action(kit::Button::quiet(__p("Button: dismiss a dialog", "cancel")).closes("mover")).action(kit::Button::primary(__p("Button: move images to another album", "move")).data("move-confirm", ""))) %}<div id="mover-body"></div>{% endfilter %}

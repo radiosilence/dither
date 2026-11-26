@@ -23,7 +23,7 @@ fn options() -> Options<'static> {
 }
 
 /// The text as HTML, safe to put in a page as it is.
-pub fn html(text: &str) -> String {
+pub fn html(text: &str) -> askama_datastar::Html {
     let arena = Arena::new();
     let o = options();
     let root = comrak::parse_document(&arena, text, &o);
@@ -58,7 +58,7 @@ pub fn html(text: &str) -> String {
     }
     let mut out = String::new();
     comrak::format_html(root, &o, &mut out).expect("writing to a String");
-    out
+    askama_datastar::Html::trusted(out)
 }
 
 /// The words of the text without its Markdown, one block to a line: for alt
@@ -96,6 +96,10 @@ fn collect<'a>(node: &'a AstNode<'a>, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn html(text: &str) -> String {
+        super::html(text).as_str().to_owned()
+    }
 
     #[test]
     fn renders_markdown() {
