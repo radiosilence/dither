@@ -24,7 +24,7 @@ httpdate = "1.0.3"
 koan-auth = "0.75.2"
 # The kōan web kit's components and the stylesheet they are drawn with. From koan#2359's branch until it merges, then
 # the published "0.5".
-koan-kit-web = { git = "https://github.com/radiosilence/koan", branch = "koan-kit-web-components" }
+koan-kit-web = "0.5"
 ipnet = "2.12.2"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 object_store = { version = "0.14.2", features = ["aws"] }
