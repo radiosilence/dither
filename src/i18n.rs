@@ -50,15 +50,69 @@ pub fn plural_samples() -> &'static [u64] {
     &SAMPLES
 }
 
-/// Gives template structs the gettext vocabulary (`__`, `__p`, `__n`, …),
-/// which askama resolves as methods on the template. A macro rather than a
-/// blanket impl, which the orphan rule forbids for the crate's trait.
+/// A translated message, as a template's `__`, `__p` and `__n` give it:
+/// escaped where it is shown, as askama_gettext's own is, and taken by a
+/// koan-kit-web component as its text, which askama_gettext's type cannot be,
+/// both types being other crates'.
+#[derive(Clone)]
+pub struct Words(pub askama_gettext::Message);
+
+impl Words {
+    /// Supplies a `%{name}` value.
+    pub fn with(self, name: &str, value: impl std::fmt::Display) -> Self {
+        Self(self.0.with(name, value))
+    }
+}
+
+impl std::fmt::Display for Words {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<Words> for koan_kit_web::Text<'_> {
+    fn from(words: Words) -> Self {
+        words.to_string().into()
+    }
+}
+
+impl From<Words> for koan_kit_web::Content<'_> {
+    fn from(words: Words) -> Self {
+        words.to_string().into()
+    }
+}
+
+impl From<&Words> for koan_kit_web::Text<'_> {
+    fn from(words: &Words) -> Self {
+        words.to_string().into()
+    }
+}
+
+/// Gives template structs the gettext vocabulary (`__`, `__p`, `__n`), which
+/// askama resolves as methods on the template, each giving [`Words`]. A macro
+/// rather than a blanket impl, which the orphan rule forbids for the crate's
+/// trait.
 macro_rules! translated {
     ($($t:ty),* $(,)?) => {
         $(
             impl askama_gettext::Translate for $t {
                 fn translator(&self) -> askama_gettext::Translator<'_> {
                     $crate::i18n::translator()
+                }
+            }
+
+            #[allow(dead_code, reason = "a template uses the calls its words need")]
+            impl $t {
+                fn __(&self, msgid: &str) -> $crate::i18n::Words {
+                    $crate::i18n::Words(askama_gettext::Translate::__(self, msgid))
+                }
+
+                fn __p(&self, context: &str, msgid: &str) -> $crate::i18n::Words {
+                    $crate::i18n::Words(askama_gettext::Translate::__p(self, context, msgid))
+                }
+
+                fn __n(&self, msgid: &str, plural: &str, count: u64) -> $crate::i18n::Words {
+                    $crate::i18n::Words(askama_gettext::Translate::__n(self, msgid, plural, count))
                 }
             }
         )*

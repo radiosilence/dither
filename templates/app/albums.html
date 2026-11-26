@@ -8,6 +8,6 @@
   </a>
 {% endfor %}
 {% if cards.is_empty() %}
-  <p class="col-span-full text-muted">{{ __("No albums yet. Drop some images in to start one.") }}</p>
+  {{ kit::Empty::new(__("No albums yet. Drop some images in to start one.")).class("col-span-full") }}
 {% endif %}
 </div>

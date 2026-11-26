@@ -12,11 +12,12 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use askama::Template;
-use askama_gettext::Translate as _;
+use askama_datastar::{ElementPatchMode, Html as Fragment};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
+use koan_kit_web as kit;
 
 use crate::auth::session::Session;
 use crate::db::{AlbumEdit, Card, Image, Status};
@@ -77,6 +78,14 @@ struct LibraryPage {
     usage: String,
 }
 
+impl LibraryPage {
+    /// The live stream's attributes, which open it and open it again
+    /// whenever it ends or goes quiet.
+    fn live(&self) -> Fragment {
+        askama_datastar::reopen("/stream")
+    }
+}
+
 #[derive(Template)]
 #[template(path = "app/albums.html")]
 struct Albums {
@@ -125,6 +134,38 @@ struct Summary {
 #[template(path = "app/deleted.html")]
 struct Deleted;
 
+/// The album's foot: deleting it, asked with how many images go with it.
+#[derive(Template)]
+#[template(path = "app/foot.html")]
+struct Foot {
+    id: String,
+    count: u64,
+}
+
+impl Foot {
+    fn delete_url(&self) -> String {
+        format!("/albums/{}/delete", self.id)
+    }
+}
+
+/// Why a change asked for in the page's question failed, in words, for
+/// `kit::Confirm::error`, which escapes them: so rendered unescaped here.
+#[derive(Template)]
+#[template(path = "app/failed.html", escape = "none")]
+struct Failure {
+    /// Deleting this many images; else the album.
+    images: Option<u64>,
+}
+
+/// The answer to a change the page's question asked for that failed: why,
+/// inside the question, which stays open.
+fn refused(images: Option<u64>) -> AppResult<Response> {
+    let words = render(&Failure { images })?;
+    Ok(askama_datastar::events([
+        kit::Confirm::error(words.trim()).into()
+    ]))
+}
+
 /// The five ways the viewer offers to share an image.
 struct Links {
     page: String,
@@ -139,13 +180,24 @@ struct Links {
 struct AlbumPage {
     shell: Shell,
     id: String,
+    /// Where its title, description and privacy are saved.
+    meta: String,
     title: String,
     description: String,
     private: bool,
     share: String,
     grid: String,
     summary: String,
+    foot: String,
     views: String,
+}
+
+impl AlbumPage {
+    /// The live stream's attributes, which open it and open it again
+    /// whenever it ends or goes quiet.
+    fn live(&self) -> Fragment {
+        askama_datastar::reopen(&format!("/stream?album={}", self.id))
+    }
 }
 
 /// An image's or album's view counts, as its owner sees them.
@@ -193,6 +245,18 @@ struct Grid {
     album: String,
     cover: String,
     tiles: Vec<Tile>,
+}
+
+impl Grid {
+    fn meter(&self, id: &str, done: &u16) -> kit::Meter<'static> {
+        progress(id, *done)
+    }
+}
+
+/// A video's progress on its tile, in thousandths: drawn with the grid, and
+/// sent alone as it moves.
+fn progress(id: &str, done: u16) -> kit::Meter<'static> {
+    kit::Meter::new(done, 1000).id(format!("vp-{id}"))
 }
 
 struct Tile {
@@ -263,6 +327,28 @@ struct Viewer {
     views: String,
 }
 
+impl Viewer {
+    fn view_url(&self, id: &str) -> String {
+        format!("/images/{id}/view")
+    }
+
+    fn caption_id(&self) -> String {
+        format!("caption-{}", self.id)
+    }
+
+    fn caption_url(&self) -> String {
+        format!("/images/{}/caption", self.id)
+    }
+
+    fn cover_url(&self) -> String {
+        format!("/albums/{}/cover?image={}", self.album, self.id)
+    }
+
+    fn delete_url(&self) -> String {
+        format!("/images/delete?ids={}", self.id)
+    }
+}
+
 crate::i18n::translated!(
     LibraryPage,
     Albums,
@@ -273,6 +359,8 @@ crate::i18n::translated!(
     Usage,
     Summary,
     Deleted,
+    Foot,
+    Failure,
     ViewCounts
 );
 
@@ -380,12 +468,14 @@ pub async fn album(
 }
 
 async fn editor(state: &AppState, session: &Session, album: crate::db::Album) -> AppResult<String> {
-    let (grid, summary, _) = album_parts(state, &album).await?;
+    let (grid, summary, foot, _) = album_parts(state, &album).await?;
     let views = view_counts(state, &album.id).await?;
     render(&AlbumPage {
         views,
         shell: shell(state, session).await,
         share: format!("{}/a/{}", state.config.public_url, album.id),
+        meta: format!("/albums/{}/meta", album.id),
+        foot,
         id: album.id,
         title: album.title,
         description: album.description,
@@ -395,12 +485,12 @@ async fn editor(state: &AppState, session: &Session, album: crate::db::Album) ->
     })
 }
 
-/// An album page's live parts: the grid of images and the line counting them,
-/// and the images' ids.
+/// An album page's live parts: the grid of images, the line counting them and
+/// the foot that deletes them, and the images' ids.
 async fn album_parts(
     state: &AppState,
     album: &crate::db::Album,
-) -> AppResult<(String, String, Vec<String>)> {
+) -> AppResult<(String, String, String, Vec<String>)> {
     let images = state.db.images(&album.id).await?;
     let cover = album
         .cover
@@ -420,7 +510,16 @@ async fn album_parts(
         count: images.len() as u64,
         size: (bytes > 0).then(|| human(bytes)),
     })?;
-    Ok((grid, summary, images.into_iter().map(|i| i.id).collect()))
+    let foot = render(&Foot {
+        id: album.id.clone(),
+        count: images.len() as u64,
+    })?;
+    Ok((
+        grid,
+        summary,
+        foot,
+        images.into_iter().map(|i| i.id).collect(),
+    ))
 }
 
 pub async fn album_meta(
@@ -456,6 +555,9 @@ pub async fn reorder(
     }
 }
 
+/// The image to make an album's cover, named in the address, since the
+/// viewer's button sends the page's signals rather than a body of its own.
+/// None goes back to the album's first image.
 #[derive(serde::Deserialize)]
 pub struct Cover {
     image: Option<String>,
@@ -466,36 +568,53 @@ pub async fn cover(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
     Path(id): Path<String>,
-    Json(body): Json<Cover>,
+    Query(cover): Query<Cover>,
 ) -> AppResult<Response> {
     if !state
         .db
-        .set_cover(&session.username, &id, body.image.as_deref())
+        .set_cover(&session.username, &id, cover.image.as_deref())
         .await?
     {
         return Err(AppError::NotFound);
     }
-    Ok(match body.image {
+    Ok(match cover.image {
         Some(image) => Html(viewer_html(&state, &session, &image).await?).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
     })
 }
 
+/// Asked for in the page's question, so answered there: the question closed
+/// and the browser sent to the albums, or why it failed, in the question.
 pub async fn delete_album(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
     Path(id): Path<String>,
-) -> AppResult<StatusCode> {
-    let images = state
-        .db
-        .delete_album(&session.username, &id)
-        .await?
-        .ok_or(AppError::NotFound)?;
+) -> AppResult<Response> {
+    let images = match state.db.delete_album(&session.username, &id).await {
+        Ok(Some(images)) => images,
+        // Not this person's: as not found as everywhere else, though their
+        // page would never ask.
+        Ok(None) => return Err(AppError::NotFound),
+        Err(e) => {
+            tracing::warn!(album = %id, error = %e, "deleting an album failed");
+            return refused(None);
+        }
+    };
     let count = images.len();
     state.uploads.jobs.forget(&images).await;
     crate::store::discard(&state.store, &state.db, images).await;
     tracing::info!(album = %id, images = count, "album deleted");
-    Ok(StatusCode::NO_CONTENT)
+    // Datastar has no way to go elsewhere but an expression; this one is the
+    // program's own.
+    let away =
+        Fragment::trusted(r#"<div id="away" hidden data-init="location.assign('/')"></div>"#)
+            .patch()
+            .selector("body")
+            .mode(ElementPatchMode::Append);
+    Ok(askama_datastar::events([
+        kit::Confirm::close().into(),
+        away.into(),
+    ]))
 }
 
 #[derive(serde::Deserialize)]
@@ -551,16 +670,41 @@ pub async fn move_images(
     Ok(Json(serde_json::json!({ "moved": moved, "to": to })))
 }
 
+/// The images to delete, named in the address, since the page's question
+/// sends the page's signals rather than a body of its own.
+#[derive(serde::Deserialize)]
+pub struct Chosen {
+    /// Comma-separated.
+    #[serde(default)]
+    ids: String,
+}
+
+/// Asked for in the page's question, so answered there: the question closed,
+/// or why it failed, in the question. The live stream redraws the album
+/// without them, and the page's script follows: a choice whose images are
+/// gone ends, and a viewer showing one moves on.
 pub async fn delete_images(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
-    Json(body): Json<Ids>,
-) -> AppResult<Json<serde_json::Value>> {
-    let deleted = state.db.delete_images(&session.username, body.ids).await?;
-    let count = deleted.len();
+    Query(chosen): Query<Chosen>,
+) -> AppResult<Response> {
+    let ids: Vec<String> = chosen
+        .ids
+        .split(',')
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+        .collect();
+    let asked = ids.len() as u64;
+    let deleted = match state.db.delete_images(&session.username, ids).await {
+        Ok(deleted) => deleted,
+        Err(e) => {
+            tracing::warn!(error = %e, "deleting images failed");
+            return refused(Some(asked));
+        }
+    };
     state.uploads.jobs.forget(&deleted).await;
     crate::store::discard(&state.store, &state.db, deleted).await;
-    Ok(Json(serde_json::json!({ "deleted": count })))
+    Ok(askama_datastar::events([kit::Confirm::close().into()]))
 }
 
 /// The move dialog's list: every other album of the person's.
@@ -704,17 +848,24 @@ pub async fn stream(
         loop {
             let parts = match &q.album {
                 Some(id) => match owned(&state, &session, id).await {
-                    Ok(album) => album_parts(&state, &album).await.map(|(g, s, ids)| {
+                    Ok(album) => album_parts(&state, &album).await.map(|(g, s, f, ids)| {
                         shown = ids.into_iter().collect();
-                        vec![("grid", g), ("summary", s)]
+                        vec![("grid", g), ("summary", s), ("foot", f)]
                     }),
-                    // Only a missing album ends the stream. A database that
-                    // could not answer (a long write holding the lock) is
-                    // logged below and asked again on the next write.
+                    // A missing album has nothing more to show. The stream
+                    // stays open, quiet, until the server or the account
+                    // changes, since the page would open one that ended again.
+                    // A database that could not answer (a long write holding
+                    // the lock) is logged below and asked again on the next
+                    // write.
                     Err(AppError::NotFound) => {
                         match Deleted.render() {
                             Ok(html) => yield askama_datastar::Html::trusted(html).patch(),
                             Err(e) => tracing::error!(error = %e, "drawing a deleted album failed"),
+                        }
+                        tokio::select! {
+                            _ = stopping.wait_for(|s| *s) => {}
+                            () = koan_auth::changes::account_changed_since(session.user_id, account) => {}
                         }
                         break;
                     }
@@ -750,10 +901,7 @@ pub async fn stream(
                     && tick.owner == me
                     && shown.contains(&tick.id)
                 {
-                    yield askama_datastar::Html::trusted(format!(
-                        "<progress id=\"vp-{}\" class=\"meter\" max=\"1000\" value=\"{}\"></progress>",
-                        tick.id, tick.done
-                    )).patch();
+                    yield progress(&tick.id, tick.done).patch();
                 }
             };
             if !woken {

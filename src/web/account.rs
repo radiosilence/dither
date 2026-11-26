@@ -7,14 +7,14 @@
 //! changes its own password too: it is the one write it may make.
 
 use askama::Template;
-use askama_gettext::Translate as _;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use axum::{Extension, Form, Router};
 use koan_auth::accounts::AccountError;
 use koan_auth::password::Refused;
+use koan_kit_web as kit;
 
 use super::AppState;
 use super::Helpers as _;
@@ -87,8 +87,8 @@ pub struct NewPassword {
     confirm: String,
 }
 
-/// The answer: the outcome, the form emptied once it worked, and the new
-/// session's cookie when there is one.
+/// The answer: the outcome, the form's passwords emptied once it worked, and
+/// the new session's cookie when there is one.
 fn answer(outcome: Outcome, secret: Option<&str>) -> AppResult<Response> {
     let mut events = vec![
         askama_datastar::Html::trusted(result(outcome)?)
@@ -97,7 +97,7 @@ fn answer(outcome: Outcome, secret: Option<&str>) -> AppResult<Response> {
     ];
     if outcome == Outcome::Changed {
         events.push(
-            askama_datastar::PatchSignals::new(r#"{"current":"","password":"","confirm":""}"#)
+            askama_datastar::PatchSignals::new(r#"{"_current":"","_password":"","_confirm":""}"#)
                 .into(),
         );
     }
@@ -120,7 +120,7 @@ pub async fn change_password(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
     headers: HeaderMap,
-    Json(new): Json<NewPassword>,
+    Form(new): Form<NewPassword>,
 ) -> AppResult<Response> {
     if new.password != new.confirm {
         return answer(Outcome::Mismatch, None);

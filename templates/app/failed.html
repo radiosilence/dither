@@ -1,0 +1,2 @@
+{#- Why a change asked for in the page's question was not made, as words the question shows. -#}
+{% if let Some(n) = images %}{{ __n("Couldn't delete it.", "Couldn't delete them.", **n) }}{% else %}{{ __("Couldn't delete the album.") }}{% endif %}

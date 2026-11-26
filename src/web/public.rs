@@ -25,13 +25,16 @@
 //! picture. Every file is served with byte ranges, which seeking a video
 //! needs and Safari requires before it plays one at all.
 
+use std::sync::LazyLock;
+
 use askama::Template;
-use askama_gettext::Translate as _;
+use askama_datastar::Csp;
 use axum::body::Body as HttpBody;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use futures_util::StreamExt;
+use koan_kit_web as kit;
 
 use crate::db::{Album, Image};
 use crate::media::{DISPLAY_MAX, fit, preview_size};
@@ -41,18 +44,30 @@ use crate::web::Helpers as _;
 use crate::web::clip::Clip;
 use crate::web::{AppState, human, on_public_host};
 
-/// Public pages: no script at all, images and styles from here only. `data:`
-/// images are the theme's own glyphs (a checkbox's tick, a select's chevron),
-/// which its stylesheet carries as data URLs.
-const CSP_PUBLIC: &str = "default-src 'none'; img-src 'self' data:; style-src 'self'; font-src 'self'; \
-     form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
-/// A public page holding a video: video, and the player's script, from here
-/// too, and still nothing inline.
-const CSP_PUBLIC_VIDEO: &str = "default-src 'none'; img-src 'self' data:; media-src 'self'; \
-     script-src 'self'; style-src 'self'; font-src 'self'; form-action 'none'; \
-     frame-ancestors 'none'; base-uri 'none'";
+/// Public pages: nothing by default and nothing to post or fetch; images,
+/// styles and the typeface from here. `data:` images are the kit's own glyphs
+/// (a checkbox's tick, a select's chevron), which its stylesheet carries as
+/// data URLs. A page without a video runs no script at all; one holding a
+/// video plays it from here, with the player's script from here too, and
+/// still nothing inline.
+fn public_policy(video: bool) -> HeaderValue {
+    let policy = Csp::new()
+        .deny("default-src")
+        .deny("connect-src")
+        .deny("form-action");
+    if video {
+        policy.allow("media-src", "'self'")
+    } else {
+        policy.deny("script-src")
+    }
+    .header_value()
+}
+static CSP_PUBLIC: LazyLock<HeaderValue> = LazyLock::new(|| public_policy(false));
+static CSP_PUBLIC_VIDEO: LazyLock<HeaderValue> = LazyLock::new(|| public_policy(true));
 /// Image files: nothing at all, in a sandbox, should a browser ever render
-/// one as a document.
+/// one as a document. This and the video file's policy are written out rather
+/// than built as a `Csp`, which starts from a page's policy and has no
+/// directive without sources, as `sandbox` is.
 const CSP_FILE: &str = "default-src 'none'; sandbox";
 /// A video file. A browser opening one on its own plays it in a document of
 /// its making, which this governs: it loads the video from here and styles
@@ -273,12 +288,14 @@ fn page(html: String, private: bool, video: bool) -> Response {
     } else {
         "public, max-age=60"
     };
+    let policy = if video {
+        &CSP_PUBLIC_VIDEO
+    } else {
+        &CSP_PUBLIC
+    };
     (
+        [(header::CONTENT_SECURITY_POLICY, HeaderValue::clone(policy))],
         [
-            (
-                header::CONTENT_SECURITY_POLICY,
-                if video { CSP_PUBLIC_VIDEO } else { CSP_PUBLIC },
-            ),
             (header::CACHE_CONTROL, cache),
             (header::HeaderName::from_static("x-robots-tag"), "noindex"),
             // The page's own requests for its files say they are its, so the

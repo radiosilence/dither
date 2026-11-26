@@ -11,14 +11,14 @@
 //! here.
 
 use askama::Template;
-use askama_gettext::Translate as _;
 use axum::extract::{Path, State};
 use axum::middleware;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use axum::{Extension, Form, Json, Router};
 use koan_auth::Role;
 use koan_auth::accounts::AccountError;
+use koan_kit_web as kit;
 
 use super::Helpers as _;
 use super::app::{Shell, shell};
@@ -44,6 +44,27 @@ struct AccountView {
     size: String,
     /// The admin looking.
     me: bool,
+}
+
+impl AccountView {
+    /// The address of `action` on this account.
+    fn url(&self, action: &str) -> String {
+        format!("/users/{}/{action}", self.id)
+    }
+}
+
+/// The roles to choose from, each saying `user`, `readonly` and `admin`: the
+/// words are the template's.
+pub fn roles(
+    user: impl Into<kit::Text<'static>>,
+    readonly: impl Into<kit::Text<'static>>,
+    admin: impl Into<kit::Text<'static>>,
+) -> [kit::Choice<'static>; 3] {
+    [
+        kit::Choice::new("user", user),
+        kit::Choice::new("readonly", readonly),
+        kit::Choice::new("admin", admin),
+    ]
 }
 
 #[derive(Template)]
@@ -87,7 +108,15 @@ struct Outcome {
     shown: Shown,
 }
 
-crate::i18n::translated!(UsersPage, AccountList, Outcome);
+/// A [`Problem`] in words, for `kit::Confirm::error`, which escapes them: so
+/// rendered unescaped here.
+#[derive(Template)]
+#[template(path = "app/refused.html", escape = "none")]
+struct Refusal {
+    problem: Problem,
+}
+
+crate::i18n::translated!(UsersPage, AccountList, Outcome, Refusal);
 
 fn render(t: &impl Template) -> AppResult<String> {
     t.render().map_err(|e| AppError::Internal(e.into()))
@@ -145,6 +174,23 @@ fn answer(shown: Shown, list: Option<String>) -> AppResult<Response> {
     Ok(askama_datastar::events(events))
 }
 
+/// The answer to a change the page's question asked for: `shown`, and the
+/// accounts with `list`, once the question is closed; a refusal inside the
+/// question, which stays open.
+fn asked(shown: Shown, list: Option<String>) -> AppResult<Response> {
+    if let Shown::Problem(problem) = shown {
+        let words = render(&Refusal { problem })?;
+        return Ok(askama_datastar::events([
+            kit::Confirm::error(words.trim()).into()
+        ]));
+    }
+    let mut events = vec![kit::Confirm::close().into(), outcome(shown)?.patch().into()];
+    if let Some(list) = list {
+        events.push(askama_datastar::Html::trusted(list).patch().into());
+    }
+    Ok(askama_datastar::events(events))
+}
+
 async fn invited(state: &AppState, id: i64, reset: bool) -> AppResult<Shown> {
     match state
         .db
@@ -185,7 +231,7 @@ pub struct NewAccount {
 pub async fn create(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
-    Json(new): Json<NewAccount>,
+    Form(new): Form<NewAccount>,
 ) -> AppResult<Response> {
     let role: Role = new
         .newrole
@@ -206,7 +252,7 @@ pub async fn create(
             .into(),
     ];
     if made {
-        events.push(askama_datastar::PatchSignals::new(r#"{"newuser":""}"#).into());
+        events.push(askama_datastar::PatchSignals::new(r#"{"_newuser":""}"#).into());
     }
     Ok(askama_datastar::events(events))
 }
@@ -222,7 +268,7 @@ pub async fn reset(
 ) -> AppResult<Response> {
     // It would sign them out, with the link shown once the only way back in.
     if id == session.user_id {
-        return answer(Shown::Problem(Problem::Yourself), None);
+        return asked(Shown::Problem(Problem::Yourself), None);
     }
     let shown = match state.db.reset_password(id).await {
         Ok(user) => {
@@ -231,7 +277,7 @@ pub async fn reset(
         }
         Err(e) => Shown::Problem(problem(e)?),
     };
-    answer(shown, None)
+    asked(shown, None)
 }
 
 #[derive(serde::Deserialize)]
@@ -266,7 +312,7 @@ pub async fn delete(
     Path(id): Path<i64>,
 ) -> AppResult<Response> {
     if id == session.user_id {
-        return answer(Shown::Problem(Problem::Yourself), None);
+        return asked(Shown::Problem(Problem::Yourself), None);
     }
     let shown = match state.db.delete_account(id).await {
         Ok(images) => {
@@ -278,5 +324,5 @@ pub async fn delete(
         }
         Err(e) => Shown::Problem(problem(e)?),
     };
-    answer(shown, Some(list(&state, &session).await?))
+    asked(shown, Some(list(&state, &session).await?))
 }

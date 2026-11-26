@@ -16,9 +16,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
 use askama::Template;
-use askama_gettext::Translate as _;
 use koan_auth::accounts::AccountError;
 use koan_auth::password::Refused;
+use koan_kit_web as kit;
 
 use crate::auth::cookie::{SESSION_COOKIE, clear_cookie, session_id, set_cookie};
 use crate::auth::session::SESSION_TTL;

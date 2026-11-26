@@ -4,18 +4,18 @@
    keeps it from being reshaped into another video's. #}
 {% macro clip(c) %}<div id="player-{{ c.id }}" class="player{% if c.looping %} looping{% endif %}" data-player data-ignore-morph data-length="{{ c.seconds }}" data-title="{% if c.title.is_empty() %}{{ __("a video") }}{% else %}{{ c.title }}{% endif %}">
   <video src="{{ c.src }}" poster="{{ c.poster }}" width="{{ c.width }}" height="{{ c.height }}" preload="metadata" playsinline controls{% if c.looping %} muted loop{% endif %}></video>
-  <button type="button" class="player-start" data-act="play" aria-label="{{ __p("Button: start a video", "play") }}" hidden>{{ icon("play", 30.0)|safe }}</button>
-  <span class="player-busy" aria-hidden="true"></span>
+  <button type="button" class="player-start" data-act="play" aria-label="{{ __p("Button: start a video", "play") }}" hidden>{{ kit::icon::PLAY.svg(30) }}</button>
+  <span class="player-busy spinner" aria-hidden="true"></span>
   <span class="player-jump" aria-hidden="true"></span>
   <p class="player-failed" hidden>{{ __("This video can't play here.") }} <a href="{{ c.file }}" download>{{ __("Download it") }}</a></p>
   <div class="player-controls" data-player-controls hidden>
-    <button type="button" class="icon-button shrink-0" data-act="toggle" aria-label="{{ __p("Button: play a video", "play") }}" data-alt="{{ __p("Button: pause a video", "pause") }}">{{ icon("play", 18.0)|safe }}{{ icon("pause", 18.0)|safe }}</button>
+    <button type="button" class="icon-button shrink-0" data-act="toggle" aria-label="{{ __p("Button: play a video", "play") }}" data-alt="{{ __p("Button: pause a video", "pause") }}">{{ kit::icon::PLAY.svg(18) }}{{ kit::icon::PAUSE.svg(18) }}</button>
     <span class="player-time"><span data-now>0:00</span><span class="text-muted"> / {{ c.duration() }}</span></span>
     <input type="range" class="player-seek" data-seek min="0" max="{{ c.seconds }}" step="any" value="0" aria-label="{{ __("position in the video") }}">
-    {% if c.audio %}<button type="button" class="icon-button shrink-0" data-act="mute" aria-label="{{ __p("Button: silence a video", "mute") }}" data-alt="{{ __p("Button: let a video be heard", "unmute") }}">{{ icon("volume", 18.0)|safe }}{{ icon("muted", 18.0)|safe }}</button>
+    {% if c.audio %}<button type="button" class="icon-button shrink-0" data-act="mute" aria-label="{{ __p("Button: silence a video", "mute") }}" data-alt="{{ __p("Button: let a video be heard", "unmute") }}">{{ kit::icon::VOLUME.svg(18) }}{{ crate::icon::MUTED.svg(18) }}</button>
     <input type="range" class="player-volume" data-volume min="0" max="1" step="0.05" value="1" aria-label="{{ __("volume") }}">{% endif %}
     <button type="button" class="icon-button player-speed shrink-0" data-act="speed" aria-label="{{ __("playback speed") }}"><span data-speed>1×</span></button>
-    <button type="button" class="icon-button shrink-0" data-act="pip" aria-label="{{ __("picture in picture") }}" hidden>{{ icon("picture-in-picture", 18.0)|safe }}</button>
-    <button type="button" class="icon-button shrink-0" data-act="full" aria-label="{{ __("full screen") }}" data-alt="{{ __("leave full screen") }}">{{ icon("full-screen", 18.0)|safe }}{{ icon("leave-full-screen", 18.0)|safe }}</button>
+    <button type="button" class="icon-button shrink-0" data-act="pip" aria-label="{{ __("picture in picture") }}" hidden>{{ crate::icon::PICTURE_IN_PICTURE.svg(18) }}</button>
+    <button type="button" class="icon-button shrink-0" data-act="full" aria-label="{{ __("full screen") }}" data-alt="{{ __("leave full screen") }}">{{ crate::icon::FULL_SCREEN.svg(18) }}{{ crate::icon::LEAVE_FULL_SCREEN.svg(18) }}</button>
   </div>
 </div>{% endmacro %}

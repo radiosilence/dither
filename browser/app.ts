@@ -1,7 +1,8 @@
 // The browser's half of dither: the upload queue, selection, drag to
-// reorder, and the dialogs. Everything the server can draw, it draws and
-// Datastar patches in; this holds only what lives in the browser: files on
-// their way, what is selected, a drag in progress.
+// reorder, and moving images. Everything the server can draw, it draws and
+// Datastar patches in, the page's questions and its copy fields included;
+// this holds only what lives in the browser: files on their way, what is
+// selected, a drag in progress.
 //
 // Uploads go in chunks (POST a batch, PUT each chunk with Content-Range, POST
 // finish), three files at a time. A chunk that fails on the network is sent
@@ -115,27 +116,32 @@ async function json<T>(res: Response) {
   return (await res.json().catch(() => ({}))) as Partial<T>;
 }
 
-// ── Notices ──────────────────────────────────────────────────────────────
+// ── Messages over the page ───────────────────────────────────────────────
 
-function notice(text: string, bad = false, link?: { href: string; label: string }) {
-  const el = $("#notice");
-  if (!el) return;
-  el.replaceChildren();
-  el.className = bad ? "notice bad" : "notice";
-  el.setAttribute("role", bad ? "alert" : "status");
-  el.append(text);
+/**
+ * A message in the page's flash region (`kit::Flash::region`), drawn as the kit
+ * draws one a handler sends: a confirmation fades by itself, and an error stays
+ * until it is pressed. One with a link to follow stays too.
+ */
+function flash(text: string, bad = false, link?: { href: string; label: string }) {
+  const region = $("#flash");
+  if (!region) return;
+  const toast = document.createElement("p");
+  toast.className = bad ? "toast bad" : link ? "toast" : "toast brief";
+  if (bad) toast.setAttribute("role", "alert");
+  toast.append(text);
   if (link) {
     const a = document.createElement("a");
     a.href = link.href;
     a.textContent = link.label;
-    el.append(" ", a);
+    toast.append(" ", a);
   }
-  const close = document.createElement("button");
-  close.className = "quiet";
-  close.textContent = say("dismiss");
-  close.onclick = () => (el.hidden = true);
-  el.append(close);
-  el.hidden = false;
+  if (bad || link) {
+    toast.addEventListener("click", (ev) => {
+      if (!(ev.target as Element).closest("a")) toast.remove();
+    });
+  }
+  region.replaceChildren(toast);
 }
 
 // ── Dialogs ──────────────────────────────────────────────────────────────
@@ -143,32 +149,6 @@ function notice(text: string, bad = false, link?: { href: string; label: string 
 function show(id: string) {
   const d = document.getElementById(id);
   if (d instanceof HTMLDialogElement && !d.open) d.showModal();
-}
-
-function ask(text: string, label: string) {
-  const d = $<HTMLDialogElement>("#confirm");
-  const textEl = $("#confirm-text");
-  const ok = $("#confirm-ok");
-  if (!d || !textEl || !ok) return Promise.resolve(false);
-  textEl.textContent = text;
-  ok.textContent = label;
-  d.returnValue = "";
-  d.showModal();
-  return new Promise<boolean>((resolve) =>
-    d.addEventListener("close", () => resolve(d.returnValue === "ok"), { once: true }),
-  );
-}
-
-document.addEventListener("click", (ev) => {
-  const close = (ev.target as Element).closest("[data-close]");
-  if (close) close.closest("dialog")?.close();
-});
-
-// A tap on a dialog's backdrop closes it, as Escape does.
-for (const d of $$<HTMLDialogElement>("dialog")) {
-  d.addEventListener("click", (ev) => {
-    if (ev.target === d) d.close();
-  });
 }
 
 // iOS shrinks the visual viewport for its keyboard and not the layout one a
@@ -196,31 +176,6 @@ if (viewport) {
 $<HTMLDialogElement>("#viewer")?.addEventListener("close", () => {
   // The next image opened draws into an empty viewer, not over the last one.
   $("#viewer-body")?.replaceChildren();
-});
-
-// ── Copying and selecting text ───────────────────────────────────────────
-
-document.addEventListener("click", async (ev) => {
-  const btn = (ev.target as Element).closest<HTMLElement>("[data-copy]");
-  if (!btn) return;
-  try {
-    await navigator.clipboard.writeText(btn.dataset["copy"] ?? "");
-    btn.classList.add("done");
-    const label = btn.querySelector("span");
-    const was = label?.textContent ?? "";
-    if (label) label.textContent = say("copied");
-    setTimeout(() => {
-      btn.classList.remove("done");
-      if (label) label.textContent = was;
-    }, 1400);
-  } catch {
-    notice(say("copy refused"), true);
-  }
-});
-
-document.addEventListener("focusin", (ev) => {
-  const t = ev.target;
-  if (t instanceof HTMLInputElement && t.matches("[data-select]")) t.select();
 });
 
 // ── The viewer: keys and swipes ──────────────────────────────────────────
@@ -276,7 +231,14 @@ let suppressClick = false;
 // Writes only what differs: this also runs from a MutationObserver, and a
 // write that changed nothing would still be a mutation that runs it again.
 function paintSelection() {
-  for (const t of $$(".tile")) {
+  const tiles = $$(".tile");
+  // What was deleted, here or on another device, is no longer chosen; a
+  // choice with nothing left in it is over.
+  const shown = new Set(tiles.map((t) => t.dataset["id"] ?? ""));
+  const gone = [...selected].filter((id) => !shown.has(id));
+  for (const id of gone) selected.delete(id);
+  if (gone.length && !selected.size && body.classList.contains("selecting")) return selecting(false);
+  for (const t of tiles) {
     const on = selected.has(t.dataset["id"] ?? "");
     if (t.classList.contains("selected") !== on) t.classList.toggle("selected", on);
   }
@@ -287,6 +249,13 @@ function paintSelection() {
   for (const b of $$<HTMLButtonElement>("[data-move], [data-delete]")) if (b.disabled !== (n === 0)) b.disabled = n === 0;
   const cover = $<HTMLButtonElement>("[data-make-cover]");
   if (cover && cover.disabled !== (n !== 1)) cover.disabled = n !== 1;
+  // The page's question asks what this button holds when it is pressed: the
+  // images chosen, in its address, and how many, in its question.
+  const remove = $<HTMLButtonElement>("[data-delete]");
+  const url = `/images/delete?${new URLSearchParams({ ids: [...selected].join(",") })}`;
+  const ask = sayN("delete n?", n);
+  if (remove && remove.dataset["url"] !== url) remove.dataset["url"] = url;
+  if (remove && remove.dataset["ask"] !== ask) remove.dataset["ask"] = ask;
 }
 
 function selecting(on: boolean) {
@@ -332,15 +301,26 @@ document.addEventListener(
   const grid = $("#grid");
   if (grid) new MutationObserver(paintSelection).observe(grid, { childList: true, subtree: true });
   // A video the viewer shows while it is made is drawn again once it is
-  // made, or failed: its tile has lost its waiting state.
+  // made, or failed: its tile has lost its waiting state. An image the viewer
+  // shows that was deleted, here or on another device, gives way to its
+  // neighbour, or closes the viewer when it was the last.
   if (grid)
     new MutationObserver(() => {
-      const waiting = $<HTMLElement>("#viewer[open] [data-progress-of]")?.dataset["progressOf"];
-      if (!waiting) return;
-      const tile = $<HTMLElement>(`#i-${waiting}`);
+      const viewer = $<HTMLDialogElement>("#viewer[open]");
+      const shown = viewer?.querySelector<HTMLElement>("[data-image]")?.dataset["image"];
+      if (!viewer || !shown) return;
+      const waiting = viewer.querySelector("[data-progress-of]") !== null;
+      const tile = $<HTMLElement>(`#i-${shown}`);
+      if (tile) {
+        if (waiting && !tile.querySelector("progress") && !body.classList.contains("selecting")) tile.click();
+        return;
+      }
       // Refused once made, it left the album: so does the viewer.
-      if (!tile) $<HTMLDialogElement>("#viewer")?.close();
-      else if (!tile.querySelector("progress") && !body.classList.contains("selecting")) tile.click();
+      const next = waiting
+        ? null
+        : (viewer.querySelector<HTMLElement>(".nav.next") ?? viewer.querySelector<HTMLElement>(".nav.prev"));
+      if (next) next.click();
+      else viewer.close();
     }).observe(grid, { childList: true, subtree: true });
   // A video's bar in the viewer follows its tile's, which the live stream moves.
   if (grid)
@@ -361,43 +341,17 @@ document.addEventListener("click", async (ev) => {
   else if (t.closest("[data-select-done]")) selecting(false);
   else if (t.closest("[data-move]")) void openMover([...selected]);
   else if (t.closest("[data-make-cover]") && selected.size === 1 && album) {
-    const [image] = selected;
-    const res = await api("POST", `/albums/${album}/cover`, { image });
+    const [image = ""] = selected;
+    const res = await api("POST", `/albums/${album}/cover?${new URLSearchParams({ image })}`);
     if (res.ok) selecting(false);
-    else notice(say("cover failed"), true);
-  } else if (t.closest("[data-delete]") && selected.size) {
-    const n = selected.size;
-    if (await ask(sayN("delete n?", n), say("delete"))) {
-      const res = await api("POST", "/images/delete", { ids: [...selected] });
-      if (res.ok) selecting(false);
-      else notice(sayN("delete failed n", n), true);
-    }
+    else flash(say("cover failed"), true);
   } else if (t.closest("[data-move-one]")) {
     void openMover([t.closest<HTMLElement>("[data-move-one]")?.dataset["moveOne"] ?? ""]);
-  } else if (t.closest("[data-delete-one]")) {
-    const id = t.closest<HTMLElement>("[data-delete-one]")?.dataset["deleteOne"] ?? "";
-    if (await ask(sayN("delete n?", 1), say("delete"))) {
-      const viewer = $<HTMLDialogElement>("#viewer");
-      const next = viewer?.querySelector<HTMLElement>(".nav.next") ?? viewer?.querySelector<HTMLElement>(".nav.prev");
-      const res = await api("POST", "/images/delete", { ids: [id] });
-      if (!res.ok) notice(sayN("delete failed n", 1), true);
-      else if (next) next.click();
-      else viewer?.close();
-    }
-  } else if (t.closest("[data-delete-album]")) {
-    const id = t.closest<HTMLElement>("[data-delete-album]")?.dataset["deleteAlbum"] ?? "";
-    // How much goes with it is the cue an irreversible delete needs.
-    const n = $$(".tile").length;
-    if (await ask(n === 0 ? say("delete empty album?") : sayN("delete album n?", n), say("delete"))) {
-      const res = await api("POST", `/albums/${id}/delete`);
-      if (res.ok) location.href = "/";
-      else notice(say("album delete failed"), true);
-    }
   } else if (t.closest("[data-new-album]")) {
     const res = await api("POST", "/api/albums", {});
     const answer = await json<{ id: string }>(res);
     if (res.ok && answer.id) location.href = `/albums/${answer.id}`;
-    else notice(say("album failed"), true);
+    else flash(say("album failed"), true);
   } else if (t.closest("[data-pick]")) {
     $<HTMLInputElement>("#pick")?.click();
   }
@@ -413,7 +367,7 @@ async function openMover(ids: string[]) {
   moving = ids;
   const res = await fetch(`/albums/${album}/picker`, { headers: { "x-dither": "1" } });
   const target = $("#mover-body");
-  if (!res.ok || !target) return notice(say("albums failed"), true);
+  if (!res.ok || !target) return flash(say("albums failed"), true);
   target.outerHTML = await res.text();
   show("mover");
 }
@@ -425,13 +379,13 @@ document.addEventListener("click", async (ev) => {
   const to = dialog.querySelector<HTMLInputElement>("input[name=to]:checked")?.value || null;
   const title = dialog.querySelector<HTMLInputElement>("input[name=title]")?.value ?? "";
   const res = await api("POST", "/images/move", { ids: moving, to, title });
-  if (!res.ok) return notice(say("move failed"), true);
+  if (!res.ok) return flash(say("move failed"), true);
   const { moved = 0, to: dest } = await json<{ moved: number; to: string }>(res);
   dialog.close();
   $<HTMLDialogElement>("#viewer")?.close();
   selecting(false);
   // The count says if some did not move: gone meanwhile, or not theirs.
-  notice(sayN("moved n", moved), false, dest ? { href: `/albums/${dest}`, label: say("open that album") } : undefined);
+  flash(sayN("moved n", moved), false, dest ? { href: `/albums/${dest}`, label: say("open that album") } : undefined);
 });
 
 // Typing a new album's name picks that option.
@@ -571,7 +525,7 @@ interface Drag {
       const album = albumId();
       if (commit && album && ids.join() !== d.order) {
         const res = await api("POST", `/albums/${album}/order`, { ids });
-        if (!res.ok) notice(say("order failed"), true);
+        if (!res.ok) flash(say("order failed"), true);
       }
     } else if (d.armed && d.touch && commit) {
       // Held and let go: select from here.
@@ -768,7 +722,7 @@ async function add(list: FileList | File[]) {
     const album = await target(running);
     const res = await api("POST", `/api/albums/${album}/uploads`, {
       files: go.map((i) => ({ name: i.name, size: i.size, type: i.file.type })),
-      as_recorded: $<HTMLInputElement>("[data-as-recorded]")?.checked ?? false,
+      as_recorded: $<HTMLInputElement>("[data-as-recorded] input")?.checked ?? false,
     });
     const answer = await json<{ uploads: { id: string }[]; error: string }>(res);
     if (!res.ok || !answer.uploads) throw new Failure(answer.error || say("refused", { status: res.status }), false);
@@ -1163,7 +1117,7 @@ addEventListener("paste", (ev) => {
 
 // Whether videos are kept as recorded is remembered between visits: a
 // preference, not something the server keeps.
-for (const box of $$<HTMLInputElement>("[data-as-recorded]")) {
+for (const box of $$<HTMLInputElement>("[data-as-recorded] input")) {
   try {
     box.checked = localStorage.getItem("dither.as-recorded") === "true";
   } catch {}

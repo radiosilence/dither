@@ -1,11 +1,9 @@
+{% import "app/problems.html" as problems %}
 <div id="invite" class="mt-6">{% match shown %}{% when Shown::Nothing %}{% when Shown::Invite with { username, link, reset } %}
   <div class="grid gap-2">
     <p class="m-0">{% if *reset %}{{ __("%{name}'s password is reset: they are signed out everywhere, and earlier links no longer work. Send them this link to choose a new one.").with("name", username) }}{% else %}{{ __("Send %{name} this link. They choose a password with it; it works once, for a week.").with("name", username) }}{% endif %}</p>
-    <div class="flex gap-2">
-      <input class="share-url w-full" readonly value="{{ link }}" aria-label="{{ __("invite link") }}" data-select>
-      <button data-copy="{{ link }}">{{ icon("copy", 13.0)|safe }} <span>{{ __("copy link") }}</span></button>
-    </div>
+    {{ kit::CopyField::new(__("invite link"), link, __("copy link")).copied(__p("A copy button, after copying", "copied")) }}
   </div>
 {% when Shown::Problem with (p) %}
-  <p class="notice bad m-0" role="alert">{% match p %}{% when Problem::Taken %}{{ __("There is already an account with that name.") }}{% when Problem::BadUsername %}{{ __("Usernames are 1 to 64 characters, without spaces.") }}{% when Problem::LastAdmin %}{{ __("The last admin can't be removed or made anything else.") }}{% when Problem::Yourself %}{{ __("Not your own account: another admin can do that.") }}{% when Problem::Gone %}{{ __("That account no longer exists.") }}{% endmatch %}</p>
+  {% filter kit::wrap(kit::Notice::bad("").class("m-0")) %}{% call problems::says(p) %}{% endcall %}{% endfilter %}
 {% endmatch %}</div>

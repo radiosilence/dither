@@ -18,6 +18,7 @@ pub mod work;
 
 use std::sync::Arc;
 
+use askama_datastar::{Csp, SecurityHeaders};
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -70,10 +71,11 @@ impl std::ops::Deref for AppState {
 
 /// Pages and fragments of the app: scripts from here only (Datastar needs
 /// `unsafe-eval` for its expressions), no inline script or style, images from
-/// here and from previews of files about to be uploaded.
-const CSP_APP: &str = "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self'; \
-     img-src 'self' blob: data:; font-src 'self'; connect-src 'self'; form-action 'self'; \
-     frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
+/// here and from previews of files about to be uploaded. A route with a
+/// stricter policy, as the public pages and the files have, sets its own.
+fn app_policy() -> Csp {
+    Csp::new().datastar().allow("img-src", "blob:")
+}
 
 pub fn router(state: AppState) -> Router {
     let protected = Router::new()
@@ -120,12 +122,11 @@ pub fn router(state: AppState) -> Router {
         .route("/robots.txt", get(public::robots))
         .route("/favicon.ico", get(assets::favicon))
         .route("/assets/datastar.js", get(askama_datastar::script::serve))
+        .route("/assets/geist-mono.woff2", get(koan_kit_web::font::serve))
         .route("/assets/{name}", get(assets::serve))
         .fallback(public::not_found)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            security_headers,
-        ))
+        .layer(SecurityHeaders::new(&app_policy()))
+        .layer(middleware::from_fn_with_state(state.clone(), hardening))
         .layer(middleware::from_fn(preview_log))
         // Video is compressed already, and a compressed range would not be
         // the range asked for.
@@ -374,20 +375,13 @@ async fn marked_writes(request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
-/// Headers every response gets unless its handler chose its own: the app's
-/// policy for anything that did not say, and the hardening that applies to
-/// everything.
-async fn security_headers(State(state): State<AppState>, request: Request, next: Next) -> Response {
+/// What every response gets beyond [`SecurityHeaders`]' policy, `nosniff`
+/// and referrer policy: no framing, even where a route set a policy of its
+/// own (the public pages, the files), no powerful features, and HTTPS from
+/// here on.
+async fn hardening(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let h = response.headers_mut();
-    h.entry(header::CONTENT_SECURITY_POLICY)
-        .or_insert(HeaderValue::from_static(CSP_APP));
-    h.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    h.entry(header::REFERRER_POLICY)
-        .or_insert(HeaderValue::from_static("no-referrer"));
     h.entry(header::X_FRAME_OPTIONS)
         .or_insert(HeaderValue::from_static("DENY"));
     h.insert(
@@ -406,28 +400,28 @@ async fn security_headers(State(state): State<AppState>, request: Request, next:
 /// What the templates call: askama makes a call in a template a method on the
 /// template, so every template has these.
 pub trait Helpers {
-    fn css_url(&self) -> &'static str {
+    fn css_url(&self) -> String {
         assets::css_url()
     }
 
-    fn datastar_url(&self) -> &'static str {
-        assets::datastar_url()
-    }
-
-    fn app_js_url(&self) -> &'static str {
+    fn app_js_url(&self) -> String {
         assets::app_js_url()
     }
 
-    fn player_js_url(&self) -> &'static str {
+    fn player_js_url(&self) -> String {
         assets::player_js_url()
     }
 
-    fn join_js_url(&self) -> &'static str {
+    fn join_js_url(&self) -> String {
         assets::join_js_url()
     }
 
-    fn icon(&self, name: &str, px: f32) -> String {
-        crate::icon::named(name, px)
+    fn icon_svg_url(&self) -> String {
+        assets::icon_svg_url()
+    }
+
+    fn icon_png_url(&self) -> String {
+        assets::icon_png_url()
     }
 
     /// The page's language, for `<html lang>`.

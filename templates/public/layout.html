@@ -2,8 +2,8 @@
 {# A title for the preview: the one a person gave, or what the page holds. #}
 {% macro og_title() %}{% if !og.title.is_empty() %}{{ og.title }}{% else if og.album_count.is_some() %}{{ __n("%{count} image", "%{count} images", og.album_count.unwrap_or_default()) }}{% else if og.video.is_some() %}{{ __("a video") }}{% else %}{{ __("an image") }}{% endif %}{% endmacro %}
 {% block title %}{% call og_title() %}{% endcall %}{% endblock %}
+{% block kit %}{{ kit::Head::new(css_url()).noindex() }}{% endblock %}
 {% block head %}
-<meta name="robots" content="noindex">
 {% if video %}<script type="module" src="{{ player_js_url() }}"></script>{% endif %}
 <link rel="canonical" href="{{ og.url }}">
 <meta property="og:type" content="{% if og.video.is_some() %}video.other{% else %}website{% endif %}">
