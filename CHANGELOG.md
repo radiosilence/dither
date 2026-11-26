@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.15.2
+
+### Changed
+
+- **The web kit is `@radiosilence/koan-kit-web`.** The same kit as `@radiosilence/theme`, renamed and now published from the koan repository; `primary` buttons are filled with the accent.
+- **The pages are drawn with koan-kit-web's components.** Buttons, forms and fields, notices, empty states, meters, copy fields, the head and the footer are the kōan kit's Rust components, as on kōan's other servers, and the stylesheet and typeface come from the same release of the kit. Deleting images, an album or an account, and resetting a password, ask in the kit's one question sheet in place of the browser's `confirm()`, and a failure shows inside it. The security headers are askama_datastar 0.2's, so the app's pages send `Referrer-Policy: same-origin` rather than `no-referrer`.
+- **koan-kit-web 0.6.** The video player's buttons, glyphs and loader, the move dialog's choices, the view counts and the copy fields are the kit's components, and every wait shows the kit's ensō. Rows of controls take the kit's compact size rather than restyled controls, deleting an album sends the browser to the albums through the kit's question, and the script's messages go through the kit's flash region. The player's toggles keep their names and say whether they are pressed, rather than renaming themselves. askama_datastar is 0.2.1, and the live stream no longer needs async-stream.
+
+### Internal
+
+- **The kit from crates.io.** koan-kit-web 0.5 is taken from its published release rather than a deleted branch of koan.
+
 ## 0.15.1
 
 ### Security
