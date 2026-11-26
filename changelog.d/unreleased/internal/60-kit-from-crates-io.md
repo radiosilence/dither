@@ -1,0 +1,1 @@
+- **The kit from crates.io.** koan-kit-web 0.5 is taken from its published release rather than a deleted branch of koan.
