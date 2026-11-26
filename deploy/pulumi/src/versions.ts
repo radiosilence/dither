@@ -4,7 +4,7 @@
  * exactly which build a pin gets. CI refuses a release where `Cargo.toml`,
  * `package.json` and this disagree.
  */
-export const APP_VERSION = "0.15.1";
+export const APP_VERSION = "0.15.2";
 
 /**
  * The image's digest, which CI writes into the package it publishes once the
