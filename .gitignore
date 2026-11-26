@@ -4,5 +4,5 @@
 /data
 *.db
 *.db-*
-# Written by `just auth`; holds a GitHub Packages token.
-/.npmrc.auth
+# The link `just kit` makes to koan-kit-web's source.
+/styles/kit

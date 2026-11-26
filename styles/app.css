@@ -4,15 +4,16 @@
  *
  * The look is kōan's (radiosilence/koan, docs/design/koan-theme.md): Geist Mono throughout, square corners, no
  * shadows, blur or gradients, regions told apart by space or a hairline, the app's own words in lower case and what a
- * person wrote in its own. The tokens, the element defaults and the controls come from @radiosilence/koan-kit-web's kit;
- * what is here is dither's accent, its layout and the components particular to it.
+ * person wrote in its own. koan-kit-web's components write the controls' markup, and its stylesheet, imported from the
+ * crate's source through the `kit` link `just kit` makes, draws them; what is here is dither's accent, its layout and
+ * the components particular to it.
  */
 @import "tailwindcss" source(none);
 @source "../templates";
 @source "../src";
 @source "../browser/app.ts";
 @source "../browser/player.ts";
-@import "@radiosilence/koan-kit-web";
+@import "./kit/theme.css";
 
 /* dither's accent is magenta rather than the theme's green; the light value is the same hue darkened to read on white.
  * Both are over 5:1 on --surface. */
@@ -32,14 +33,6 @@
 }
 
 @layer components {
-  .done {
-    @apply border-brand text-brand;
-  }
-
-  .glyph {
-    @apply inline-block shrink-0;
-  }
-
   /* ── The app's frame ───────────────────────────────────────────────── */
 
   .topbar {
@@ -193,13 +186,9 @@
     @apply mt-5 flex flex-wrap items-center gap-2;
   }
 
+  /* The album's link to copy takes the row's room. */
   .share-url {
-    @apply min-w-[16ch] flex-1 py-1.5 text-meta;
-  }
-
-  /* A checkbox inline in a bar, its box before its label; the kit's .toggle is a form's row, box trailing. */
-  .check {
-    @apply ml-2 inline-flex cursor-pointer items-center gap-2 text-meta;
+    @apply min-w-[16ch] flex-1;
   }
 
   .toolbar {
@@ -318,24 +307,14 @@
     padding-bottom: max(16px, env(safe-area-inset-bottom));
   }
 
-  .links {
-    @apply m-0 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1 text-meta;
+  /* The links' copy fields fill their column and shrink with it: the kit's keeps its input at the input's own width,
+   * wider than the panel. */
+  .viewer-panel .combo {
+    @apply flex;
   }
 
-  .links dt {
-    @apply text-fine text-muted lowercase;
-  }
-
-  .links dd {
-    @apply m-0 flex min-w-0 items-center;
-  }
-
-  .links input {
-    @apply min-w-0 flex-1 border-0 border-b border-rule px-0 py-1 text-meta text-ink;
-  }
-
-  .links .icon-button {
-    @apply size-8;
+  .viewer-panel .combo > input {
+    @apply min-w-0;
   }
 
   .views {
@@ -350,13 +329,7 @@
     @apply m-0 min-w-0;
   }
 
-  /* ── Sheets: the move picker and confirmations ─────────────────────── */
-
-  /* The kit pads a phone sheet's foot to this or the home indicator's inset, whichever is larger. */
-  dialog.sheet {
-    --sheet-padding-bottom: 20px;
-    @apply px-5 pt-4;
-  }
+  /* ── The move picker ───────────────────────────────────────────────── */
 
   .picker {
     @apply grid max-h-[50dvh] gap-1 overflow-y-auto overscroll-contain;
@@ -526,8 +499,9 @@
     @apply hidden;
   }
 
+  /* The kit's spinner, larger, over the middle of the picture. */
   .player-busy {
-    @apply pointer-events-none absolute inset-0 m-auto hidden size-7 animate-busy border-2 border-ink/30 border-t-ink;
+    @apply pointer-events-none absolute inset-0 m-auto hidden size-7 text-ink;
   }
 
   .player.busy .player-busy {

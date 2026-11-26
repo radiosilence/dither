@@ -186,6 +186,25 @@ impl App {
         self.write("POST", uri, body, None).await
     }
 
+    /// A form posted as a `kit::Form` posts it: through Datastar, its fields
+    /// form-encoded.
+    async fn submit(&self, uri: &str, fields: &[(&str, &str)], cookie: Option<&str>) -> Reply {
+        let body = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(fields)
+            .finish();
+        let cookie = cookie.unwrap_or(&self.cookie);
+        self.send(
+            Request::post(uri)
+                .header(header::HOST, "app.test")
+                .header("datastar-request", "true")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, format!("{SESSION_COOKIE}={cookie}"))
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+    }
+
     async fn chunk(&self, upload: &str, bytes: &[u8], start: usize, size: usize) -> Reply {
         let end = start + bytes.len() - 1;
         self.send(
@@ -396,12 +415,11 @@ async fn an_upload_is_served_as_a_file_a_page_and_an_album() {
         app.get(&format!("/p/{id}.webp")).await.status,
         StatusCode::NOT_FOUND
     );
-    assert!(html.contains("<meta name=\"robots\" content=\"noindex\">"));
+    assert!(html.contains("<meta name=\"robots\" content=\"noindex, nofollow\">"));
     assert!(!html.contains("<script"), "public pages carry no script");
     assert!(
-        !page
-            .header("content-security-policy")
-            .contains("script-src"),
+        page.header("content-security-policy")
+            .contains("script-src 'none'"),
         "nor may they load any"
     );
     assert_eq!(page.header("x-robots-tag"), "noindex");
@@ -563,9 +581,14 @@ async fn nobody_reaches_someone_elses_album() {
         .await;
     assert_eq!(moved.json()["moved"], 0);
     let deleted = app
-        .write("POST", "/images/delete", json!({ "ids": [id] }), Some(&bob))
+        .write(
+            "POST",
+            &format!("/images/delete?ids={id}"),
+            json!({}),
+            Some(&bob),
+        )
         .await;
-    assert_eq!(deleted.json()["deleted"], 0);
+    assert_eq!(deleted.status, StatusCode::OK);
     // Everything is still where it was.
     assert_eq!(app.get(&format!("/{id}.jpg")).await.status, StatusCode::OK);
     assert_eq!(
@@ -726,12 +749,7 @@ fn invite_link(reply: &Reply) -> (String, String) {
 async fn an_invite_is_spent_by_choosing_a_password() {
     let app = app().await;
     let made = app
-        .write(
-            "POST",
-            "/users",
-            json!({ "newuser": "eve", "newrole": "user" }),
-            None,
-        )
+        .submit("/users", &[("newuser", "eve"), ("newrole", "user")], None)
         .await;
     assert_eq!(made.status, StatusCode::OK, "{}", made.text());
     let (invite, username) = invite_link(&made);
@@ -758,20 +776,14 @@ async fn an_invite_is_spent_by_choosing_a_password() {
     assert_eq!(again.status, StatusCode::BAD_REQUEST);
     // Taken names are refused.
     let taken = app
-        .write(
-            "POST",
-            "/users",
-            json!({ "newuser": "eve", "newrole": "user" }),
-            None,
-        )
+        .submit("/users", &[("newuser", "eve"), ("newrole", "user")], None)
         .await;
     assert!(taken.text().contains("already an account"));
     // An unknown role is refused, not taken as a user.
     let unknown = app
-        .write(
-            "POST",
+        .submit(
             "/users",
-            json!({ "newuser": "fay", "newrole": "Readonly" }),
+            &[("newuser", "fay"), ("newrole", "Readonly")],
             None,
         )
         .await;
@@ -787,10 +799,9 @@ async fn only_admins_reach_the_accounts_page() {
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        app.write(
-            "POST",
+        app.submit(
             "/users",
-            json!({ "newuser": "x", "newrole": "user" }),
+            &[("newuser", "x"), ("newrole", "user")],
             Some(&ann)
         )
         .await
@@ -847,30 +858,33 @@ async fn an_account_changes_its_own_password_and_signs_out_elsewhere() {
     let page = app.get_as("/account", &here).await;
     assert_eq!(page.status, StatusCode::OK);
     assert!(page.text().contains("ann"));
-    let change = |current: &str, password: &str, confirm: &str| json!({ "current": current, "password": password, "confirm": confirm });
+    let change = |current: &'static str, password: &'static str, confirm: &'static str| {
+        [
+            ("current", current),
+            ("password", password),
+            ("confirm", confirm),
+        ]
+    };
     let wrong = app
-        .write(
-            "POST",
+        .submit(
             "/account/password",
-            change("not it", "a new password", "a new password"),
+            &change("not it", "a new password", "a new password"),
             Some(&here),
         )
         .await;
     assert!(wrong.text().contains("The current password is wrong."));
     let mismatch = app
-        .write(
-            "POST",
+        .submit(
             "/account/password",
-            change("a test password", "a new password", "another one"),
+            &change("a test password", "a new password", "another one"),
             Some(&here),
         )
         .await;
     assert!(mismatch.text().contains("match"));
     let short = app
-        .write(
-            "POST",
+        .submit(
             "/account/password",
-            change("a test password", "short", "short"),
+            &change("a test password", "short", "short"),
             Some(&here),
         )
         .await;
@@ -904,10 +918,9 @@ async fn an_account_changes_its_own_password_and_signs_out_elsewhere() {
     ));
 
     let changed = app
-        .write(
-            "POST",
+        .submit(
             "/account/password",
-            change("a test password", "a new password", "a new password"),
+            &change("a test password", "a new password", "a new password"),
             Some(&here),
         )
         .await;
@@ -943,14 +956,13 @@ async fn a_readonly_account_still_changes_its_own_password() {
     )
     .await;
     let changed = app
-        .write(
-            "POST",
+        .submit(
             "/account/password",
-            json!({
-                "current": "a test password",
-                "password": "a new password",
-                "confirm": "a new password"
-            }),
+            &[
+                ("current", "a test password"),
+                ("password", "a new password"),
+                ("confirm", "a new password"),
+            ],
             Some(&ann),
         )
         .await;
@@ -1057,12 +1069,13 @@ async fn deleting_an_album_deletes_its_files() {
         app.get(&format!("/p/{}.jpg", ids[0])).await.status,
         StatusCode::OK
     );
-    assert_eq!(
-        app.post(&format!("/albums/{album}/delete"), json!({}))
-            .await
-            .status,
-        StatusCode::NO_CONTENT
-    );
+    let deleted = app
+        .post(&format!("/albums/{album}/delete"), json!({}))
+        .await;
+    assert_eq!(deleted.status, StatusCode::OK);
+    // The page's question closes, and the page goes to the albums.
+    assert!(deleted.text().contains("_kitconfirm"), "{}", deleted.text());
+    assert!(deleted.text().contains("location.assign('/')"));
     for id in &ids {
         assert_eq!(
             app.get(&format!("/{id}.jpg")).await.status,
@@ -1256,7 +1269,7 @@ async fn crawlers_are_welcome_and_the_probe_answers() {
     let app = app().await;
     assert!(app.get("/robots.txt").await.text().contains("Allow: /"));
     assert_eq!(app.get("/healthz").await.text(), "ok");
-    let css = app.get(crate::web::assets::css_url()).await;
+    let css = app.get(&crate::web::assets::css_url()).await;
     assert_eq!(
         css.header("cache-control"),
         "public, max-age=31536000, immutable"
@@ -1633,9 +1646,9 @@ async fn a_video_deleted_while_it_is_made_stops_and_leaves_nothing() {
         "transcoding, and not yet done"
     );
     let gone = app
-        .post("/images/delete", json!({ "ids": [id.clone()] }))
+        .post(&format!("/images/delete?ids={id}"), json!({}))
         .await;
-    assert_eq!(gone.json()["deleted"], 1);
+    assert_eq!(gone.status, StatusCode::OK, "{}", gone.text());
     assert!(videos.progress(&id).is_none());
     // The worker stops, and tidies what it was working in, and the upload
     // goes from the store.
@@ -1855,7 +1868,9 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
 
     // Counts gathered before a delete and written after it are dropped.
     app.get_with(&page, &from("192.0.2.3")).await;
-    let gone = app.post("/images/delete", json!({ "ids": [id] })).await;
+    let gone = app
+        .post(&format!("/images/delete?ids={id}"), json!({}))
+        .await;
     assert!(gone.status.is_success(), "{}", gone.text());
     app.state.views.flush(&app.state.db, true).await;
     let stats = app.state.db.view_stats(&id, 0).await.unwrap();

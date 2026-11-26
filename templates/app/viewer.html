@@ -4,49 +4,41 @@
   <div class="viewer-bar">
     <span class="text-meta text-muted">{{ __("%{n} of %{total}").with("n", position).with("total", total) }}</span>
     <span class="flex-1"></span>
-    {% if progress.is_none() && failure.is_none() %}<a class="icon-button" href="{{ file }}" download="{{ download }}" aria-label="{{ __("download") }}">{{ icon("download", 18.0)|safe }}</a>{% endif %}
-    <button class="icon-button" data-close aria-label="{{ __p("Button: close the viewer", "close") }}">{{ icon("close", 18.0)|safe }}</button>
+    {% if progress.is_none() && failure.is_none() %}{{ kit::Button::quiet(__("download")).icon_only(kit::icon::DOWNLOAD).href(file).attr("download", download) }}{% endif %}
+    {{ kit::Button::quiet(__p("Button: close the viewer", "close")).icon_only(kit::icon::CLOSE).closes("viewer") }}
   </div>
   <div class="stage">
     {% if let Some(c) = clip.as_ref() %}
     {% call player::clip(c) %}{% endcall %}
     {% else if let Some(done) = progress %}
-    <div class="stage-wait"><p>{{ __("Processing. It can be shared once it's done.") }}</p><progress class="meter" data-progress-of="{{ id }}" max="1000" value="{{ done }}"></progress></div>
+    <div class="stage-wait"><p>{{ __("Processing. It can be shared once it's done.") }}</p>{{ kit::Meter::new(done, 1000).data("progress-of", id) }}</div>
     {% else if let Some(why) = failure.as_ref() %}
-    <div class="stage-wait bad">{{ icon("warning", 22.0)|safe }}<p>{% call m::failure(why) %}{% endcall %}</p></div>
+    <div class="stage-wait bad">{{ kit::icon::WARNING.svg(22) }}<p>{% call m::failure(why) %}{% endcall %}</p></div>
     {% else %}
     <img src="{{ src }}" width="{{ width }}" height="{{ height }}" alt="{{ alt }}" decoding="async" draggable="false">
     {% endif %}
-    {% if let Some(p) = prev.as_ref() %}<button class="nav prev" aria-label="{{ __("previous image") }}" data-key="ArrowLeft" data-on:click="@get('/images/{{ p }}/view')">{{ icon("chevron-left", 22.0)|safe }}</button>{% endif %}
-    {% if let Some(n) = next.as_ref() %}<button class="nav next" aria-label="{{ __("next image") }}" data-key="ArrowRight" data-on:click="@get('/images/{{ n }}/view')">{{ icon("chevron-right", 22.0)|safe }}</button>{% endif %}
+    {% if let Some(p) = prev.as_ref() %}{{ kit::Button::quiet(__("previous image")).icon_only(kit::icon::CHEVRON_LEFT).get(self.view_url(p)).class("nav prev").data("key", "ArrowLeft") }}{% endif %}
+    {% if let Some(n) = next.as_ref() %}{{ kit::Button::quiet(__("next image")).icon_only(kit::icon::CHEVRON_RIGHT).get(self.view_url(n)).class("nav next").data("key", "ArrowRight") }}{% endif %}
   </div>
   <div class="viewer-panel">
     {#- Its own id per image: morphed into the next image's, a textarea that
         has been typed in keeps what was typed, whatever the new one holds.
         Leaving it, as moving on does, saves at once. -#}
-    <textarea id="caption-{{ id }}" class="text-field" rows="2" placeholder="{{ __("Add a caption") }}" aria-label="{{ __("caption") }}" maxlength="20000"
-      data-on:input__debounce.600ms="@post('/images/{{ id }}/caption', {payload: {caption: el.value}})"
-      data-on:change="@post('/images/{{ id }}/caption', {payload: {caption: el.value}})">{{ caption }}</textarea>
+    {{ kit::Textarea::new("caption").id(self.caption_id()).value(caption).rows(2).placeholder(__("Add a caption")).label(__("caption")).attr("maxlength", "20000").class("text-field").data("url", self.caption_url()).datastar("on:input__debounce.600ms", "@post(el.dataset.url, {payload: {caption: el.value}})").datastar("on:change", "@post(el.dataset.url, {payload: {caption: el.value}})") }}
     {% if progress.is_none() && failure.is_none() %}
-    <dl class="links">
-      <dt>{{ __p("Share link: the image's page", "page") }}</dt>
-      <dd><input readonly value="{{ links.page }}" aria-label="{{ __("link to the image's page") }}" data-select><button class="icon-button" data-copy="{{ links.page }}" aria-label="{{ __("copy the link to the image's page") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
-      <dt>{{ __p("Share link: the image file", "image") }}</dt>
-      <dd><input readonly value="{{ links.file }}" aria-label="{{ __("link to the image file") }}" data-select><button class="icon-button" data-copy="{{ links.file }}" aria-label="{{ __("copy the link to the image file") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
-      {% if !video %}
-      <dt>{{ __p("Share link: the image in Markdown", "markdown") }}</dt>
-      <dd><input readonly value="{{ links.markdown }}" aria-label="{{ __("the image in Markdown") }}" data-select><button class="icon-button" data-copy="{{ links.markdown }}" aria-label="{{ __("copy the Markdown") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
-      <dt>{{ __p("Share link: the image in forum BBCode", "bbcode") }}</dt>
-      <dd><input readonly value="{{ links.bbcode }}" aria-label="{{ __("the image in BBCode") }}" data-select><button class="icon-button" data-copy="{{ links.bbcode }}" aria-label="{{ __("copy the BBCode") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
-      {% endif %}
-      <dt>{{ __p("Share link: the image in HTML", "html") }}</dt>
-      <dd><input readonly value="{{ links.html }}" aria-label="{{ __("the image in HTML") }}" data-select><button class="icon-button" data-copy="{{ links.html }}" aria-label="{{ __("copy the HTML") }}">{{ icon("copy", 15.0)|safe }}</button></dd>
-    </dl>
+    {%- let copied = __p("A copy button, after copying", "copied") %}
+    {%- let copy = __p("A copy button", "copy") %}
+    {%- let page = kit::Pairs::new().pair(__p("Share link: the image's page", "page"), kit::CopyField::new(__("link to the image's page"), links.page, copy.clone()).copied(copied.clone())).pair(__p("Share link: the image file", "image"), kit::CopyField::new(__("link to the image file"), links.file, copy.clone()).copied(copied.clone())) %}
+    {%- if video %}
+    {{ page.pair(__p("Share link: the image in HTML", "html"), kit::CopyField::new(__("the image in HTML"), links.html, copy).copied(copied)) }}
+    {%- else %}
+    {{ page.pair(__p("Share link: the image in Markdown", "markdown"), kit::CopyField::new(__("the image in Markdown"), links.markdown, copy.clone()).copied(copied.clone())).pair(__p("Share link: the image in forum BBCode", "bbcode"), kit::CopyField::new(__("the image in BBCode"), links.bbcode, copy.clone()).copied(copied.clone())).pair(__p("Share link: the image in HTML", "html"), kit::CopyField::new(__("the image in HTML"), links.html, copy).copied(copied)) }}
+    {%- endif %}
     {% endif %}
     <div class="flex flex-wrap gap-2">
-      <button{% if is_cover %} disabled{% endif %} data-on:click="@post('/albums/{{ album }}/cover', {payload: {image: '{{ id }}'}})">{% if is_cover %}{{ __("album cover") }}{% else %}{{ __("make cover") }}{% endif %}</button>
-      <button data-move-one="{{ id }}">{{ icon("album", 13.0)|safe }} {{ __p("Button: move images to another album", "move") }}</button>
-      <button class="bad" data-delete-one="{{ id }}">{{ icon("trash", 13.0)|safe }} {{ __p("Button", "delete") }}</button>
+      {% if is_cover %}{{ kit::Button::bordered(__("album cover")).disabled(true) }}{% else %}{{ kit::Button::bordered(__("make cover")).post(self.cover_url()) }}{% endif %}
+      {{ kit::Button::bordered(__p("Button: move images to another album", "move")).icon(kit::icon::ALBUM).data("move-one", id) }}
+      {{ kit::Button::bordered(__p("Button", "delete")).bad().icon(kit::icon::TRASH).post(self.delete_url()).confirm(__n("Delete this image? Links to it stop working. This can't be undone.", "Delete these %{n} images? Links to them stop working. This can't be undone.", 1), __p("Button", "delete")) }}
     </div>
     {{ views|safe }}
     <p class="m-0 text-fine break-all text-muted">{{ name }}{% if progress.is_none() && failure.is_none() %} · {{ width_full }}×{{ height_full }}{% endif %}{% if let Some(length) = length.as_ref() %} · {{ length }}{% endif %} · {{ size }}{% if animated %} · {{ __("animated") }}{% endif %}</p>

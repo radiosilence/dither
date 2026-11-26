@@ -3,21 +3,19 @@
 {% block main %}
 <div class="flex items-baseline justify-between gap-4">
   <h1>{{ __("albums") }}</h1>
-  <button class="quiet" data-new-album>{{ icon("plus", 13.0)|safe }} {{ __("new album") }}</button>
+  {{ kit::Button::quiet(__("new album")).icon(kit::icon::PLUS).data("new-album", "") }}
 </div>
 <div class="dropzone" data-dropzone>
-  <button class="primary" data-pick>{{ __("choose images") }}</button>
+  {{ kit::Button::primary(__("choose images")).data("pick", "") }}
   <p class="m-0 text-meta text-muted">{{ __("or drop them anywhere, or paste. Each batch becomes an album.") }}</p>
   {% if shell.max_video.is_some() %}
   <p class="m-0 text-fine text-muted">{{ __("JPEG, PNG, GIF or WebP up to %{max} each, and videos up to %{video}. Where a photo or video was taken and what took it are removed before anything is stored.").with("max", shell.max_label()).with("video", shell.max_video_label()) }}</p>
   {% else %}
   <p class="m-0 text-fine text-muted">{{ __("JPEG, PNG, GIF or WebP, up to %{max} each. Where a photo was taken and what took it are removed before anything is stored.").with("max", shell.max_label()) }}</p>
   {% endif %}
-  {% if shell.max_video.is_some() %}<label class="check text-fine" title="{{ __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.") }}"><input type="checkbox" data-as-recorded> {{ __("keep videos as recorded") }}</label>{% endif %}
+  {% if shell.max_video.is_some() %}{{ kit::Check::new("as-recorded", __("keep videos as recorded")).class("text-fine").attr("title", __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.")).data("as-recorded", "") }}{% endif %}
 </div>
-<div data-init="@get('/stream')"
-  data-on-interval__duration.60s="@get('/stream')"
-  data-on:visibilitychange__document="!document.hidden && @get('/stream')"></div>
+<div hidden{{ live() }}></div>
 {{ albums|safe }}
 {{ usage|safe }}
 {% endblock %}

@@ -80,17 +80,21 @@ dependencies = [
 
 [[package]]
 name = "askama_datastar"
-version = "0.1.2"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "852e25d491015f5ec6db7498821a675e753ac29e3724ba01d6a8406400e03ca0"
+checksum = "d7bf8f99375019e687cd5c5412d27be025034875cac66955cf46b86aee6f4bdc"
 dependencies = [
  "askama",
  "axum",
  "datastar",
  "form_urlencoded",
  "futures-util",
+ "pin-project-lite",
  "serde",
  "serde_json",
+ "sha2",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]
@@ -716,6 +720,7 @@ dependencies = [
  "image",
  "ipnet",
  "koan-auth",
+ "koan-kit-web",
  "landlock",
  "libc",
  "object_store",
@@ -1613,6 +1618,19 @@ dependencies = [
  "thiserror",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "koan-kit-web"
+version = "0.5.0"
+source = "git+https://github.com/radiosilence/koan?branch=koan-kit-web-components#38d5209e9228abe7b7eb25d7d91ff622c9d7a6b4"
+dependencies = [
+ "askama",
+ "askama_datastar",
+ "axum",
+ "base64",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -3036,9 +3054,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.11.1"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
+checksum = "5b0e5c7d67bc53f435386b2130fdc900488c5703770f6d8a4633060e34288a27"
 dependencies = [
  "cfg-if",
  "cpufeatures",

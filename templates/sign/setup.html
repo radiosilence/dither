@@ -4,20 +4,12 @@
 <h1 class="m-0">{{ __("set up") }}</h1>
 <p class="m-0 text-meta text-muted">{{ __("This server has no account yet. Make the first one: it is an admin, and invites everyone else.") }}</p>
 {% include "sign/problem.html" %}
-<form method="post" action="/setup" class="grid gap-4">
-  <label class="grid gap-2 text-meta">{{ __("setup code") }}
-    <input class="w-full" name="code" autocomplete="off" autocapitalize="none" spellcheck="false" required autofocus>
-  </label>
-  <p class="m-0 text-fine text-muted">{{ __("The server writes the code to its log when it starts with no account.") }}</p>
-  <label class="grid gap-2 text-meta">{{ __("username") }}
-    <input class="w-full" name="username" value="{{ username }}" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64" required>
-  </label>
-  <label class="grid gap-2 text-meta">{{ __("password") }}
-    <input class="w-full" type="password" name="password" autocomplete="new-password" minlength="8" required>
-  </label>
-  <label class="grid gap-2 text-meta">{{ __("password again") }}
-    <input class="w-full" type="password" name="confirm" autocomplete="new-password" minlength="8" required>
-  </label>
-  <button class="primary">{{ __("make the account") }}</button>
+{%- let form = kit::Form::plain("/setup") %}
+<form{{ form.attrs() }} class="grid gap-4">
+  {{ kit::Field::new(__("setup code"), kit::Input::text("code").autocomplete("off").attr("autocapitalize", "none").attr("spellcheck", "false").required().autofocus()).hint(__("The server writes the code to its log when it starts with no account.")) }}
+  {{ kit::Field::new(__("username"), kit::Input::text("username").value(username).autocomplete("username").attr("autocapitalize", "none").attr("spellcheck", "false").attr("maxlength", "64").required()) }}
+  {{ kit::Field::new(__("password"), kit::Input::password("password").autocomplete("new-password").attr("minlength", "8").required()) }}
+  {{ kit::Field::new(__("password again"), kit::Input::password("confirm").autocomplete("new-password").attr("minlength", "8").required()) }}
+  {{ form.submit(kit::Button::primary(__("make the account"))) }}
 </form>
 {% endblock %}

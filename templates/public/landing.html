@@ -1,6 +1,6 @@
 {% extends "base.html" %}
+{% block kit %}{{ kit::Head::new(css_url()).noindex() }}{% endblock %}
 {% block title %}&nbsp;{% endblock %}
-{% block head %}<meta name="robots" content="noindex">{% endblock %}
 {% block body %}
 <body class="public"></body>
 {% endblock %}

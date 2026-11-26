@@ -1,96 +1,75 @@
-//! The stylesheet, scripts, typeface and icons, embedded in the binary.
-//! Datastar's script is `askama_datastar`'s, served from `/assets/datastar.js`.
+//! The stylesheet, scripts and icons, embedded in the binary. Datastar's
+//! script is `askama_datastar`'s, served from `/assets/datastar.js`, and the
+//! typeface is koan-kit-web's, served beside the stylesheet that names it.
 //!
 //! Each is linked by a URL carrying a hash of its contents, so a page from a
 //! new build fetches its own assets rather than a cached copy of the last
 //! build's, and a hashed URL can be cached for good.
 
-use std::sync::LazyLock;
-
+use askama_datastar::Asset;
 use axum::extract::{Path, RawQuery};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
-const APP_CSS: &str = include_str!("../../assets/app.css");
+static APP_CSS: Asset = Asset::new(
+    include_bytes!("../../assets/app.css"),
+    "text/css; charset=utf-8",
+);
 /// browser/app.ts with its types stripped by build.rs.
-const APP_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/app.js"));
+static APP_JS: Asset = Asset::new(
+    include_bytes!(concat!(env!("OUT_DIR"), "/app.js")),
+    "text/javascript; charset=utf-8",
+);
 /// browser/player.ts, likewise: the video player, on public pages too.
-const PLAYER_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/player.js"));
+static PLAYER_JS: Asset = Asset::new(
+    include_bytes!(concat!(env!("OUT_DIR"), "/player.js")),
+    "text/javascript; charset=utf-8",
+);
 /// browser/join.ts: moves an invite from the address into the join form.
-const JOIN_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/join.js"));
-/// The typeface @radiosilence/koan-kit-web sets; app.css names it by a URL relative
-/// to itself.
-const GEIST_MONO: &[u8] = include_bytes!("../../assets/geist-mono.woff2");
-const ICON_SVG: &str = include_str!("../../assets/icon.svg");
-const ICON_PNG: &[u8] = include_bytes!("../../assets/icon-180.png");
+static JOIN_JS: Asset = Asset::new(
+    include_bytes!(concat!(env!("OUT_DIR"), "/join.js")),
+    "text/javascript; charset=utf-8",
+);
+static ICON_SVG: Asset = Asset::new(include_bytes!("../../assets/icon.svg"), "image/svg+xml");
+static ICON_PNG: Asset = Asset::new(include_bytes!("../../assets/icon-180.png"), "image/png");
 
-/// A short hash of `bytes` (FNV-1a): enough to notice a change.
-fn fingerprint(bytes: &[u8]) -> String {
-    let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
-    });
-    format!("{hash:016x}")
+pub fn css_url() -> String {
+    APP_CSS.url("/assets/app.css")
 }
 
-static CSS_URL: LazyLock<String> =
-    LazyLock::new(|| format!("/assets/app.css?v={}", fingerprint(APP_CSS.as_bytes())));
-static DATASTAR_URL: LazyLock<String> =
-    LazyLock::new(|| askama_datastar::script::url("/assets/datastar.js"));
-static APP_JS_URL: LazyLock<String> =
-    LazyLock::new(|| format!("/assets/app.js?v={}", fingerprint(APP_JS.as_bytes())));
-static PLAYER_JS_URL: LazyLock<String> =
-    LazyLock::new(|| format!("/assets/player.js?v={}", fingerprint(PLAYER_JS.as_bytes())));
-static JOIN_JS_URL: LazyLock<String> =
-    LazyLock::new(|| format!("/assets/join.js?v={}", fingerprint(JOIN_JS.as_bytes())));
-
-pub fn css_url() -> &'static str {
-    &CSS_URL
+pub fn app_js_url() -> String {
+    APP_JS.url("/assets/app.js")
 }
 
-pub fn datastar_url() -> &'static str {
-    &DATASTAR_URL
+pub fn player_js_url() -> String {
+    PLAYER_JS.url("/assets/player.js")
 }
 
-pub fn app_js_url() -> &'static str {
-    &APP_JS_URL
+pub fn join_js_url() -> String {
+    JOIN_JS.url("/assets/join.js")
 }
 
-pub fn player_js_url() -> &'static str {
-    &PLAYER_JS_URL
+pub fn icon_svg_url() -> String {
+    ICON_SVG.url("/assets/icon.svg")
 }
 
-pub fn join_js_url() -> &'static str {
-    &JOIN_JS_URL
-}
-
-fn respond(body: impl IntoResponse, kind: &'static str, query: Option<&str>) -> Response {
-    // A hashed URL never changes; a bare one is rechecked hourly.
-    let cache = if query.is_some_and(|q| q.starts_with("v=")) {
-        "public, max-age=31536000, immutable"
-    } else {
-        "public, max-age=3600"
-    };
-    (
-        [(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, cache)],
-        body,
-    )
-        .into_response()
+pub fn icon_png_url() -> String {
+    ICON_PNG.url("/assets/icon-180.png")
 }
 
 pub async fn serve(Path(name): Path<String>, RawQuery(query): RawQuery) -> Response {
-    let q = query.as_deref();
-    match name.as_str() {
-        "app.css" => respond(APP_CSS, "text/css; charset=utf-8", q),
-        "app.js" => respond(APP_JS, "text/javascript; charset=utf-8", q),
-        "player.js" => respond(PLAYER_JS, "text/javascript; charset=utf-8", q),
-        "join.js" => respond(JOIN_JS, "text/javascript; charset=utf-8", q),
-        "geist-mono.woff2" => respond(GEIST_MONO, "font/woff2", Some("v=")),
-        "icon.svg" => respond(ICON_SVG, "image/svg+xml", q),
-        "icon-180.png" => respond(ICON_PNG, "image/png", q),
-        _ => (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]).into_response(),
-    }
+    let asset = match name.as_str() {
+        "app.css" => &APP_CSS,
+        "app.js" => &APP_JS,
+        "player.js" => &PLAYER_JS,
+        "join.js" => &JOIN_JS,
+        "icon.svg" => &ICON_SVG,
+        "icon-180.png" => &ICON_PNG,
+        _ => return (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, "no-store")]).into_response(),
+    };
+    asset.response(query.as_deref())
 }
 
 pub async fn favicon() -> Response {
-    respond(ICON_PNG, "image/png", None)
+    ICON_PNG.response(None)
 }

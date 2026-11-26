@@ -34,17 +34,19 @@ An image host: axum, askama, Datastar and Tailwind, with images in an S3 bucket 
 
 ```sh
 just check   # Cargo.lock clean, fmt, clippy -D warnings, tests, the Pulumi package, stylesheet fresh, the script's types, changelog, versions
-just css     # after changing styles/, a template or class strings in src/
+just css     # after changing styles/, a template, class strings in src/ or the kit's version in Cargo.lock
 ```
 
 ## Frontend
 
-- Tailwind v4, standalone CLI from mise, with `@radiosilence/koan-kit-web` for the tokens. Class names written in Rust or `browser/*.ts` must be literal strings so Tailwind's `@source` finds them.
-- The CSP has no `unsafe-inline`: no `style=""` and no inline scripts. The script may set styles through the CSSOM (`el.style`, `el.animate`), which the CSP allows.
+- Tailwind v4, standalone CLI from mise, with koan-kit-web's stylesheet imported from the crate's source: `just kit` links it as `styles/kit` (gitignored), so the stylesheet and the components' markup come from the one release `Cargo.lock` names. The typeface is the crate's too (`koan_kit_web::font::serve`). Class names written in Rust or `browser/*.ts` must be literal strings so Tailwind's `@source` finds them.
+- The CSP has no `unsafe-inline`: no `style=""` and no inline scripts. The script may set styles through the CSSOM (`el.style`, `el.animate`), which the CSP allows. The headers are askama_datastar's `SecurityHeaders` with the app's `Csp` (`web::app_policy`); a public page or a file sets its own, stricter policy, which the layer keeps.
 - The script is TypeScript, typechecked by `just js` and stripped by `build.rs` (oxc) into what the binary embeds. Keep it erasable syntax only (no enums, namespaces or parameter properties), which `erasableSyntaxOnly` enforces.
 - Every word a page or the script shows is a gettext message in a template (`__`, `__p` for a context, `__n` for plurals), never a string in Rust or the script. The script reads its words from the layout's `<template id="copy">` by key, a counted line once per plural form (`data-n`). `just i18n` after changing a template's words.
 - Two things stay as they are until there is a second language: the API's error text, which the uploader shows as the server words it, since an API's answers serve any client; and numbers, sizes and times, formatted the same way by `web::human` and the script's `human` and `span`, not for a locale.
 - Template structs get the gettext vocabulary from `i18n::translated!`; a new template struct goes in its list or its words fail to compile.
-- Templates call helpers as methods (`{{ icon("copy", 13.0) }}`): askama makes a call in a template a method on the template, which `web::Helpers` supplies to every one.
-- The look is kōan's (radiosilence/koan, `docs/design/koan-theme.md`): square, flat, Geist Mono, the app's own words lowercase. Icons are koan's glyphs, in `src/icon.rs`.
-- The kit in `@radiosilence/koan-kit-web` draws the elements and controls (button weights, `field`, `notice`, `status`, `meter`, `sheet`, `toast`); `styles/app.css` keeps only what is dither's own. Use the kit's classes before writing a rule, and the type roles (`fine`, `meta`, `control`, `body`, `title-sm`, `title`, `display`) rather than Tailwind's sizes. `just kit` checks the templates, `src` and `browser`; a deliberate exception carries `kit: raw` and its reason.
+- Templates call helpers as methods (`{{ css_url() }}`): askama makes a call in a template a method on the template, which `web::Helpers` supplies to every one.
+- The look is kōan's (radiosilence/koan, `docs/design/koan-theme.md`): square, flat, Geist Mono, the app's own words lowercase. Icons are the kit's (`kit::icon::COPY.svg(13)`); `src/icon.rs` holds the few the player draws that the kit lacks, as the kit's own type.
+- koan-kit-web's components write the markup (`use koan_kit_web as kit;` in a template's module): `kit::Head`, `SkipLink` and `Release` round a page, `Button` (`post`/`get` for a request, busy while it runs), `Form` and `Field`, `Check`, `Notice`, `Empty`, `Meter`, `Pairs`, `CopyField`, `Sheet`, and the layout's one `Confirm` and `Flash` region. Use a component before writing markup, and the kit's classes before writing a rule; `styles/app.css` keeps only what is dither's own. Use the type roles (`fine`, `meta`, `control`, `body`, `title-sm`, `title`, `display`) rather than Tailwind's sizes. `just kit-check` checks the templates, `src` and `browser`; a deliberate exception carries `kit: raw` and its reason.
+- A change asked about first is `Button::post(url).confirm(question, yes)`, asked in the page's `Confirm`. Its handler answers `kit::Confirm::close()` once the change is made, or `kit::Confirm::error` with the template's words, rendered unescaped for the kit to escape (`app/failed.html`, `app/refused.html`). What it acts on travels in its address, since the button posts the page's signals rather than a form.
+- A kit prop takes a template's `__()`, `__p()` or `__n()` as it is: those give `i18n::Words`, which convert into the kit's text.
