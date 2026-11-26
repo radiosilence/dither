@@ -12,7 +12,7 @@ msgid_plural "%{count} albums"
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/macros.html templates/app/usage.html templates/public/album.html templates/public/image.html templates/public/layout.html
+#: templates/app/macros.html templates/app/picker.html templates/app/usage.html templates/public/album.html templates/public/image.html templates/public/layout.html
 msgid "%{count} image"
 msgid_plural "%{count} images"
 msgstr[0] ""
@@ -36,6 +36,10 @@ msgstr ""
 
 #: templates/app/layout.html
 msgid "%{done} uploaded, %{failed} failed"
+msgstr ""
+
+#: templates/app/picker.html
+msgid "%{images} · %{size}"
 msgstr ""
 
 #: templates/app/invite.html
@@ -67,7 +71,7 @@ msgid "%{size} is over the %{max} limit"
 msgstr ""
 
 #: templates/app/views.html
-msgid "%{size} served"
+msgid "%{views} · %{visitors} · %{size} served"
 msgstr ""
 
 #: templates/app/layout.html
@@ -448,10 +452,6 @@ msgstr ""
 msgid "last 30 days"
 msgstr ""
 
-#: templates/player.html
-msgid "leave full screen"
-msgstr ""
-
 #: templates/app/viewer.html
 msgid "link to the image file"
 msgstr ""
@@ -722,11 +722,6 @@ msgctxt "Button: hide the upload tray"
 msgid "close"
 msgstr ""
 
-#: templates/player.html
-msgctxt "Button: let a video be heard"
-msgid "unmute"
-msgstr ""
-
 #: templates/app/accounts.html
 msgctxt "Button: make an invite link"
 msgid "invite"
@@ -745,11 +740,6 @@ msgstr ""
 #: templates/app/album.html
 msgctxt "Button: open the album's public page"
 msgid "open"
-msgstr ""
-
-#: templates/player.html
-msgctxt "Button: pause a video"
-msgid "pause"
 msgstr ""
 
 #: templates/player.html

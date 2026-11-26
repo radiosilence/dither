@@ -1,6 +1,6 @@
 <div id="accounts" class="mt-8 grid gap-3">
 {% for a in accounts %}
-  <div class="flex flex-wrap items-baseline gap-3">
+  <div class="compact flex flex-wrap items-center gap-3">
     <span class="grow truncate">{{ a.username }}{% if a.me %} <span class="text-fine text-muted">{{ __("(you)") }}</span>{% endif %}</span>
     <span class="text-fine text-muted">{{ __n("%{count} album", "%{count} albums", *a.albums) }} · {{ a.size }}</span>
     {{ kit::Select::new("role").options(crate::web::users::roles(__p("Role", "user"), __p("Role", "read-only"), __p("Role", "admin"))).selected(a.role).label(__("role")).data("url", a.url("role")).datastar("on:change", "@post(el.dataset.url, {payload: {role: el.value}})") }}

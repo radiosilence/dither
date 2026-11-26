@@ -7,9 +7,10 @@
 //! changes its own password too: it is the one write it may make.
 
 use askama::Template;
+use askama_datastar::Html;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, header};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Form, Router};
 use koan_auth::accounts::AccountError;
@@ -34,7 +35,7 @@ pub fn router() -> Router<AppState> {
 struct AccountPage {
     shell: Shell,
     role: &'static str,
-    result: String,
+    result: Html,
 }
 
 /// How a change of password went. Each is said in the template's words.
@@ -59,10 +60,8 @@ struct PasswordResult {
 
 crate::i18n::translated!(AccountPage, PasswordResult);
 
-fn result(outcome: Outcome) -> AppResult<String> {
-    PasswordResult { outcome }
-        .render()
-        .map_err(|e| AppError::Internal(e.into()))
+fn result(outcome: Outcome) -> AppResult<Html> {
+    Html::render(&PasswordResult { outcome }).map_err(|e| AppError::Internal(e.into()))
 }
 
 pub async fn page(
@@ -74,7 +73,9 @@ pub async fn page(
         result: result(Outcome::Nothing)?,
         shell: shell(&state, &session).await,
     };
-    Ok(Html(page.render().map_err(|e| AppError::Internal(e.into()))?).into_response())
+    Ok(Html::render(&page)
+        .map_err(|e| AppError::Internal(e.into()))?
+        .into_response())
 }
 
 #[derive(serde::Deserialize)]
@@ -90,11 +91,7 @@ pub struct NewPassword {
 /// The answer: the outcome, the form's passwords emptied once it worked, and
 /// the new session's cookie when there is one.
 fn answer(outcome: Outcome, secret: Option<&str>) -> AppResult<Response> {
-    let mut events = vec![
-        askama_datastar::Html::trusted(result(outcome)?)
-            .patch()
-            .into(),
-    ];
+    let mut events = vec![result(outcome)?.patch().into()];
     if outcome == Outcome::Changed {
         events.push(
             askama_datastar::PatchSignals::new(r#"{"_current":"","_password":"","_confirm":""}"#)

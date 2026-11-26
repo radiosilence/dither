@@ -11,9 +11,10 @@
 //! here.
 
 use askama::Template;
+use askama_datastar::Html;
 use axum::extract::{Path, State};
 use axum::middleware;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Form, Json, Router};
 use koan_auth::Role;
@@ -71,8 +72,8 @@ pub fn roles(
 #[template(path = "app/users.html")]
 struct UsersPage {
     shell: Shell,
-    result: String,
-    list: String,
+    result: Html,
+    list: Html,
 }
 
 #[derive(Template)]
@@ -108,18 +109,17 @@ struct Outcome {
     shown: Shown,
 }
 
-/// A [`Problem`] in words, for `kit::Confirm::error`, which escapes them: so
-/// rendered unescaped here.
+/// A [`Problem`] in words, as markup for `kit::Confirm::error`.
 #[derive(Template)]
-#[template(path = "app/refused.html", escape = "none")]
+#[template(path = "app/refused.html")]
 struct Refusal {
     problem: Problem,
 }
 
 crate::i18n::translated!(UsersPage, AccountList, Outcome, Refusal);
 
-fn render(t: &impl Template) -> AppResult<String> {
-    t.render().map_err(|e| AppError::Internal(e.into()))
+fn render(t: &impl Template) -> AppResult<Html> {
+    Html::render(t).map_err(|e| AppError::Internal(e.into()))
 }
 
 /// The problem an account's refusal is, or the failure to report.
@@ -133,7 +133,7 @@ fn problem(e: AccountError) -> AppResult<Problem> {
     }
 }
 
-async fn list(state: &AppState, session: &Session) -> AppResult<String> {
+async fn list(state: &AppState, session: &Session) -> AppResult<Html> {
     let accounts = state
         .db
         .accounts()
@@ -161,15 +161,15 @@ fn link(state: &AppState, username: &str, token: &str) -> String {
     format!("{}/join#{fragment}", state.config.app_url)
 }
 
-fn outcome(shown: Shown) -> AppResult<askama_datastar::Html> {
-    Ok(askama_datastar::Html::trusted(render(&Outcome { shown })?))
+fn outcome(shown: Shown) -> AppResult<Html> {
+    render(&Outcome { shown })
 }
 
 /// An answer redrawing the outcome and, with `list`, the accounts.
-fn answer(shown: Shown, list: Option<String>) -> AppResult<Response> {
+fn answer(shown: Shown, list: Option<Html>) -> AppResult<Response> {
     let mut events = vec![outcome(shown)?.patch().into()];
     if let Some(list) = list {
-        events.push(askama_datastar::Html::trusted(list).patch().into());
+        events.push(list.patch().into());
     }
     Ok(askama_datastar::events(events))
 }
@@ -177,16 +177,14 @@ fn answer(shown: Shown, list: Option<String>) -> AppResult<Response> {
 /// The answer to a change the page's question asked for: `shown`, and the
 /// accounts with `list`, once the question is closed; a refusal inside the
 /// question, which stays open.
-fn asked(shown: Shown, list: Option<String>) -> AppResult<Response> {
+fn asked(shown: Shown, list: Option<Html>) -> AppResult<Response> {
     if let Shown::Problem(problem) = shown {
-        let words = render(&Refusal { problem })?;
-        return Ok(askama_datastar::events([
-            kit::Confirm::error(words.trim()).into()
-        ]));
+        let why = render(&Refusal { problem })?;
+        return Ok(askama_datastar::events([kit::Confirm::error(why).into()]));
     }
     let mut events = vec![kit::Confirm::close().into(), outcome(shown)?.patch().into()];
     if let Some(list) = list {
-        events.push(askama_datastar::Html::trusted(list).patch().into());
+        events.push(list.patch().into());
     }
     Ok(askama_datastar::events(events))
 }
@@ -210,13 +208,13 @@ pub async fn page(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
 ) -> AppResult<Response> {
-    Ok(Html(render(&UsersPage {
+    Ok(render(&UsersPage {
         result: render(&Outcome {
             shown: Shown::Nothing,
         })?,
         list: list(&state, &session).await?,
         shell: shell(&state, &session).await,
-    })?)
+    })?
     .into_response())
 }
 
@@ -247,9 +245,7 @@ pub async fn create(
     let made = matches!(shown, Shown::Invite { .. });
     let mut events = vec![
         outcome(shown)?.patch().into(),
-        askama_datastar::Html::trusted(list(&state, &session).await?)
-            .patch()
-            .into(),
+        list(&state, &session).await?.patch().into(),
     ];
     if made {
         events.push(askama_datastar::PatchSignals::new(r#"{"_newuser":""}"#).into());

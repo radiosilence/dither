@@ -10,6 +10,6 @@
   {{ kit::Field::select("newrole", __("role"), crate::web::users::roles(__p("Role", "user"), __p("Role", "read-only"), __p("Role", "admin"))).selected("user") }}
   {{ form.submit(kit::Button::primary(__("make an account"))) }}
 </form>
-{{ result|safe }}
-{{ list|safe }}
+{{ result }}
+{{ list }}
 {% endblock %}

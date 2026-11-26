@@ -8,7 +8,6 @@ mod disk;
 mod error;
 mod hex;
 mod i18n;
-mod icon;
 mod id;
 mod jobs;
 mod markdown;

@@ -1,6 +1,6 @@
 // The video player: the bar templates/player.html draws in place of the
 // browser's own controls, which stay for a page without script. Every word
-// it shows comes from the markup; a toggle's other label is in `data-alt`.
+// it shows comes from the markup; a toggle says whether it is pressed.
 //
 // Players are enhanced as they appear, so one the app's viewer patches in
 // later works as one on a page does. A tap shows the bar, then plays or
@@ -57,11 +57,10 @@ function clock(seconds: number) {
 const length = (p: Player) =>
   Number.isFinite(p.video.duration) && p.video.duration > 0 ? p.video.duration : Number(p.root.dataset["length"]) || 0;
 
-/** A toggle's label for its state: its own, or the one in `data-alt`. */
-function label(button: Element | null, alternate: boolean) {
-  if (!(button instanceof HTMLElement)) return;
-  const own = (button.dataset["own"] ??= button.getAttribute("aria-label") ?? "");
-  button.setAttribute("aria-label", alternate ? (button.dataset["alt"] ?? own) : own);
+/** A toggle's state, which the kit's button shows as its pressed glyph. */
+function press(button: Element | null, on: boolean) {
+  const value = String(on);
+  if (button && button.getAttribute("aria-pressed") !== value) button.setAttribute("aria-pressed", value);
 }
 
 const act = (p: Player, name: string) => p.root.querySelector(`[data-act="${name}"]`);
@@ -72,8 +71,8 @@ function draw(p: Player) {
   const at = video.currentTime;
   root.classList.toggle("playing", !video.paused);
   root.classList.toggle("muted", video.muted);
-  label(act(p, "toggle"), !video.paused);
-  label(act(p, "mute"), video.muted);
+  press(act(p, "toggle"), !video.paused);
+  press(act(p, "mute"), video.muted);
   if (p.now) p.now.textContent = clock(at);
   if (p.seek && !p.dragging) {
     p.seek.max = String(total);
@@ -218,7 +217,7 @@ function enhance(root: HTMLElement) {
     seek: root.querySelector<HTMLInputElement>("[data-seek]"),
     volume: root.querySelector<HTMLInputElement>("[data-volume]"),
     now: root.querySelector<HTMLElement>("[data-now]"),
-    speed: root.querySelector<HTMLElement>("[data-speed]"),
+    speed: root.querySelector<HTMLElement>('[data-act="speed"]'),
     looping: root.classList.contains("looping"),
     held: false,
     dragging: false,
@@ -447,7 +446,7 @@ document.addEventListener("fullscreenchange", () => {
   for (const p of players.values()) {
     const on = document.fullscreenElement === p.root;
     p.root.classList.toggle("full", on);
-    label(act(p, "full"), on);
+    press(act(p, "full"), on);
   }
 });
 

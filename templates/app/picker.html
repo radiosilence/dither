@@ -1,15 +1,11 @@
-{% import "app/macros.html" as m %}
 <div id="mover-body" class="picker">
-  <label class="choice">
-    <input type="radio" name="to" value="" checked>
-    <span class="thumb">{{ kit::icon::PLUS.svg(15) }}</span>
-    <span class="grow">{{ __("a new album") }} {{ kit::Input::text("title").placeholder(__("untitled")).label(__("the new album's title")).attr("maxlength", "300").class("mt-1 block w-full") }}</span>
-  </label>
+  {% filter kit::wrap(kit::Check::radio("to", "", "").checked(true).picture_icon(kit::icon::PLUS)) %}{{ __("a new album") }} {{ kit::Input::text("title").placeholder(__("untitled")).label(__("the new album's title")).attr("maxlength", "300").compact() }}{% endfilter %}
   {% for a in albums %}
-  <label class="choice">
-    <input type="radio" name="to" value="{{ a.id }}">
-    <span class="thumb">{% if let Some(src) = a.cover.as_ref() %}<img src="{{ src }}" alt="" loading="lazy">{% endif %}</span>
-    <span class="grow"><span class="block truncate{% if a.title.is_empty() %} text-muted{% endif %}">{% if a.title.is_empty() %}{{ __("untitled") }}{% else %}{{ a.title }}{% endif %}</span><span class="block text-fine text-muted">{% call m::images(a.count, a.size) %}{% endcall %}</span></span>
-  </label>
+  {%- let n = __n("%{count} image", "%{count} images", *a.count) %}
+  {%- if let Some(size) = a.size %}
+  {{ self.choice(a, __("untitled"), __("%{images} · %{size}").with("images", n).with("size", size)) }}
+  {%- else %}
+  {{ self.choice(a, __("untitled"), n) }}
+  {%- endif %}
   {% endfor %}
 </div>

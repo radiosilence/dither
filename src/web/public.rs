@@ -96,7 +96,7 @@ pub struct Pic {
     /// The caption's words without its Markdown, for alt text.
     pub caption: String,
     /// The caption drawn from its Markdown.
-    pub caption_html: String,
+    pub caption_html: askama_datastar::Html,
     /// Portrait: drawn narrower in an album, so it fits a screen.
     pub tall: bool,
     /// A video, drawn by the player rather than as a picture.
@@ -250,7 +250,7 @@ struct AlbumPage {
     video: bool,
     title: String,
     /// Drawn from its Markdown.
-    description: String,
+    description: askama_datastar::Html,
     count: u64,
     pics: Vec<Pic>,
 }

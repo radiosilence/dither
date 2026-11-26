@@ -8,15 +8,16 @@
 //! browser script's (browser/app.ts),
 //! since they live in the browser.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use askama::Template;
-use askama_datastar::{ElementPatchMode, Html as Fragment};
+use askama_datastar::{Html as Fragment, PatchElements};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, Uri};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
+use futures_util::StreamExt as _;
 use koan_kit_web as kit;
 
 use crate::auth::session::Session;
@@ -74,8 +75,8 @@ pub(crate) async fn shell(state: &AppState, session: &Session) -> Shell {
 #[template(path = "app/library.html")]
 struct LibraryPage {
     shell: Shell,
-    albums: String,
-    usage: String,
+    albums: Fragment,
+    usage: Fragment,
 }
 
 impl LibraryPage {
@@ -148,10 +149,10 @@ impl Foot {
     }
 }
 
-/// Why a change asked for in the page's question failed, in words, for
-/// `kit::Confirm::error`, which escapes them: so rendered unescaped here.
+/// Why a change asked for in the page's question failed, as markup for
+/// `kit::Confirm::error`.
 #[derive(Template)]
-#[template(path = "app/failed.html", escape = "none")]
+#[template(path = "app/failed.html")]
 struct Failure {
     /// Deleting this many images; else the album.
     images: Option<u64>,
@@ -160,10 +161,8 @@ struct Failure {
 /// The answer to a change the page's question asked for that failed: why,
 /// inside the question, which stays open.
 fn refused(images: Option<u64>) -> AppResult<Response> {
-    let words = render(&Failure { images })?;
-    Ok(askama_datastar::events([
-        kit::Confirm::error(words.trim()).into()
-    ]))
+    let why = render(&Failure { images })?;
+    Ok(askama_datastar::events([kit::Confirm::error(why).into()]))
 }
 
 /// The five ways the viewer offers to share an image.
@@ -186,10 +185,10 @@ struct AlbumPage {
     description: String,
     private: bool,
     share: String,
-    grid: String,
-    summary: String,
-    foot: String,
-    views: String,
+    grid: Fragment,
+    summary: Fragment,
+    foot: Fragment,
+    views: Fragment,
 }
 
 impl AlbumPage {
@@ -210,6 +209,17 @@ struct ViewCounts {
     referrers: Vec<(String, u64)>,
 }
 
+impl ViewCounts {
+    /// The sites it was shared on, each with its count: names, not words.
+    fn shared_on(&self) -> String {
+        self.shared
+            .iter()
+            .map(|(name, n)| format!("{name} {n}"))
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
+}
+
 struct Line {
     views: u64,
     visitors: u64,
@@ -228,7 +238,7 @@ impl Line {
 
 /// The view counts of image or album `target`, drawn. Only its owner's
 /// pages call this.
-async fn view_counts(state: &AppState, target: &str) -> AppResult<String> {
+async fn view_counts(state: &AppState, target: &str) -> AppResult<Fragment> {
     let since = crate::views::today() - crate::views::RECENT_DAYS + 1;
     let stats = state.db.view_stats(target, since).await?;
     render(&ViewCounts {
@@ -324,7 +334,7 @@ struct Viewer {
     progress: Option<u16>,
     /// Why a video could not be made.
     failure: Option<String>,
-    views: String,
+    views: Fragment,
 }
 
 impl Viewer {
@@ -370,8 +380,28 @@ struct Picker {
     albums: Vec<CardView>,
 }
 
-fn render(t: &impl Template) -> AppResult<String> {
-    t.render().map_err(|e| AppError::Internal(e.into()))
+impl Picker {
+    /// An album to move images to: its cover, its title or `untitled`, and
+    /// `detail` under it.
+    fn choice<'a>(
+        &self,
+        a: &'a CardView,
+        untitled: impl Into<kit::Text<'a>>,
+        detail: impl Into<kit::Text<'a>>,
+    ) -> kit::Check<'a> {
+        let title = if a.title.is_empty() {
+            untitled.into()
+        } else {
+            a.title.as_str().into()
+        };
+        kit::Check::radio("to", a.id.as_str(), title)
+            .picture(a.cover.as_deref().unwrap_or_default())
+            .detail(detail)
+    }
+}
+
+fn render(t: &impl Template) -> AppResult<Fragment> {
+    Fragment::render(t).map_err(|e| AppError::Internal(e.into()))
 }
 
 /// `/`: the library behind sign-in; on the public domain, nothing.
@@ -383,12 +413,12 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response
         return Redirect::to("/login").into_response();
     };
     match library(&state, &session).await {
-        Ok(html) => Html(html).into_response(),
+        Ok(html) => html.into_response(),
         Err(e) => e.into_response(),
     }
 }
 
-async fn library(state: &AppState, session: &Session) -> AppResult<String> {
+async fn library(state: &AppState, session: &Session) -> AppResult<Fragment> {
     let (albums, usage) = library_parts(state, session).await?;
     render(&LibraryPage {
         shell: shell(state, session).await,
@@ -398,7 +428,7 @@ async fn library(state: &AppState, session: &Session) -> AppResult<String> {
 }
 
 /// The library's live parts: the albums, and what they add up to.
-async fn library_parts(state: &AppState, session: &Session) -> AppResult<(String, String)> {
+async fn library_parts(state: &AppState, session: &Session) -> AppResult<(Fragment, Fragment)> {
     let cards = state.db.cards(&session.username).await?;
     let albums = render(&Albums {
         cards: cards.iter().map(CardView::new).collect(),
@@ -453,7 +483,7 @@ pub async fn album(
     };
     Ok(match (session, found) {
         (Some(session), Some(album)) if album.owner == session.username => {
-            Html(editor(&state, &session, album).await?).into_response()
+            editor(&state, &session, album).await?.into_response()
         }
         (None, _) if app_request => StatusCode::UNAUTHORIZED.into_response(),
         (Some(_), _) if app_request => return Err(AppError::NotFound),
@@ -467,7 +497,11 @@ pub async fn album(
     })
 }
 
-async fn editor(state: &AppState, session: &Session, album: crate::db::Album) -> AppResult<String> {
+async fn editor(
+    state: &AppState,
+    session: &Session,
+    album: crate::db::Album,
+) -> AppResult<Fragment> {
     let (grid, summary, foot, _) = album_parts(state, &album).await?;
     let views = view_counts(state, &album.id).await?;
     render(&AlbumPage {
@@ -490,7 +524,7 @@ async fn editor(state: &AppState, session: &Session, album: crate::db::Album) ->
 async fn album_parts(
     state: &AppState,
     album: &crate::db::Album,
-) -> AppResult<(String, String, String, Vec<String>)> {
+) -> AppResult<(Fragment, Fragment, Fragment, Vec<String>)> {
     let images = state.db.images(&album.id).await?;
     let cover = album
         .cover
@@ -578,7 +612,7 @@ pub async fn cover(
         return Err(AppError::NotFound);
     }
     Ok(match cover.image {
-        Some(image) => Html(viewer_html(&state, &session, &image).await?).into_response(),
+        Some(image) => viewer_html(&state, &session, &image).await?.into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
     })
 }
@@ -604,17 +638,8 @@ pub async fn delete_album(
     state.uploads.jobs.forget(&images).await;
     crate::store::discard(&state.store, &state.db, images).await;
     tracing::info!(album = %id, images = count, "album deleted");
-    // Datastar has no way to go elsewhere but an expression; this one is the
-    // program's own.
-    let away =
-        Fragment::trusted(r#"<div id="away" hidden data-init="location.assign('/')"></div>"#)
-            .patch()
-            .selector("body")
-            .mode(ElementPatchMode::Append);
-    Ok(askama_datastar::events([
-        kit::Confirm::close().into(),
-        away.into(),
-    ]))
+    // The page it was asked on is gone with it.
+    Ok(askama_datastar::events([kit::Confirm::go("/").into()]))
 }
 
 #[derive(serde::Deserialize)]
@@ -712,15 +737,15 @@ pub async fn picker(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
     Path(id): Path<String>,
-) -> AppResult<Html<String>> {
+) -> AppResult<Fragment> {
     let cards = state.db.cards(&session.username).await?;
-    Ok(Html(render(&Picker {
+    render(&Picker {
         albums: cards
             .iter()
             .filter(|c| c.album.id != id)
             .map(CardView::new)
             .collect(),
-    })?))
+    })
 }
 
 /// An image in the viewer: large, with its caption to edit, the links to
@@ -729,11 +754,11 @@ pub async fn viewer(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
     Path(id): Path<String>,
-) -> AppResult<Html<String>> {
-    Ok(Html(viewer_html(&state, &session, &id).await?))
+) -> AppResult<Fragment> {
+    viewer_html(&state, &session, &id).await
 }
 
-async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult<String> {
+async fn viewer_html(state: &AppState, session: &Session, id: &str) -> AppResult<Fragment> {
     if !crate::id::valid(id) {
         return Err(AppError::NotFound);
     }
@@ -832,85 +857,162 @@ pub async fn stream(
     Extension(session): Extension<Session>,
     Query(q): Query<StreamQuery>,
 ) -> Response {
-    use tokio::sync::broadcast::error::{RecvError, TryRecvError};
-    let mut changes = state.db.changes();
-    let mut ticks = state.uploads.jobs.ticks();
-    let me: std::sync::Arc<str> = session.username.as_str().into();
-    let mut stopping = state.stopping.clone();
-    // A change to the account (a new role or password, its deletion) since
-    // its session was read ends the stream; the page's next request is
-    // authenticated as things then stand.
-    let account = session.mark;
-    let events = async_stream::stream! {
-        let mut sent: HashMap<&'static str, String> = HashMap::new();
-        // The album's images as last drawn: progress is sent for these.
-        let mut shown = std::collections::HashSet::new();
-        loop {
-            let parts = match &q.album {
-                Some(id) => match owned(&state, &session, id).await {
-                    Ok(album) => album_parts(&state, &album).await.map(|(g, s, f, ids)| {
-                        shown = ids.into_iter().collect();
+    let live = Live {
+        changes: state.db.changes(),
+        ticks: state.uploads.jobs.ticks(),
+        me: session.username.as_str().into(),
+        stopping: state.stopping.clone(),
+        // A change to the account (a new role or password, its deletion)
+        // since its session was read ends the stream; the page's next request
+        // is authenticated as things then stand.
+        account: session.mark,
+        state,
+        session,
+        album: q.album,
+        sent: HashMap::new(),
+        shown: HashSet::new(),
+        next: Next::Draw,
+    };
+    let events = futures_util::stream::unfold(live, |mut live| async move {
+        let batch = live.step().await?;
+        Some((futures_util::stream::iter(batch), live))
+    })
+    .flatten();
+    askama_datastar::stream(events)
+}
+
+/// What a live stream does next.
+enum Next {
+    /// Draws the parts and sends those that changed.
+    Draw,
+    /// Waits for a change of the person's, sending progress meanwhile.
+    Wait,
+    /// The album is gone: stays open, quiet, until the server or the account
+    /// changes, since the page would open one that ended again.
+    Gone,
+    Done,
+}
+
+/// A live stream's state between the events it sends.
+struct Live {
+    state: AppState,
+    session: Session,
+    album: Option<String>,
+    changes: tokio::sync::broadcast::Receiver<std::sync::Arc<str>>,
+    ticks: tokio::sync::broadcast::Receiver<crate::jobs::Tick>,
+    me: std::sync::Arc<str>,
+    stopping: tokio::sync::watch::Receiver<bool>,
+    account: u64,
+    /// Each part as last sent.
+    sent: HashMap<&'static str, Fragment>,
+    /// The album's images as last drawn: progress is sent for these.
+    shown: HashSet<String>,
+    next: Next,
+}
+
+impl Live {
+    /// The events of the stream's next step, or `None` once it ends.
+    async fn step(&mut self) -> Option<Vec<PatchElements>> {
+        match self.next {
+            Next::Draw => {
+                self.next = Next::Wait;
+                Some(self.draw().await)
+            }
+            Next::Wait => Some(self.wait().await),
+            Next::Gone => {
+                tokio::select! {
+                    _ = self.stopping.wait_for(|s| *s) => {}
+                    () = koan_auth::changes::account_changed_since(self.session.user_id, self.account) => {}
+                }
+                None
+            }
+            Next::Done => None,
+        }
+    }
+
+    /// The parts that differ from those last sent. A database that could not
+    /// answer (a long write holding the lock) is logged and asked again on
+    /// the next write.
+    async fn draw(&mut self) -> Vec<PatchElements> {
+        let parts = match &self.album {
+            Some(id) => match owned(&self.state, &self.session, id).await {
+                Ok(album) => album_parts(&self.state, &album)
+                    .await
+                    .map(|(g, s, f, ids)| {
+                        self.shown = ids.into_iter().collect();
                         vec![("grid", g), ("summary", s), ("foot", f)]
                     }),
-                    // A missing album has nothing more to show. The stream
-                    // stays open, quiet, until the server or the account
-                    // changes, since the page would open one that ended again.
-                    // A database that could not answer (a long write holding
-                    // the lock) is logged below and asked again on the next
-                    // write.
-                    Err(AppError::NotFound) => {
-                        match Deleted.render() {
-                            Ok(html) => yield askama_datastar::Html::trusted(html).patch(),
-                            Err(e) => tracing::error!(error = %e, "drawing a deleted album failed"),
+                Err(AppError::NotFound) => {
+                    self.next = Next::Gone;
+                    return match render(&Deleted) {
+                        Ok(html) => vec![html.patch()],
+                        Err(e) => {
+                            tracing::error!(error = %e, "drawing a deleted album failed");
+                            Vec::new()
                         }
-                        tokio::select! {
-                            _ = stopping.wait_for(|s| *s) => {}
-                            () = koan_auth::changes::account_changed_since(session.user_id, account) => {}
-                        }
-                        break;
-                    }
-                    Err(e) => Err(e),
-                },
-                None => library_parts(&state, &session).await.map(|(a, u)| vec![("albums", a), ("usage", u)]),
-            };
-            match parts {
-                Ok(parts) => {
-                    for (key, html) in parts {
-                        if sent.get(key) != Some(&html) {
-                            yield askama_datastar::Html::trusted(html.clone()).patch();
-                            sent.insert(key, html);
-                        }
+                    };
+                }
+                Err(e) => Err(e),
+            },
+            None => library_parts(&self.state, &self.session)
+                .await
+                .map(|(a, u)| vec![("albums", a), ("usage", u)]),
+        };
+        match parts {
+            Ok(parts) => {
+                let mut changed = Vec::new();
+                for (key, html) in parts {
+                    if self.sent.get(key) != Some(&html) {
+                        changed.push(html.patch());
+                        self.sent.insert(key, html);
                     }
                 }
-                Err(e) => tracing::warn!(error = %e, "drawing a live part failed"),
+                changed
             }
-            let woken = loop {
-                let tick = tokio::select! {
-                    change = changes.recv() => match change {
-                        Ok(owner) if owner == me => break true,
-                        Ok(_) => continue,
-                        // Missed some, which may have been theirs.
-                        Err(RecvError::Lagged(_)) => break true,
-                        Err(RecvError::Closed) => break false,
-                    },
-                    tick = ticks.recv(), if q.album.is_some() => tick,
-                    _ = stopping.wait_for(|s| *s) => break false,
-                    () = koan_auth::changes::account_changed_since(session.user_id, account) => break false,
-                };
-                if let Ok(tick) = tick
-                    && tick.owner == me
-                    && shown.contains(&tick.id)
-                {
-                    yield progress(&tick.id, tick.done).patch();
-                }
-            };
-            if !woken {
-                break;
+            Err(e) => {
+                tracing::warn!(error = %e, "drawing a live part failed");
+                Vec::new()
             }
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            // The redraw covers whatever arrived meanwhile.
-            while !matches!(changes.try_recv(), Err(TryRecvError::Empty | TryRecvError::Closed)) {}
         }
-    };
-    askama_datastar::stream(events)
+    }
+
+    /// The next progress of one of the album's videos, or nothing once a
+    /// change of the person's is due a redraw. Changes come in bursts (an
+    /// upload of three hundred images is three hundred), so a redraw waits a
+    /// moment for the burst to settle.
+    async fn wait(&mut self) -> Vec<PatchElements> {
+        use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+        let woken = loop {
+            let tick = tokio::select! {
+                change = self.changes.recv() => match change {
+                    Ok(owner) if owner == self.me => break true,
+                    Ok(_) => continue,
+                    // Missed some, which may have been theirs.
+                    Err(RecvError::Lagged(_)) => break true,
+                    Err(RecvError::Closed) => break false,
+                },
+                tick = self.ticks.recv(), if self.album.is_some() => tick,
+                _ = self.stopping.wait_for(|s| *s) => break false,
+                () = koan_auth::changes::account_changed_since(self.session.user_id, self.account) => break false,
+            };
+            if let Ok(tick) = tick
+                && tick.owner == self.me
+                && self.shown.contains(&tick.id)
+            {
+                return vec![progress(&tick.id, tick.done).patch()];
+            }
+        };
+        if !woken {
+            self.next = Next::Done;
+            return Vec::new();
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        // The redraw covers whatever arrived meanwhile.
+        while !matches!(
+            self.changes.try_recv(),
+            Err(TryRecvError::Empty | TryRecvError::Closed)
+        ) {}
+        self.next = Next::Draw;
+        Vec::new()
+    }
 }
