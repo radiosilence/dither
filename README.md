@@ -418,6 +418,9 @@ name out of public repositories, closes both.
   app's policy and the other headers are askama_datastar's
   `SecurityHeaders`; the public pages and the files set stricter policies of
   their own.
+- A test draws every page and live stream with markup-shaped titles,
+  descriptions and captions, and askama_datastar's escaping guard checks each
+  is escaped exactly once and that none of the templates' own markup is.
 - ffmpeg, which parses uploaded videos, runs as a separate process told the
   container it reads, limited to the file protocol and a list of decoders,
   at a lower priority, with a time limit, and confined by Landlock, seccomp

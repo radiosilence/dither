@@ -1881,3 +1881,89 @@ async fn views_are_counted_anonymously_and_go_with_their_image() {
     let stats = app.state.db.view_stats(&id, 0).await.unwrap();
     assert_eq!(stats, crate::views::Stats::default());
 }
+
+/// What a live stream sends first, read for a moment, since it never ends.
+async fn stream_opening(app: &App, uri: &str) -> String {
+    let res = app
+        .router
+        .clone()
+        .oneshot(
+            Request::get(uri)
+                .header(header::HOST, "app.test")
+                .header(header::COOKIE, format!("{SESSION_COOKIE}={}", app.cookie))
+                .header("datastar-request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut body = res.into_body();
+    let mut text = Vec::new();
+    let ends = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(ends, body.frame()).await {
+        if let Ok(data) = frame.into_data() {
+            text.extend_from_slice(&data);
+        }
+    }
+    String::from_utf8_lossy(&text).into_owned()
+}
+
+/// A title, description and caption are the owner's words, shown on the app's
+/// pages, its live streams and the public pages: each comes out escaped
+/// exactly once, and none of the templates' own markup comes out escaped.
+#[tokio::test]
+async fn every_answer_escapes_text_exactly_once() {
+    use askama_datastar::escaping::{Guard, escaped};
+
+    const HOSTILE: &str = r#"<em>hostile "q" & 'x'</em>"#;
+    let guard = Guard::new(&[HOSTILE])
+        .templates(concat!(env!("CARGO_MANIFEST_DIR"), "/templates"))
+        .expect("templates/");
+    let app = app().await;
+    let (album, done) = app.upload(&[&jpeg(40, 30)]).await;
+    let id = image_id(&done[0]);
+    let edited = app
+        .post(
+            &format!("/albums/{album}/meta"),
+            json!({ "title": HOSTILE, "description": HOSTILE }),
+        )
+        .await;
+    assert!(edited.status.is_success(), "{}", edited.status);
+    let captioned = app
+        .post(
+            &format!("/images/{id}/caption"),
+            json!({ "caption": HOSTILE }),
+        )
+        .await;
+    assert!(captioned.status.is_success(), "{}", captioned.status);
+
+    // The viewer's HTML share snippet is markup shown as text, to be copied
+    // into another page, so it is escaped by right.
+    let snippet = format!("&#60;img src=&#34;http://app.test/{id}.jpg&#34;");
+    let mut found = Vec::new();
+    let mut check = |at: &str, answer: &str, shows: bool| {
+        found.extend(
+            guard
+                .problems(answer)
+                .iter()
+                .map(|p| format!("{at}: {p}"))
+                .filter(|p| !p.contains(&snippet)),
+        );
+        if shows && !answer.contains(&escaped(HOSTILE)) {
+            found.push(format!("{at}: the text is missing"));
+        }
+    };
+    for (uri, shows) in [
+        ("/".to_string(), true),
+        (format!("/albums/{album}"), true),
+        (format!("/a/{album}"), true),
+        (format!("/{id}"), true),
+        (format!("/images/{id}/view"), true),
+    ] {
+        check(&uri, &app.get(&uri).await.text(), shows);
+    }
+    for uri in ["/stream".to_string(), format!("/stream?album={album}")] {
+        check(&uri, &stream_opening(&app, &uri).await, true);
+    }
+    assert_eq!(found, Vec::<String>::new());
+}
