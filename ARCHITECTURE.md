@@ -130,7 +130,7 @@ An action changes something and answers with as little as it can:
 - When nothing streams the region (the accounts page, a password change, the
   viewer), the action answers with the region it changed.
 - When the action removes the page (deleting the album), it sends the browser
-  elsewhere (`kit::Confirm::go`).
+  elsewhere (`askama_datastar::go`).
 - Fields saved as they are typed (a title, a caption) answer with nothing.
 
 A button posts the page's signals rather than a form, so the images it acts

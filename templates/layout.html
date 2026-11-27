@@ -6,7 +6,7 @@
 <script type="module" src="{{ player_js_url() }}"></script>
 {% endblock %}
 {% block body %}
-<body class="app" data-signals="{{ signals }}" data-albums-api="{{ crate::web::paths::API_ALBUMS }}"data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">
+<body class="app" data-signals="{{ signals }}" data-albums-api="{{ crate::web::paths::API_ALBUMS }}" data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">
 {{ kit::SkipLink::new(__("skip to content"), "main") }}
 {#- The one owner of the history: in-place links and the album grid load through it, and Back and Forward load in
     place, the address following `$url`. #}
