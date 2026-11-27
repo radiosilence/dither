@@ -9,12 +9,10 @@
 
 use std::time::Duration;
 
-use askama_datastar::escaping::{Guard, escaped};
+use askama_datastar::escaping::{Guard, escaped, send};
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use http_body_util::BodyExt as _;
 use serde_json::json;
-use tower::ServiceExt as _;
 
 use super::fixture::{App, app, jpeg, made};
 use super::paths;
@@ -26,8 +24,8 @@ const HOSTILE: &str = r#"<em>hostile "q" & 'x'</em>"#;
 const NAME: &str = r#"<b>who</b>"&'"#;
 
 /// What the router answers to a GET of `uri` as `cookie`'s browser loading
-/// it, or as Datastar asking (`in_place`), read for at most `wait`: a stream
-/// never ends by itself, so it is cut off having sent what it draws first.
+/// it, or as Datastar asking (`in_place`): a stream is cut off having sent
+/// what it draws first.
 async fn get(app: &App, uri: &str, cookie: &str, in_place: bool) -> (StatusCode, String) {
     let mut request = Request::get(uri)
         .header(header::HOST, "app.test")
@@ -35,22 +33,8 @@ async fn get(app: &App, uri: &str, cookie: &str, in_place: bool) -> (StatusCode,
     if in_place {
         request = request.header("datastar-request", "true");
     }
-    let response = app
-        .router
-        .clone()
-        .oneshot(request.body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    let status = response.status();
-    let mut body = response.into_body();
-    let mut text: Vec<u8> = Vec::new();
-    let ends = tokio::time::Instant::now() + Duration::from_millis(700);
-    while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(ends, body.frame()).await {
-        if let Ok(data) = frame.into_data() {
-            text.extend_from_slice(&data);
-        }
-    }
-    (status, String::from_utf8_lossy(&text).into_owned())
+    let request = request.body(Body::empty()).unwrap();
+    send(&app.router, request, Duration::from_millis(700)).await
 }
 
 /// A stream's address, with the signals of the page at `url` that has drawn
