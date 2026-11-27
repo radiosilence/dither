@@ -30,7 +30,7 @@ use crate::error::{AppError, AppResult};
 fn local(next: Option<&str>) -> String {
     next.and_then(koan_auth::web::local_path)
         .filter(|p| {
-            [paths::LOGIN, paths::SETUP, paths::JOIN, "/auth/"]
+            ![paths::LOGIN, paths::SETUP, paths::JOIN, "/auth/"]
                 .iter()
                 .any(|own| p.starts_with(own))
         })

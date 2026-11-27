@@ -63,6 +63,21 @@ fn stream(path: &str, url: &str) -> String {
     format!("{path}?{query}")
 }
 
+/// `answer` without the value of the viewer's HTML snippet. The snippet is
+/// markup shown as text, to be pasted into another page, so the caption in
+/// its `alt` is escaped as the snippet's attribute and again as the copy
+/// field's: twice, by right. `viewer::tests` checks the snippet itself.
+fn without_html_snippet(answer: &str) -> String {
+    let Some(name) = answer.find(r#"name="html""#) else {
+        return answer.to_string();
+    };
+    let Some(start) = answer[..name].rfind(r#"value=""#) else {
+        return answer.to_string();
+    };
+    let end = start + answer[start + 7..].find('"').map_or(0, |n| n + 8);
+    format!("{}{}", &answer[..start], &answer[end..])
+}
+
 #[tokio::test]
 async fn markup_from_people_is_escaped_once_everywhere() {
     let mut app = app().await;
@@ -115,18 +130,11 @@ async fn markup_from_people_is_escaped_once_everywhere() {
         ]);
     let mut found = Vec::new();
     let mut check = |at: &str, status: StatusCode, answer: &str, shows: &[&str]| {
+        let answer = &without_html_snippet(answer);
         if !(status.is_success() || status.is_redirection()) {
             found.push(format!("{at}: {status}"));
         }
-        // The viewer's HTML snippet is markup shown as text, to be copied
-        // into another page, so it is escaped by right.
-        found.extend(
-            guard
-                .problems(answer)
-                .iter()
-                .map(|p| format!("{at}: {p}"))
-                .filter(|p| !p.contains("&#60;img src=") && !p.contains("&#60;video src=")),
-        );
+        found.extend(guard.problems(answer).iter().map(|p| format!("{at}: {p}")));
         for text in shows {
             if !answer.contains(&escaped(text)) {
                 found.push(format!("{at}: {text:?} is missing"));

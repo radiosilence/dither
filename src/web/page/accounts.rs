@@ -15,9 +15,10 @@
 
 use askama::Template;
 use askama_datastar::{Html, PatchSignals};
+use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::response::Response;
-use axum::{Extension, Form, Json};
+use axum::{Extension, Form};
 use koan_auth::Role;
 use koan_auth::accounts::AccountError;
 use koan_kit_web as kit;
@@ -241,15 +242,14 @@ pub(in crate::web) async fn act(
     State(state): State<AppState>,
     Extension(session): Extension<Session>,
     Path((id, action)): Path<(i64, AccountAction)>,
-    body: Option<Json<NewRole>>,
+    body: Bytes,
 ) -> AppResult<Response> {
     match action {
         AccountAction::Invite => Ok(answer(invited(&state, id, false).await?, None)),
         AccountAction::Reset => reset(&state, &session, id).await,
         AccountAction::Role => {
-            let Some(Json(NewRole { role })) = body else {
-                return Err(AppError::BadRequest("no role".into()));
-            };
+            let NewRole { role } = serde_json::from_slice(&body)
+                .map_err(|_| AppError::BadRequest("no role".into()))?;
             set_role(&state, &session, id, role).await
         }
         AccountAction::Delete => delete(&state, &session, id).await,

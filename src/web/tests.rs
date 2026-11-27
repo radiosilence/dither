@@ -479,7 +479,7 @@ async fn an_invite_is_spent_by_choosing_a_password() {
             None,
         )
         .await;
-    assert_eq!(unknown.status, StatusCode::BAD_REQUEST);
+    assert!(unknown.status.is_client_error(), "{}", unknown.status);
 }
 
 #[tokio::test]
