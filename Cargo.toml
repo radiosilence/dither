@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 askama = "0.16.1"
-askama_datastar = "0.2.1"
+askama_datastar = "0.3"
 askama_gettext = { git = "https://github.com/radiosilence/blit", rev = "e59c04abc9d81d6922028974f233f9c408443f99", version = "0.1.0" }
 # Arc rather than Rc in the plural rules' data, so the catalogues can be shared
 # between the server's threads.
@@ -21,9 +21,9 @@ http = "1.5.0"
 httpdate = "1.0.3"
 # Accounts and signing in, shared with kōan (crates/koan-auth there).
 koan-auth = "0.75.2"
-# The kōan web kit's components and the stylesheet they are drawn with. From koan#2359's branch until it merges, then
-# the published "0.5".
-koan-kit-web = "0.6"
+# The kōan web kit's components and the stylesheet they are drawn with. Its slots take askama_datastar's `Html`, so the
+# two move together: kit 0.7 is askama_datastar 0.3.
+koan-kit-web = "0.7"
 ipnet = "2.12.2"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 object_store = { version = "0.14.2", features = ["aws"] }

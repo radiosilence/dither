@@ -8,13 +8,14 @@
 //! browser script's (browser/app.ts),
 //! since they live in the browser.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::Duration;
 
 use askama::Template;
-use askama_datastar::{Html as Fragment, PatchElements};
+use askama_datastar::{Html as Fragment, Last};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::response::sse::Event;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use futures_util::StreamExt as _;
@@ -869,7 +870,7 @@ pub async fn stream(
         state,
         session,
         album: q.album,
-        sent: HashMap::new(),
+        sent: Sent::default(),
         shown: HashSet::new(),
         next: Next::Draw,
     };
@@ -893,6 +894,17 @@ enum Next {
     Done,
 }
 
+/// The parts a live stream draws, each as last sent: an album's grid, summary
+/// and foot, or the library's albums and usage.
+#[derive(Default)]
+struct Sent {
+    grid: Last,
+    summary: Last,
+    foot: Last,
+    albums: Last,
+    usage: Last,
+}
+
 /// A live stream's state between the events it sends.
 struct Live {
     state: AppState,
@@ -904,7 +916,7 @@ struct Live {
     stopping: tokio::sync::watch::Receiver<bool>,
     account: u64,
     /// Each part as last sent.
-    sent: HashMap<&'static str, Fragment>,
+    sent: Sent,
     /// The album's images as last drawn: progress is sent for these.
     shown: HashSet<String>,
     next: Next,
@@ -912,7 +924,7 @@ struct Live {
 
 impl Live {
     /// The events of the stream's next step, or `None` once it ends.
-    async fn step(&mut self) -> Option<Vec<PatchElements>> {
+    async fn step(&mut self) -> Option<Vec<Event>> {
         match self.next {
             Next::Draw => {
                 self.next = Next::Wait;
@@ -933,19 +945,27 @@ impl Live {
     /// The parts that differ from those last sent. A database that could not
     /// answer (a long write holding the lock) is logged and asked again on
     /// the next write.
-    async fn draw(&mut self) -> Vec<PatchElements> {
+    async fn draw(&mut self) -> Vec<Event> {
+        let sent = &mut self.sent;
         let parts = match &self.album {
             Some(id) => match owned(&self.state, &self.session, id).await {
                 Ok(album) => album_parts(&self.state, &album)
                     .await
                     .map(|(g, s, f, ids)| {
                         self.shown = ids.into_iter().collect();
-                        vec![("grid", g), ("summary", s), ("foot", f)]
+                        [
+                            sent.grid.send(&g),
+                            sent.summary.send(&s),
+                            sent.foot.send(&f),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect()
                     }),
                 Err(AppError::NotFound) => {
                     self.next = Next::Gone;
                     return match render(&Deleted) {
-                        Ok(html) => vec![html.patch()],
+                        Ok(html) => vec![html.patch().into()],
                         Err(e) => {
                             tracing::error!(error = %e, "drawing a deleted album failed");
                             Vec::new()
@@ -956,19 +976,15 @@ impl Live {
             },
             None => library_parts(&self.state, &self.session)
                 .await
-                .map(|(a, u)| vec![("albums", a), ("usage", u)]),
+                .map(|(a, u)| {
+                    [sent.albums.send(&a), sent.usage.send(&u)]
+                        .into_iter()
+                        .flatten()
+                        .collect()
+                }),
         };
         match parts {
-            Ok(parts) => {
-                let mut changed = Vec::new();
-                for (key, html) in parts {
-                    if self.sent.get(key) != Some(&html) {
-                        changed.push(html.patch());
-                        self.sent.insert(key, html);
-                    }
-                }
-                changed
-            }
+            Ok(changed) => changed,
             Err(e) => {
                 tracing::warn!(error = %e, "drawing a live part failed");
                 Vec::new()
@@ -980,7 +996,7 @@ impl Live {
     /// change of the person's is due a redraw. Changes come in bursts (an
     /// upload of three hundred images is three hundred), so a redraw waits a
     /// moment for the burst to settle.
-    async fn wait(&mut self) -> Vec<PatchElements> {
+    async fn wait(&mut self) -> Vec<Event> {
         use tokio::sync::broadcast::error::{RecvError, TryRecvError};
         let woken = loop {
             let tick = tokio::select! {
@@ -999,7 +1015,7 @@ impl Live {
                 && tick.owner == self.me
                 && self.shown.contains(&tick.id)
             {
-                return vec![progress(&tick.id, tick.done).patch()];
+                return vec![progress(&tick.id, tick.done).patch().into()];
             }
         };
         if !woken {
