@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.17.0
+
+### Changed
+
+- **The web layer is a routed application: one module and template directory per page, a stream per page.** Pages load in place and keep their address, each live page's stream is opened afresh as the address changes and draws only what changed since the page was drawn, every address is formatted in one place, and a guard test requests every page, region and stream with markup in every field a person controls. The accounts page moves to `/accounts` (`/users` redirects there), and the viewer's share snippets escape a caption properly, where they used to delete brackets, quotes and angle brackets from it.
+
+### Fixed
+
+- **A page whose live update failed is drawn again at once.** A stream that could not read what it draws now ends, and the page reopens one, rather than staying stale until the next change or a minute passed.
+
+### Internal
+
+- **askama-analyzer formats the templates.** `just fmt` runs its formatter, and CI runs `askama-analyzer fmt --check` as an advisory step until a later change formats the templates and makes it blocking. mise installs the latest release with its release-age wait off for this tool alone, since it is maintained alongside these projects and CI should run the release the editor runs.
+
 ## 0.16.0
 
 ### Changed
