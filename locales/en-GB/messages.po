@@ -6,79 +6,79 @@ msgstr ""
 "Language: en-GB\n"
 "Plural-Forms: nplurals=2; plural=n != 1;\n"
 
-#: templates/app/accounts.html templates/app/usage.html
+#: templates/accounts/list.html templates/albums/usage.html
 msgid "%{count} album"
 msgid_plural "%{count} albums"
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/macros.html templates/app/picker.html templates/app/usage.html templates/public/album.html templates/public/image.html templates/public/layout.html
+#: templates/album/mover.html templates/albums/usage.html templates/macros.html templates/public/album.html templates/public/image.html templates/public/layout.html
 msgid "%{count} image"
 msgid_plural "%{count} images"
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/views.html
+#: templates/album/views.html
 msgid "%{count} view"
 msgid_plural "%{count} views"
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/views.html
+#: templates/album/views.html
 msgid "%{count} visitor"
 msgid_plural "%{count} visitors"
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "%{done} of %{total} uploaded"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "%{done} uploaded, %{failed} failed"
 msgstr ""
 
-#: templates/app/picker.html
+#: templates/album/mover.html
 msgid "%{images} · %{size}"
 msgstr ""
 
-#: templates/app/invite.html
+#: templates/accounts/outcome.html
 msgid ""
 "%{name}'s password is reset: they are signed out everywhere, and earlier "
 "links no longer work. Send them this link to choose a new one."
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "%{n} of %{total}"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "%{n} selected"
 msgid_plural "%{n} selected"
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "%{rate}/s · %{left} left"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "%{sent} of %{total}"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "%{size} is over the %{max} limit"
 msgstr ""
 
-#: templates/app/views.html
+#: templates/album/views.html
 msgid "%{views} · %{visitors} · %{size} served"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "%{why}; retrying"
 msgstr ""
 
-#: templates/app/accounts.html
+#: templates/accounts/list.html
 msgid "(you)"
 msgstr ""
 
@@ -86,15 +86,15 @@ msgstr ""
 msgid "Accounts are made by an admin, who sends an invite."
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "Add a caption"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgid "Add a description"
 msgstr ""
 
-#: templates/app/account.html
+#: templates/account/page.html
 msgid "Changing it signs you out everywhere but here."
 msgstr ""
 
@@ -102,43 +102,35 @@ msgstr ""
 msgid "Choose a password for your account. The invite works once."
 msgstr ""
 
-#: templates/app/failed.html
+#: templates/album/failed.html
 msgid "Couldn't delete it."
 msgid_plural "Couldn't delete them."
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/failed.html
+#: templates/album/failed.html
 msgid "Couldn't delete the album."
 msgstr ""
 
-#: templates/app/layout.html
-msgid "Couldn't list your albums."
-msgstr ""
-
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "Couldn't make an album."
 msgstr ""
 
-#: templates/app/layout.html
-msgid "Couldn't move them."
-msgstr ""
-
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "Couldn't save the new order; reload to see the album as it is."
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "Couldn't set the cover."
 msgstr ""
 
-#: templates/app/accounts.html
+#: templates/accounts/list.html
 msgid ""
 "Delete this account, with its albums and images? Their links stop working. "
 "This can't be undone."
 msgstr ""
 
-#: templates/app/foot.html
+#: templates/album/foot.html
 msgid ""
 "Delete this album and its image? Its link stops working. This can't be "
 "undone."
@@ -148,11 +140,11 @@ msgid_plural ""
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/foot.html
+#: templates/album/foot.html
 msgid "Delete this album? Its link stops working. This can't be undone."
 msgstr ""
 
-#: templates/app/layout.html templates/app/viewer.html
+#: templates/album/viewer/body.html templates/layout.html
 msgid "Delete this image? Links to it stop working. This can't be undone."
 msgid_plural ""
 "Delete these %{n} images? Links to them stop working. This can't be undone."
@@ -163,104 +155,104 @@ msgstr[1] ""
 msgid "Download it"
 msgstr ""
 
-#: templates/app/users.html
+#: templates/accounts/page.html
 msgid ""
 "Each account has albums of its own and sees nobody else's. Admins manage the "
 "accounts; a read-only account sees its albums and changes nothing."
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "HEIC isn't supported yet: export it as JPEG"
 msgstr ""
 
-#: templates/app/macros.html
+#: templates/macros.html
 msgid "It can't be read: it may be damaged."
 msgstr ""
 
-#: templates/app/macros.html
+#: templates/macros.html
 msgid "It couldn't be processed. Delete it and upload it again."
 msgstr ""
 
-#: templates/app/macros.html
+#: templates/macros.html
 msgid "It's larger than this server takes."
 msgstr ""
 
-#: templates/app/macros.html
+#: templates/macros.html
 msgid "It's longer than this server takes."
 msgstr ""
 
-#: templates/app/library.html
+#: templates/albums/page.html
 msgid ""
 "JPEG, PNG, GIF or WebP up to %{max} each, and videos up to %{video}. Where a "
 "photo or video was taken and what took it are removed before anything is "
 "stored."
 msgstr ""
 
-#: templates/app/library.html
+#: templates/albums/page.html
 msgid ""
 "JPEG, PNG, GIF or WebP, up to %{max} each. Where a photo was taken and what "
 "took it are removed before anything is stored."
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/album/moved.html
 msgid "Moved %{n} image."
 msgid_plural "Moved %{n} images."
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/albums.html
+#: templates/albums/list.html
 msgid "No albums yet. Drop some images in to start one."
 msgstr ""
 
-#: templates/app/problems.html
+#: templates/accounts/problems.html
 msgid "Not your own account: another admin can do that."
 msgstr ""
 
-#: templates/app/grid.html
+#: templates/album/grid.html
 msgid "Nothing here yet."
 msgstr ""
 
-#: templates/app/album.html templates/app/library.html
+#: templates/album/page.html templates/albums/page.html
 msgid ""
 "Otherwise a video is converted to H.264 at its own size, which plays "
 "everywhere."
 msgstr ""
 
-#: templates/app/password.html templates/sign/problem.html
+#: templates/account/outcome.html templates/sign/problem.html
 msgid "Passwords are at least 8 characters."
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "Processing. It can be shared once it's done."
 msgstr ""
 
-#: templates/app/accounts.html
+#: templates/accounts/list.html
 msgid ""
 "Reset this account's password? It is signed out everywhere, and links "
 "already sent stop working."
 msgstr ""
 
-#: templates/app/invite.html
+#: templates/accounts/outcome.html
 msgid ""
 "Send %{name} this link. They choose a password with it; it works once, for a "
 "week."
 msgstr ""
 
-#: templates/app/account.html
+#: templates/account/page.html
 msgid "Signed in as %{name}, an admin."
 msgstr ""
 
-#: templates/app/account.html
+#: templates/account/page.html
 msgid ""
 "Signed in as %{name}, read-only: you see your albums, and change nothing but "
 "your password."
 msgstr ""
 
-#: templates/app/account.html
+#: templates/account/page.html
 msgid "Signed in as %{name}."
 msgstr ""
 
-#: templates/app/problems.html
+#: templates/accounts/problems.html
 msgid "That account no longer exists."
 msgstr ""
 
@@ -268,15 +260,15 @@ msgstr ""
 msgid "That isn't the setup code. It is in the server's log."
 msgstr ""
 
-#: templates/app/password.html
+#: templates/account/outcome.html
 msgid "The current password is wrong."
 msgstr ""
 
-#: templates/app/problems.html
+#: templates/accounts/problems.html
 msgid "The last admin can't be removed or made anything else."
 msgstr ""
 
-#: templates/app/password.html
+#: templates/account/outcome.html
 msgid "The new passwords don't match."
 msgstr ""
 
@@ -284,7 +276,7 @@ msgstr ""
 msgid "The passwords don't match."
 msgstr ""
 
-#: templates/app/password.html templates/sign/problem.html
+#: templates/account/outcome.html templates/sign/problem.html
 msgid "The server is busy. Try again in a moment."
 msgstr ""
 
@@ -292,11 +284,11 @@ msgstr ""
 msgid "The server writes the code to its log when it starts with no account."
 msgstr ""
 
-#: templates/app/problems.html
+#: templates/accounts/problems.html
 msgid "There is already an account with that name."
 msgstr ""
 
-#: templates/app/deleted.html
+#: templates/album/deleted.html
 msgid "This album has been deleted."
 msgstr ""
 
@@ -310,7 +302,7 @@ msgstr ""
 msgid "This link doesn't lead to anything, or no longer does."
 msgstr ""
 
-#: templates/app/macros.html
+#: templates/macros.html
 msgid "This server can't process videos."
 msgstr ""
 
@@ -324,11 +316,11 @@ msgstr ""
 msgid "This video can't play here."
 msgstr ""
 
-#: templates/app/password.html templates/sign/problem.html
+#: templates/account/outcome.html templates/sign/problem.html
 msgid "Too many tries. Wait a minute and try again."
 msgstr ""
 
-#: templates/app/problems.html templates/sign/problem.html
+#: templates/accounts/problems.html templates/sign/problem.html
 msgid "Usernames are 1 to 64 characters, without spaces."
 msgstr ""
 
@@ -336,15 +328,15 @@ msgstr ""
 msgid "Wrong username or password."
 msgstr ""
 
-#: templates/app/password.html
+#: templates/account/outcome.html
 msgid "Your password is changed, and you are signed out everywhere else."
 msgstr ""
 
-#: templates/app/password.html
+#: templates/account/outcome.html
 msgid "Your password was changed or reset meanwhile. Sign in again."
 msgstr ""
 
-#: templates/app/picker.html
+#: templates/album/mover.html
 msgid "a new album"
 msgstr ""
 
@@ -352,27 +344,27 @@ msgstr ""
 msgid "a video"
 msgstr ""
 
-#: templates/app/account.html
+#: templates/account/page.html templates/layout/title.html
 msgid "account"
 msgstr ""
 
-#: templates/app/layout.html templates/app/users.html
+#: templates/accounts/page.html templates/layout/header.html templates/layout/title.html
 msgid "accounts"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgid "add images"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "album cover"
 msgstr ""
 
-#: templates/app/album.html templates/app/library.html
+#: templates/album/page.html templates/albums/page.html templates/layout/title.html
 msgid "albums"
 msgstr ""
 
-#: templates/app/views.html
+#: templates/album/views.html
 msgid "all time"
 msgstr ""
 
@@ -380,51 +372,51 @@ msgstr ""
 msgid "an image"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "animated"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "caption"
 msgstr ""
 
-#: templates/app/account.html
+#: templates/account/page.html
 msgid "change password"
 msgstr ""
 
-#: templates/app/library.html
+#: templates/albums/page.html
 msgid "choose images"
 msgstr ""
 
-#: templates/app/album.html templates/app/invite.html
+#: templates/accounts/outcome.html templates/album/page.html
 msgid "copy link"
 msgstr ""
 
-#: templates/app/grid.html
+#: templates/album/grid.html
 msgid "couldn't process"
 msgstr ""
 
-#: templates/app/account.html
+#: templates/account/page.html
 msgid "current password"
 msgstr ""
 
-#: templates/app/foot.html
+#: templates/album/foot.html
 msgid "delete album"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgid "description"
 msgstr ""
 
-#: templates/app/layout.html templates/sign/layout.html
+#: templates/layout/header.html templates/sign/layout.html
 msgid "dither: your albums"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "download"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "drop to upload"
 msgstr ""
 
@@ -432,11 +424,11 @@ msgstr ""
 msgid "full screen"
 msgstr ""
 
-#: templates/app/grid.html
+#: templates/album/grid.html
 msgid "has a caption"
 msgstr ""
 
-#: templates/app/invite.html
+#: templates/accounts/outcome.html
 msgid "invite link"
 msgstr ""
 
@@ -444,35 +436,35 @@ msgstr ""
 msgid "join"
 msgstr ""
 
-#: templates/app/album.html templates/app/library.html
+#: templates/album/page.html templates/albums/page.html
 msgid "keep videos as recorded"
 msgstr ""
 
-#: templates/app/views.html
+#: templates/album/views.html
 msgid "last 30 days"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "link to the image file"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "link to the image's page"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgid "link to this album"
 msgstr ""
 
-#: templates/app/views.html
+#: templates/album/views.html
 msgid "linked from"
 msgstr ""
 
-#: templates/app/users.html
+#: templates/accounts/page.html
 msgid "make an account"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "make cover"
 msgstr ""
 
@@ -480,35 +472,35 @@ msgstr ""
 msgid "make the account"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/album/page.html
 msgid "move to"
 msgstr ""
 
-#: templates/app/library.html
+#: templates/albums/page.html
 msgid "new album"
 msgstr ""
 
-#: templates/app/account.html
+#: templates/account/page.html
 msgid "new password"
 msgstr ""
 
-#: templates/app/account.html
+#: templates/account/page.html
 msgid "new password again"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "next image"
 msgstr ""
 
-#: templates/app/album.html templates/app/layout.html
+#: templates/album/page.html templates/layout.html
 msgid "none selected"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "not a JPEG, PNG, GIF or WebP"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "not a JPEG, PNG, GIF, WebP or video"
 msgstr ""
 
@@ -516,19 +508,19 @@ msgstr ""
 msgid "nothing here"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/album/moved.html
 msgid "open that album"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "open the album"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgid "or drop them anywhere, or paste"
 msgstr ""
 
-#: templates/app/library.html
+#: templates/albums/page.html
 msgid "or drop them anywhere, or paste. Each batch becomes an album."
 msgstr ""
 
@@ -536,11 +528,11 @@ msgstr ""
 msgid "original"
 msgstr ""
 
-#: templates/app/views.html
+#: templates/album/views.html
 msgid "other sites"
 msgstr ""
 
-#: templates/app/account.html templates/sign/join.html templates/sign/login.html templates/sign/setup.html
+#: templates/account/page.html templates/sign/join.html templates/sign/login.html templates/sign/setup.html
 msgid "password"
 msgstr ""
 
@@ -548,7 +540,7 @@ msgstr ""
 msgid "password again"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "pasted image"
 msgstr ""
 
@@ -564,33 +556,33 @@ msgstr ""
 msgid "position in the video"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "previous image"
 msgstr ""
 
-#: templates/app/album.html templates/app/albums.html
+#: templates/album/page.html templates/albums/list.html
 msgid "private"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "processing %{n}…"
 msgid_plural "processing %{n}…"
 msgstr[0] ""
 msgstr[1] ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "processing failed (%{status})"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "refused (%{status})"
 msgstr ""
 
-#: templates/app/accounts.html
+#: templates/accounts/list.html
 msgid "reset password"
 msgstr ""
 
-#: templates/app/accounts.html templates/app/users.html
+#: templates/accounts/list.html templates/accounts/page.html
 msgid "role"
 msgstr ""
 
@@ -602,7 +594,7 @@ msgstr ""
 msgid "setup code"
 msgstr ""
 
-#: templates/app/views.html
+#: templates/album/views.html
 msgid "shared on"
 msgstr ""
 
@@ -610,67 +602,67 @@ msgstr ""
 msgid "sign in"
 msgstr ""
 
-#: templates/app/account.html templates/app/layout.html
+#: templates/account/page.html templates/layout/header.html
 msgid "sign out"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "signed out: sign in again and add them again"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "skip to content"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "the connection dropped"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "the file is empty"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "the image in BBCode"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "the image in HTML"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgid "the image in Markdown"
 msgstr ""
 
-#: templates/app/picker.html
+#: templates/album/mover.html
 msgid "the new album's title"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "the server failed (%{status})"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "the upload failed"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgid "title"
 msgstr ""
 
-#: templates/app/album.html templates/app/albums.html templates/app/picker.html
+#: templates/album/mover.html templates/album/page.html templates/albums/list.html templates/layout/title.html
 msgid "untitled"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgid "uploads"
 msgstr ""
 
-#: templates/app/account.html templates/app/users.html templates/sign/join.html templates/sign/login.html templates/sign/setup.html
+#: templates/account/page.html templates/accounts/page.html templates/sign/join.html templates/sign/login.html templates/sign/setup.html
 msgid "username"
 msgstr ""
 
-#: templates/app/grid.html
+#: templates/album/grid.html
 msgid "video"
 msgstr ""
 
@@ -678,66 +670,66 @@ msgstr ""
 msgid "volume"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout/header.html
 msgid "your account"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgctxt "A copy button"
 msgid "copy"
 msgstr ""
 
-#: templates/app/album.html templates/app/invite.html templates/app/viewer.html
+#: templates/accounts/outcome.html templates/album/page.html templates/album/viewer/body.html
 msgctxt "A copy button, after copying"
 msgid "copied"
 msgstr ""
 
-#: templates/app/grid.html
+#: templates/album/grid.html
 msgctxt "An upload's state"
 msgid "processing"
 msgstr ""
 
-#: templates/app/accounts.html templates/app/album.html templates/app/foot.html templates/app/viewer.html
+#: templates/accounts/list.html templates/album/foot.html templates/album/page.html templates/album/viewer/body.html
 msgctxt "Button"
 msgid "delete"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgctxt "Button: close the viewer"
 msgid "close"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/album/page.html templates/layout.html
 msgctxt "Button: dismiss a dialog"
 msgid "cancel"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgctxt "Button: fold the upload list"
 msgid "hide"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgctxt "Button: hide the upload tray"
 msgid "close"
 msgstr ""
 
-#: templates/app/accounts.html
+#: templates/accounts/list.html
 msgctxt "Button: make an invite link"
 msgid "invite"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgctxt "Button: make the chosen image the album's cover"
 msgid "cover"
 msgstr ""
 
-#: templates/app/album.html templates/app/layout.html templates/app/viewer.html
+#: templates/album/page.html templates/album/viewer/body.html
 msgctxt "Button: move images to another album"
 msgid "move"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgctxt "Button: open the album's public page"
 msgid "open"
 msgstr ""
@@ -747,7 +739,7 @@ msgctxt "Button: play a video"
 msgid "play"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgctxt "Button: send a failed upload again"
 msgid "retry"
 msgstr ""
@@ -762,97 +754,97 @@ msgctxt "Button: start a video"
 msgid "play"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgctxt "Button: start choosing images"
 msgid "select"
 msgstr ""
 
-#: templates/app/album.html
+#: templates/album/page.html
 msgctxt "Button: stop choosing images"
 msgid "done"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgctxt "Button: stop uploading"
 msgid "cancel"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgctxt "Button: unfold the upload list"
 msgid "details"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/album/page.html
 msgctxt "Dialog name"
 msgid "image"
 msgstr ""
 
-#: templates/app/grid.html
+#: templates/album/grid.html
 msgctxt "Mark on an animated image"
 msgid "gif"
 msgstr ""
 
-#: templates/app/grid.html
+#: templates/album/grid.html
 msgctxt "Mark on the album's cover image"
 msgid "cover"
 msgstr ""
 
-#: templates/app/accounts.html templates/app/users.html
+#: templates/accounts/list.html templates/accounts/page.html
 msgctxt "Role"
 msgid "admin"
 msgstr ""
 
-#: templates/app/accounts.html templates/app/users.html
+#: templates/accounts/list.html templates/accounts/page.html
 msgctxt "Role"
 msgid "read-only"
 msgstr ""
 
-#: templates/app/accounts.html templates/app/users.html
+#: templates/accounts/list.html templates/accounts/page.html
 msgctxt "Role"
 msgid "user"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgctxt "Share link: the image file"
 msgid "image"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgctxt "Share link: the image in HTML"
 msgid "html"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgctxt "Share link: the image in Markdown"
 msgid "markdown"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgctxt "Share link: the image in forum BBCode"
 msgid "bbcode"
 msgstr ""
 
-#: templates/app/viewer.html
+#: templates/album/viewer/body.html
 msgctxt "Share link: the image's page"
 msgid "page"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgctxt "Upload state"
 msgid "cancelled"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgctxt "Upload state"
 msgid "done"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgctxt "Upload state"
 msgid "processing"
 msgstr ""
 
-#: templates/app/layout.html
+#: templates/layout.html
 msgctxt "Upload state"
 msgid "waiting"
 msgstr ""
