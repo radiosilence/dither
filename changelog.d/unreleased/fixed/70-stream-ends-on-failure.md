@@ -1,0 +1,1 @@
+- **A page whose live update failed is drawn again at once.** A stream that could not read what it draws now ends, and the page reopens one, rather than staying stale until the next change or a minute passed.

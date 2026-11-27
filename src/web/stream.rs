@@ -17,8 +17,9 @@
 //! server's boot and a count), and the stream's first pass draws only if they
 //! have moved since. After a pass that drew the owner's regions as they stand,
 //! the stream sets `seen` to where it has drawn up to, so the stream that
-//! replaces it carries on from there. A pass that drew nothing of the owner's,
-//! or failed to, leaves `seen` where it was, so the next stream draws it.
+//! replaces it carries on from there. A pass that drew nothing of the owner's
+//! leaves `seen` where it was; one that failed to draw it ends the stream with
+//! `seen` where it was, so the stream the page opens next draws it.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -87,11 +88,37 @@ fn stale(shown: Option<&str>, now: &str) -> bool {
     shown != Some(now)
 }
 
-/// The `seen` a pass brings the page up to, when it is to be sent: only after
-/// a pass for the owner's changes that drew them, and only when it differs
-/// from what the page holds.
-fn handover(changed: &Changed, failed: bool, holds: Option<&str>) -> Option<String> {
-    (changed.mine && !failed && holds != Some(changed.seen.as_str())).then(|| changed.seen.clone())
+/// The `seen` a stream has handed its page, and what it hands after each pass.
+struct Handover {
+    /// What the page holds: what it was drawn with, then what was last sent.
+    holds: Option<String>,
+}
+
+/// What a stream does after a pass.
+#[derive(Debug, PartialEq, Eq)]
+enum After {
+    /// Hands the page this `seen`: it now has the owner's changes up to it.
+    Send(String),
+    /// Carries on: the pass drew none of the owner's changes (a video's
+    /// progress alone), or the page holds its `seen` already.
+    Carry,
+    /// Ends, the pass having failed to draw the owner's regions. Its `seen`
+    /// is withheld, and the page opens another stream, which draws from the
+    /// `seen` the page still holds rather than waiting for the next change.
+    End,
+}
+
+impl Handover {
+    fn after(&mut self, changed: &Changed, failed: bool) -> After {
+        if failed {
+            return After::End;
+        }
+        if !changed.mine || self.holds.as_deref() == Some(changed.seen.as_str()) {
+            return After::Carry;
+        }
+        self.holds = Some(changed.seen.clone());
+        After::Send(changed.seen.clone())
+    }
 }
 
 /// A page with nothing live of its own: held open, so the page's stream
@@ -236,21 +263,25 @@ pub(super) async fn serve<L: Live>(
     });
     let changes = Box::pin(paced(changes, Pace::default()));
     let events = futures_util::stream::unfold(
-        (changes, page, shown.seen),
-        move |(mut changes, mut page, reported)| {
+        (changes, page, Some(Handover { holds: shown.seen })),
+        move |(mut changes, mut page, handover)| {
             let (s, session) = (s.clone(), session.clone());
             async move {
+                let mut handover = handover?;
                 let changed = changes.next().await?;
                 let Drawn { mut events, failed } = page.draw(&s, &session, &changed).await;
-                let mut reported = reported;
                 // The page now has everything up to here, so a stream opened
                 // after this one carries on from it.
-                if let Some(seen) = handover(&changed, failed, reported.as_deref()) {
-                    let signal = serde_json::json!({ "seen": seen });
-                    events.push(PatchSignals::new(signal.to_string()).into());
-                    reported = Some(seen);
-                }
-                Some((events, (changes, page, reported)))
+                let next = match handover.after(&changed, failed) {
+                    After::Send(seen) => {
+                        let signal = serde_json::json!({ "seen": seen });
+                        events.push(PatchSignals::new(signal.to_string()).into());
+                        Some(handover)
+                    }
+                    After::Carry => Some(handover),
+                    After::End => None,
+                };
+                Some((events, (changes, page, next)))
             }
         },
     )
@@ -287,26 +318,35 @@ mod tests {
 
     #[test]
     fn seen_moves_only_after_a_pass_that_drew_the_owners_changes() {
-        // Drawn: the page now holds them.
-        assert_eq!(
-            handover(&changed(true, "00ab.6"), false, Some("00ab.5")).as_deref(),
-            Some("00ab.6")
-        );
-        // Drawing failed: the next stream must draw them.
-        assert_eq!(
-            handover(&changed(true, "00ab.6"), true, Some("00ab.5")),
-            None
-        );
+        let mut handover = Handover {
+            holds: Some("00ab.5".into()),
+        };
         // A pass for progress alone drew none of the owner's changes, though
         // one may have been counted meanwhile.
         assert_eq!(
-            handover(&changed(false, "00ab.6"), false, Some("00ab.5")),
-            None
+            handover.after(&changed(false, "00ab.6"), false),
+            After::Carry
+        );
+        // Drawn: the page now holds them.
+        assert_eq!(
+            handover.after(&changed(true, "00ab.6"), false),
+            After::Send("00ab.6".into())
         );
         // Already held.
         assert_eq!(
-            handover(&changed(true, "00ab.6"), false, Some("00ab.6")),
-            None
+            handover.after(&changed(true, "00ab.6"), false),
+            After::Carry
         );
+    }
+
+    #[test]
+    fn a_failed_pass_ends_the_stream_before_a_later_one_hands_over() {
+        let mut handover = Handover {
+            holds: Some("00ab.5".into()),
+        };
+        // Drawing failed: the stream ends there, its `seen` withheld, so no
+        // later pass can hand over a `seen` the page was never drawn to, and
+        // the next stream draws from the page's own.
+        assert_eq!(handover.after(&changed(true, "00ab.6"), true), After::End);
     }
 }
