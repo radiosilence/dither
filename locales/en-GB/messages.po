@@ -256,7 +256,7 @@ msgstr ""
 msgid "That account no longer exists."
 msgstr ""
 
-#: templates/layout/flash.html
+#: templates/layout.html
 msgid "That didn't work. Try again."
 msgstr ""
 
@@ -280,7 +280,7 @@ msgstr ""
 msgid "The passwords don't match."
 msgstr ""
 
-#: templates/layout/flash.html
+#: templates/layout.html
 msgid "The server can't be reached."
 msgstr ""
 

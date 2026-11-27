@@ -169,6 +169,27 @@ pub(in crate::web) struct ViewCounts {
     referrers: Vec<(String, u64)>,
 }
 
+impl ViewCounts {
+    /// Each site it was shared on, with its count.
+    fn sites(&self) -> Vec<String> {
+        self.shared
+            .iter()
+            .map(|(s, n)| format!("{s} {n}"))
+            .collect()
+    }
+
+    /// Each host linking to it, with its count; `other` for the rest.
+    fn hosts(&self, other: impl std::fmt::Display) -> Vec<String> {
+        self.referrers
+            .iter()
+            .map(|(h, n)| match h.as_str() {
+                "" => format!("{other} {n}"),
+                h => format!("{h} {n}"),
+            })
+            .collect()
+    }
+}
+
 struct Line {
     views: u64,
     visitors: u64,

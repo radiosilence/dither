@@ -1,5 +1,5 @@
-{#- The dialog's body, read in as it opens; `dither.show` opens it once it is in place. -#}
-<form id="mover-body" class="picker" data-init="dither.show('mover')">
+{#- The move sheet's body, read in as it opens. -#}
+<form id="mover-body" class="picker">
   {{ kit::Input::hidden("ids", ids) }}
   {% filter kit::wrap(kit::Check::radio("to", "", "").checked(true).picture_icon(kit::icon::PLUS)) %}{{ __("a new album") }} {{ kit::Input::text("title").placeholder(__("untitled")).label(__("the new album's title")).attr("maxlength", title_max()).compact() }}{% endfilter %}
   {% for a in albums %}

@@ -1,1 +1,0 @@
-- **The signed-in pages' `<body>` tag is well formed again.** A space between two of its attributes was lost when the layout moved to the kit's `Navigation`.

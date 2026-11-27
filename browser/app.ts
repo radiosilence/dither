@@ -139,28 +139,6 @@ function show(id: string) {
   if (d instanceof HTMLDialogElement && !d.open) d.showModal();
 }
 
-// iOS shrinks the visual viewport for its keyboard and not the layout one a
-// fixed sheet sits in, so a sheet on a phone would open under the keyboard.
-// The kit lifts it by `--keyboard-inset`, the height the keyboard covers; a
-// browser that resizes the layout viewport itself measures zero.
-const viewport = globalThis.visualViewport;
-if (viewport) {
-  let published = -1;
-  const publish = () => {
-    const covered = Math.round(
-      Math.max(0, document.documentElement.clientHeight - viewport.height - viewport.offsetTop),
-    );
-    // Most visualViewport scrolls report the same figure; skipping them keeps
-    // a pan from invalidating style.
-    if (covered === published) return;
-    published = covered;
-    document.documentElement.style.setProperty("--keyboard-inset", `${covered}px`);
-  };
-  viewport.addEventListener("resize", publish);
-  viewport.addEventListener("scroll", publish);
-  publish();
-}
-
 // The next image opened draws into an empty viewer, not over the last one.
 // A dialog's close does not bubble, so it is heard on its way down.
 document.addEventListener(
@@ -371,14 +349,30 @@ document.addEventListener("click", async (ev) => {
 
 // ── Moving images to another album ───────────────────────────────────────
 //
-// The move dialog's body is the server's, read in and posted through
-// Datastar; once the move is made its answer empties the body and calls this.
+// The move sheet reads its body from the address of the images to move: the
+// selection's, or the viewer's one image. A click is heard before the button
+// opens the sheet, which reads it as it opens.
+document.addEventListener("click", (ev) => {
+  const b = (ev.target as Element).closest<HTMLElement>("[data-move], [data-mover]");
+  const sheet = $("#mover");
+  const url = b?.dataset["mover"] ?? b?.dataset["url"];
+  if (sheet && url) sheet.dataset["url"] = url;
+});
 
-function moved() {
-  $<HTMLDialogElement>("#mover")?.close();
-  $<HTMLDialogElement>("#viewer")?.close();
-  selecting(false);
-}
+// The sheet closes on a move made with its body emptied (`kit::Sheet::dismiss`),
+// which ends the viewer and the choice; cancelled, or while it loads, it keeps
+// a form or the kit's busy mark.
+document.addEventListener(
+  "close",
+  (ev) => {
+    if (!(ev.target instanceof HTMLDialogElement) || ev.target.id !== "mover") return;
+    const section = ev.target.querySelector(":scope > section");
+    if (!section || section.childElementCount || section.ariaBusy === "true") return;
+    $<HTMLDialogElement>("#viewer")?.close();
+    selecting(false);
+  },
+  true,
+);
 
 // Typing a new album's name picks that option.
 document.addEventListener("input", (ev) => {
@@ -1134,7 +1128,7 @@ document.addEventListener("change", (ev) => {
 });
 
 // Datastar expressions reach these.
-window.dither = { show, moved, remember };
+window.dither = { show, remember };
 
 // A module, so nothing above becomes a global a page could collide with.
 export {};

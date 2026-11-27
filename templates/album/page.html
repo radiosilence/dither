@@ -25,7 +25,7 @@
 <div class="selectbar compact" data-selectbar hidden>
   <span class="text-meta" data-selected-count>{{ __("none selected") }}</span>
   <span class="flex-1"></span>
-  {{ kit::Button::standard(__p("Button: move images to another album", "move")).icon(kit::icon::ALBUM).get(self.mover_url()).data("base", self.mover_url()).data("move", "") }}
+  {{ kit::Button::standard(__p("Button: move images to another album", "move")).icon(kit::icon::ALBUM).opens("mover").data("base", self.mover_url()).data("move", "") }}
   {{ kit::Button::standard(__p("Button: make the chosen image the album's cover", "cover")).data("cover", self.cover_url()) }}
   {{ kit::Button::standard(__p("Button", "delete")).bad().icon(kit::icon::TRASH).post(self.delete_url()).confirm("", __p("Button", "delete")).data("base", self.delete_url()).data("delete", "") }}
   {{ kit::Button::standard(__p("Button: stop choosing images", "done")).data("select-done", "") }}
@@ -33,5 +33,6 @@
 <div data-order="{{ self.order_url() }}">{{ grid }}</div>
 {{ foot }}
 <dialog id="viewer" class="viewer" aria-label="{{ __p("Dialog name", "image") }}"><div id="viewer-body" class="viewer-body"></div></dialog>
-{#- The albums to move images to are read into it as it opens; the form they make posts with the sheet's own button. #}
-{% filter kit::wrap(kit::Sheet::new("mover", __("move to")).action(kit::Button::quiet(__p("Button: dismiss a dialog", "cancel")).closes("mover")).action(kit::Button::primary(__p("Button: move images to another album", "move")).post(self.move_url()).sends("mover-body"))) %}<div id="mover-body"></div>{% endfilter %}
+{#- The albums to move images to are read into it as it opens, from the address the script gives it for the images
+    chosen; the form they make posts with the sheet's own button. #}
+{{ kit::Sheet::new("mover", __("move to")).loads(self.mover_url()).action(kit::Button::quiet(__p("Button: dismiss a dialog", "cancel")).closes("mover")).action(kit::Button::primary(__p("Button: move images to another album", "move")).post(self.move_url()).sends("mover-body")) }}

@@ -79,7 +79,11 @@ pub(in crate::web) async fn mover(
             .map(CardView::new)
             .collect(),
     };
-    Ok(askama_datastar::events([mover.draw().patch().into()]))
+    Ok(askama_datastar::events([kit::Sheet::fill(
+        "mover",
+        mover.markup(),
+    )
+    .into()]))
 }
 
 #[derive(serde::Deserialize)]
@@ -111,11 +115,12 @@ pub(in crate::web) async fn move_images(
     };
     // The count says if some did not move: gone meanwhile, or not theirs.
     let count = state.db.move_images(&session.username, ids, &to).await?;
-    Ok(askama_datastar::events([Moved {
+    let moved = Moved {
         count: count as u64,
         to: paths::album(&to),
-    }
-    .draw()
-    .patch()
-    .into()]))
+    };
+    Ok(askama_datastar::events([
+        kit::Sheet::dismiss("mover").into(),
+        moved.draw().patch().into(),
+    ]))
 }

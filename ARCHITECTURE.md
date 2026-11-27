@@ -168,23 +168,28 @@ where the server sends a region again, declared once in its template:
 |---|---|
 | Layout | `title`, `header`, `main` |
 | Albums | `albums`, `usage` |
-| Album | `grid`, `summary`, `foot`, each video's bar `vp-<id>`, `viewer-body`, `mover-body` |
+| Album | `grid`, `summary`, `foot`, each video's bar `vp-<id>`, `viewer-body` |
 | Account, Accounts | `outcome`; `accounts` |
 
 Dialogs carry ids the buttons that open and close them name (`viewer`,
-`mover`). Two ids are the morph's identity rather than targets: a caption's
+`mover`). The move sheet is a `kit::Sheet::loads`: the script sets its
+`data-url` to the images chosen as its button is pressed, its handler answers
+`kit::Sheet::fill`, and a move made answers `kit::Sheet::dismiss`, whose close
+with an empty body ends the viewer and the choice. Two ids are the morph's identity rather than targets: a caption's
 `caption-<id>`, so text typed into one image's caption is not carried into
 the next, and a player's `player-<id>`, so a redrawn viewer keeps playing the
 same video. A tile is found by its `data-id`.
 
 ### The kit
 
-Every control, status, meter, notice, flash, empty state, question and card
-is a koan-kit-web component; templates add layout utilities only. The upload
-tray's parts are the layout's `<template>`s drawn with the kit, which the
-script clones and fills. The layout's flash region (`layout/flash.html`) says
-over the page when a request's answer is an error or the server cannot be
-reached, and sends a 401 to sign in. What the kit cannot express yet (a
+Every control, status, meter, notice, flash, empty state, question, card and
+list, the top bar and footer, and the rendered Markdown's `prose`, is
+koan-kit-web's; templates add layout utilities only. The upload tray's parts
+are the layout's `<template>`s drawn with the kit, which the script clones and
+fills. The layout's flash region says over the page when a request's answer is
+an error or the server cannot be reached, and sends a 401 to sign in; a page
+loaded in place sends the region empty, which leaves its failure handlers
+(`#flash-failures`) where they are. What the kit cannot express yet (a
 full-screen media viewer, among others) is tracked on radiosilence/koan#2365.
 
 ### The script

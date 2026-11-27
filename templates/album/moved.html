@@ -1,4 +1,3 @@
-{#- The move made: the dialog's body emptied, which has the script close it with the viewer and end the choice, and a
-    flash leading to where the images went. -#}
-<div id="mover-body" data-init="dither.moved()"></div>
+{#- The move made, as a flash leading to where the images went; the answer dismisses the sheet with it, which has the
+    script close the viewer and end the choice. -#}
 {{ kit::Flash::ok(__n("Moved %{n} image.", "Moved %{n} images.", *count).with("n", count)).link(to, __("open that album")) }}
