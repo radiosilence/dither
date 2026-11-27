@@ -172,10 +172,14 @@ where the server sends a region again, declared once in its template:
 | Account, Accounts | `outcome`; `accounts` |
 
 Dialogs carry ids the buttons that open and close them name (`viewer`,
-`mover`). The move sheet is a `kit::Sheet::loads`: the script sets its
-`data-url` to the images chosen as its button is pressed, its handler answers
-`kit::Sheet::fill`, and a move made answers `kit::Sheet::dismiss`, whose close
-with an empty body ends the viewer and the choice. Two ids are the morph's identity rather than targets: a caption's
+`mover`). The move sheet is a `kit::Sheet::loads`. As a button opens it, the
+script sets its `data-url` from that button's (the images chosen, or the
+viewer's one), and closes it again if the read fails, since the flash saying so
+would sit under the sheet. Its handler answers `kit::Sheet::fill`; a move made
+answers `kit::Sheet::dismiss` and `dither-moved`, which the script hears to end
+the viewer and the choice, so a cancel or a failed read ends neither.
+
+Two ids are the morph's identity rather than targets: a caption's
 `caption-<id>`, so text typed into one image's caption is not carried into
 the next, and a player's `player-<id>`, so a redrawn viewer keeps playing the
 same video. A tile is found by its `data-id`.

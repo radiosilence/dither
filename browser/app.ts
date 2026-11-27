@@ -349,30 +349,36 @@ document.addEventListener("click", async (ev) => {
 
 // ── Moving images to another album ───────────────────────────────────────
 //
-// The move sheet reads its body from the address of the images to move: the
-// selection's, or the viewer's one image. A click is heard before the button
-// opens the sheet, which reads it as it opens.
-document.addEventListener("click", (ev) => {
-  const b = (ev.target as Element).closest<HTMLElement>("[data-move], [data-mover]");
-  const sheet = $("#mover");
-  const url = b?.dataset["mover"] ?? b?.dataset["url"];
-  if (sheet && url) sheet.dataset["url"] = url;
-});
-
-// The sheet closes on a move made with its body emptied (`kit::Sheet::dismiss`),
-// which ends the viewer and the choice; cancelled, or while it loads, it keeps
-// a form or the kit's busy mark.
+// The move sheet reads its body from the address of the images to move, which
+// the button that opens it holds: the selection bar's, or the viewer's one
+// image. The command is heard on its way down, before the sheet reads it.
 document.addEventListener(
-  "close",
+  "command",
   (ev) => {
-    if (!(ev.target instanceof HTMLDialogElement) || ev.target.id !== "mover") return;
-    const section = ev.target.querySelector(":scope > section");
-    if (!section || section.childElementCount || section.ariaBusy === "true") return;
-    $<HTMLDialogElement>("#viewer")?.close();
-    selecting(false);
+    const sheet = ev.target;
+    if (!(sheet instanceof HTMLDialogElement) || sheet.id !== "mover") return;
+    const source = "source" in ev ? ev.source : null;
+    if (!(source instanceof HTMLElement)) return;
+    const url = source.dataset["mover"] ?? source.dataset["url"];
+    if (url) sheet.dataset["url"] = url;
   },
   true,
 );
+
+// A read that fails closes the sheet, or its ensō would turn for good and the
+// flash saying why sit under it.
+document.addEventListener("datastar-fetch", (ev) => {
+  if (!(ev instanceof CustomEvent) || typeof ev.detail !== "object" || !ev.detail) return;
+  const { el, type } = ev.detail;
+  if (el instanceof HTMLDialogElement && el.id === "mover" && (type === "error" || type === "retries-failed"))
+    el.close();
+});
+
+// A move made ends the viewer and the choice.
+addEventListener("dither-moved", () => {
+  $<HTMLDialogElement>("#viewer")?.close();
+  selecting(false);
+});
 
 // Typing a new album's name picks that option.
 document.addEventListener("input", (ev) => {

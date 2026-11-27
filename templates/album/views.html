@@ -7,10 +7,17 @@
   ) %}
   {%- if !shared.is_empty() %}
   <dt>{{ __("shared on") }}</dt>
-  <dd>{{ kit::List::new(self.sites()) }}</dd>
+  <dd>{% filter kit::wrap(kit::List::new(None::<&str>)) %}
+    {%- for (site, n) in shared %}<li>{{ __n("%{site} %{count}", "%{site} %{count}", *n).with("site", site) }}</li>{% endfor %}
+  {%- endfilter %}</dd>
   {%- endif %}
   {%- if !referrers.is_empty() %}
   <dt>{{ __("linked from") }}</dt>
-  <dd>{{ kit::List::new(self.hosts(__("other sites"))) }}</dd>
+  <dd>{% filter kit::wrap(kit::List::new(None::<&str>)) %}
+    {%- for (host, n) in referrers %}<li>
+      {%- if host.is_empty() %}{{ __n("other sites %{count}", "other sites %{count}", *n) }}
+      {%- else %}{{ __n("%{site} %{count}", "%{site} %{count}", *n).with("site", host) }}{% endif -%}
+    </li>{% endfor %}
+  {%- endfilter %}</dd>
   {%- endif %}
 {%- endfilter %}

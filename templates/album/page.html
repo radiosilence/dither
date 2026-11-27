@@ -33,6 +33,6 @@
 <div data-order="{{ self.order_url() }}">{{ grid }}</div>
 {{ foot }}
 <dialog id="viewer" class="viewer" aria-label="{{ __p("Dialog name", "image") }}"><div id="viewer-body" class="viewer-body"></div></dialog>
-{#- The albums to move images to are read into it as it opens, from the address the script gives it for the images
-    chosen; the form they make posts with the sheet's own button. #}
+{#- The albums to move images to are read into it as it opens, from the address of the images chosen that the script
+    copies from the button opening it; the form they make posts with the sheet's own button. #}
 {{ kit::Sheet::new("mover", __("move to")).loads(self.mover_url()).action(kit::Button::quiet(__p("Button: dismiss a dialog", "cancel")).closes("mover")).action(kit::Button::primary(__p("Button: move images to another album", "move")).post(self.move_url()).sends("mover-body")) }}
