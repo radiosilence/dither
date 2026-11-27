@@ -2,15 +2,37 @@
 {% block title %}{{ __("join") }} · dither{% endblock %}
 {% block script %}<script type="module" src="{{ join_js_url() }}"></script>{% endblock %}
 {% block main %}
-<h1 class="m-0">{{ __("join") }}</h1>
-<p class="m-0 text-meta text-muted">{{ __("Choose a password for your account. The invite works once.") }}</p>
-{% include "sign/problem.html" %}
-{%- let form = kit::Form::plain("/join") %}
-<form{{ form.attrs() }} class="grid gap-4">
-  {{ kit::Input::hidden("invite", invite) }}
-  {{ kit::Field::text("username", __("username")).value(username).autocomplete("username").readonly() }}
-  {{ kit::Field::new(__("password"), kit::Input::password("password").autocomplete("new-password").attr("minlength", "8").required().autofocus()) }}
-  {{ kit::Field::new(__("password again"), kit::Input::password("confirm").autocomplete("new-password").attr("minlength", "8").required()) }}
-  {{ form.submit(kit::Button::primary(__("join"))) }}
-</form>
+  <h1 class="m-0">{{ __("join") }}</h1>
+  <p class="m-0 text-meta text-muted">{{ __("Choose a password for your account. The invite works once.") }}</p>
+  {% include "sign/problem.html" %}
+  {%- let form = kit::Form::plain("/join") %}
+  <form{{ form.attrs() }} class="grid gap-4">
+    {{ kit::Input::hidden("invite", invite) }}
+    {{
+        kit::Field::text("username", __("username"))
+            .value(username)
+            .autocomplete("username")
+            .readonly()
+    }}
+    {{
+        kit::Field::new(
+            __("password"),
+            kit::Input::password("password")
+                .autocomplete("new-password")
+                .attr("minlength", "8")
+                .required()
+                .autofocus(),
+        )
+    }}
+    {{
+        kit::Field::new(
+            __("password again"),
+            kit::Input::password("confirm")
+                .autocomplete("new-password")
+                .attr("minlength", "8")
+                .required(),
+        )
+    }}
+    {{ form.submit(kit::Button::primary(__("join"))) }}
+  </form>
 {% endblock %}

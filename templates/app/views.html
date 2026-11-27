@@ -1,9 +1,29 @@
 {#- What the public routes served of an image or album: its owner's alone. The sites linking to it are counted in a
     loop, so they are rows of the block, after the rows given. -#}
-{%- filter kit::wrap(kit::Pairs::new().class("views")
-  .pair(__("last 30 days"), __("%{views} · %{visitors} · %{size} served").with("views", __n("%{count} view", "%{count} views", *recent.views)).with("visitors", __n("%{count} visitor", "%{count} visitors", *recent.visitors)).with("size", recent.size))
-  .pair(__("all time"), __("%{views} · %{visitors} · %{size} served").with("views", __n("%{count} view", "%{count} views", *all.views)).with("visitors", __n("%{count} visitor", "%{count} visitors", *all.visitors)).with("size", all.size))
-  .optional(__("shared on"), self.shared_on())) %}
+{%-
+    filter kit::wrap(
+        kit::Pairs::new()
+            .class("views")
+            .pair(
+                __("last 30 days"),
+                __("%{views} · %{visitors} · %{size} served")
+                    .with("views", __n("%{count} view", "%{count} views", *recent.views))
+                    .with(
+                        "visitors",
+                        __n("%{count} visitor", "%{count} visitors", *recent.visitors),
+                    )
+                    .with("size", recent.size),
+            )
+            .pair(
+                __("all time"),
+                __("%{views} · %{visitors} · %{size} served")
+                    .with("views", __n("%{count} view", "%{count} views", *all.views))
+                    .with("visitors", __n("%{count} visitor", "%{count} visitors", *all.visitors))
+                    .with("size", all.size),
+            )
+            .optional(__("shared on"), self.shared_on()),
+    )
+%}
   {%- if !referrers.is_empty() %}
   <dt>{{ __("linked from") }}</dt>
   <dd>{% for (host, n) in referrers %}{% if !loop.first %} · {% endif %}{% if host.is_empty() %}{{ __("other sites") }}{% else %}{{ host }}{% endif %} {{ n }}{% endfor %}</dd>

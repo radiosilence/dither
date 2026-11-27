@@ -13,3 +13,5 @@ aube = "2.8.5"
 "github:tailwindlabs/tailwindcss" = "4.3.3"
 # Typechecks browser/; build.rs strips its types.
 "github:microsoft/typescript-go" = { version = "7.0.2", version_prefix = "typescript/v" }
+# Formats and checks the askama templates (`just fmt`, `just check`), as the editor does.
+"github:radiosilence/askama-analyzer" = "latest"

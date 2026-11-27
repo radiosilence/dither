@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% block kit %}{{ kit::Head::new(css_url()).noindex() }}{% endblock %}
 {% block head %}
-{% block script %}{% endblock %}
+  {% block script %}{% endblock %}
 {% endblock %}
 {% block body %}
-<body class="public">
-<main id="main" class="mx-auto grid max-w-form gap-4 px-[22px] py-24">
-  <a href="/" class="wordmark" aria-label="{{ __("dither: your albums") }}">dither</a>
-  {% block main %}{% endblock %}
-</main>
-</body>
+  <body class="public">
+    <main id="main" class="mx-auto grid max-w-form gap-4 px-[22px] py-24">
+      <a href="/" class="wordmark" aria-label="{{ __("dither: your albums") }}">dither</a>
+      {% block main %}{% endblock %}
+    </main>
+  </body>
 {% endblock %}

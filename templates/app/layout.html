@@ -1,75 +1,106 @@
 {% extends "base.html" %}
 {% block kit %}{{ kit::Head::new(css_url()).datastar("/assets/datastar.js") }}{% endblock %}
 {% block head %}
-<script type="module" src="{{ app_js_url() }}"></script>
-<script type="module" src="{{ player_js_url() }}"></script>
+  <script type="module" src="{{ app_js_url() }}"></script>
+  <script type="module" src="{{ player_js_url() }}"></script>
 {% endblock %}
 {% block body %}
-<body class="app" data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">
-{{ kit::SkipLink::new(__("skip to content"), "main") }}
-<header class="topbar">
-  <a href="/" class="wordmark" aria-label="{{ __("dither: your albums") }}">dither</a>
-  <span class="flex-1"></span>
-  {% if shell.admin %}<a class="text-meta text-muted hover:text-ink hover:no-underline" href="/users">{{ __("accounts") }}</a>{% endif %}
-  <a class="truncate text-meta text-muted hover:text-ink hover:no-underline" href="/account" title="{{ __("your account") }}">{{ shell.login }}</a>
-  <a class="text-meta text-muted hover:text-ink hover:no-underline" href="/auth/logout">{{ __("sign out") }}</a>
-</header>
-<main id="main" class="page">
-  {% block main %}{% endblock %}
-</main>
-<footer class="py-6 text-center">{{ kit::Release::new("dither", shell.version, "https://github.com/radiosilence/dither") }}</footer>
-<div id="drop" class="drop" hidden><p>{{ __("drop to upload") }}</p></div>
-<section id="tray" class="tray compact" hidden aria-label="{{ __("uploads") }}"></section>
-<dialog id="viewer" class="viewer" aria-label="{{ __p("Dialog name", "image") }}"><div id="viewer-body" class="viewer-body"></div></dialog>
-{#- The albums to move images to are read into it as it opens (`app.ts`). #}
-{% filter kit::wrap(kit::Sheet::new("mover", __("move to")).action(kit::Button::quiet(__p("Button: dismiss a dialog", "cancel")).closes("mover")).action(kit::Button::primary(__p("Button: move images to another album", "move")).data("move-confirm", ""))) %}<div id="mover-body"></div>{% endfilter %}
-{{ kit::Confirm::new(__p("Button: dismiss a dialog", "cancel")) }}
-{{ kit::Flash::region() }}
-<input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp{% if shell.max_video.is_some() %},video/*,.mp4,.mov,.m4v,.3gp,.webm,.mkv{% endif %}" hidden>
-{# What the browser's script says, keyed by name. Placeholders it fills itself are left as written. A line with a
-   count comes once per plural form of the language, each rendered at a count in that form, which the script reads
-   to file it; `%{n}` is the count it fills in. #}
-<template id="copy">
-  {% for n in plural_samples() %}
-  <span data-k="n selected" data-n="{{ n }}">{{ __n("%{n} selected", "%{n} selected", *n) }}</span>
-  <span data-k="delete n?" data-n="{{ n }}">{{ __n("Delete this image? Links to it stop working. This can't be undone.", "Delete these %{n} images? Links to them stop working. This can't be undone.", *n) }}</span>
-  <span data-k="processing n" data-n="{{ n }}">{{ __n("processing %{n}…", "processing %{n}…", *n) }}</span>
-  <span data-k="moved n" data-n="{{ n }}">{{ __n("Moved %{n} image.", "Moved %{n} images.", *n) }}</span>
-  {% endfor %}
-  <span data-k="none selected">{{ __("none selected") }}</span>
-  <span data-k="cover failed">{{ __("Couldn't set the cover.") }}</span>
-  <span data-k="album failed">{{ __("Couldn't make an album.") }}</span>
-  <span data-k="albums failed">{{ __("Couldn't list your albums.") }}</span>
-  <span data-k="move failed">{{ __("Couldn't move them.") }}</span>
-  <span data-k="open that album">{{ __("open that album") }}</span>
-  <span data-k="order failed">{{ __("Couldn't save the new order; reload to see the album as it is.") }}</span>
-  <span data-k="pasted image">{{ __("pasted image") }}</span>
-  <span data-k="heic">{{ __("HEIC isn't supported yet: export it as JPEG") }}</span>
-  <span data-k="not an image">{{ __("not a JPEG, PNG, GIF or WebP") }}</span>
-  <span data-k="not media">{{ __("not a JPEG, PNG, GIF, WebP or video") }}</span>
-  <span data-k="too big">{{ __("%{size} is over the %{max} limit") }}</span>
-  <span data-k="empty">{{ __("the file is empty") }}</span>
-  <span data-k="refused">{{ __("refused (%{status})") }}</span>
-  <span data-k="failed">{{ __("the upload failed") }}</span>
-  <span data-k="signed out">{{ __("signed out: sign in again and add them again") }}</span>
-  <span data-k="server failed">{{ __("the server failed (%{status})") }}</span>
-  <span data-k="dropped">{{ __("the connection dropped") }}</span>
-  <span data-k="cancelled">{{ __p("Upload state", "cancelled") }}</span>
-  <span data-k="processing failed">{{ __("processing failed (%{status})") }}</span>
-  <span data-k="retrying">{{ __("%{why}; retrying") }}</span>
-  <span data-k="cancel">{{ __p("Button: stop uploading", "cancel") }}</span>
-  <span data-k="close">{{ __p("Button: hide the upload tray", "close") }}</span>
-  <span data-k="retry">{{ __p("Button: send a failed upload again", "retry") }}</span>
-  <span data-k="waiting">{{ __p("Upload state", "waiting") }}</span>
-  <span data-k="processing">{{ __p("Upload state", "processing") }}</span>
-  <span data-k="done">{{ __p("Upload state", "done") }}</span>
-  <span data-k="uploaded of">{{ __("%{done} of %{total} uploaded") }}</span>
-  <span data-k="uploaded failed">{{ __("%{done} uploaded, %{failed} failed") }}</span>
-  <span data-k="rate">{{ __("%{rate}/s · %{left} left") }}</span>
-  <span data-k="bytes of">{{ __("%{sent} of %{total}") }}</span>
-  <span data-k="open the album">{{ __("open the album") }}</span>
-  <span data-k="hide">{{ __p("Button: fold the upload list", "hide") }}</span>
-  <span data-k="details">{{ __p("Button: unfold the upload list", "details") }}</span>
-</template>
-</body>
+  <body
+    class="app"
+    data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %}
+    data-chunk="{{ shell.chunk }}"
+  >
+    {{ kit::SkipLink::new(__("skip to content"), "main") }}
+    <header class="topbar">
+      <a href="/" class="wordmark" aria-label="{{ __("dither: your albums") }}">dither</a>
+      <span class="flex-1"></span>
+      {% if shell.admin %}<a class="text-meta text-muted hover:text-ink hover:no-underline" href="/users">{{ __("accounts") }}</a>{% endif %}
+      <a
+        class="truncate text-meta text-muted hover:text-ink hover:no-underline"
+        href="/account"
+        title="{{ __("your account") }}"
+      >{{ shell.login }}</a>
+      <a class="text-meta text-muted hover:text-ink hover:no-underline" href="/auth/logout">{{ __("sign out") }}</a>
+    </header>
+    <main id="main" class="page">
+      {% block main %}{% endblock %}
+    </main>
+    <footer class="py-6 text-center">{{ kit::Release::new("dither", shell.version, "https://github.com/radiosilence/dither") }}</footer>
+    <div id="drop" class="drop" hidden><p>{{ __("drop to upload") }}</p></div>
+    <section id="tray" class="tray compact" hidden aria-label="{{ __("uploads") }}"></section>
+    <dialog id="viewer" class="viewer" aria-label="{{ __p("Dialog name", "image") }}"><div id="viewer-body" class="viewer-body"></div></dialog>
+    {#- The albums to move images to are read into it as it opens (`app.ts`). #}
+    {%
+        filter kit::wrap(
+            kit::Sheet::new("mover", __("move to"))
+                .action(
+                    kit::Button::quiet(__p("Button: dismiss a dialog", "cancel")).closes("mover"),
+                )
+                .action(
+                    kit::Button::primary(__p("Button: move images to another album", "move"))
+                        .data("move-confirm", ""),
+                ),
+        )
+    %}<div id="mover-body"></div>{% endfilter %}
+    {{ kit::Confirm::new(__p("Button: dismiss a dialog", "cancel")) }}
+    {{ kit::Flash::region() }}
+    <input
+      type="file"
+      id="pick"
+      multiple
+      accept="image/jpeg,image/png,image/gif,image/webp{% if shell.max_video.is_some() %},video/*,.mp4,.mov,.m4v,.3gp,.webm,.mkv{% endif %}"
+      hidden
+    >
+    {# What the browser's script says, keyed by name. Placeholders it fills itself are left as written. A line with a
+       count comes once per plural form of the language, each rendered at a count in that form, which the script reads
+       to file it; `%{n}` is the count it fills in. #}
+    <template id="copy">
+      {% for n in plural_samples() %}
+        <span data-k="n selected" data-n="{{ n }}">{{ __n("%{n} selected", "%{n} selected", *n) }}</span>
+        <span data-k="delete n?" data-n="{{ n }}">{{
+            __n(
+                "Delete this image? Links to it stop working. This can't be undone.",
+                "Delete these %{n} images? Links to them stop working. This can't be undone.",
+                *n,
+            )
+        }}</span>
+        <span data-k="processing n" data-n="{{ n }}">{{ __n("processing %{n}…", "processing %{n}…", *n) }}</span>
+        <span data-k="moved n" data-n="{{ n }}">{{ __n("Moved %{n} image.", "Moved %{n} images.", *n) }}</span>
+      {% endfor %}
+      <span data-k="none selected">{{ __("none selected") }}</span>
+      <span data-k="cover failed">{{ __("Couldn't set the cover.") }}</span>
+      <span data-k="album failed">{{ __("Couldn't make an album.") }}</span>
+      <span data-k="albums failed">{{ __("Couldn't list your albums.") }}</span>
+      <span data-k="move failed">{{ __("Couldn't move them.") }}</span>
+      <span data-k="open that album">{{ __("open that album") }}</span>
+      <span data-k="order failed">{{ __("Couldn't save the new order; reload to see the album as it is.") }}</span>
+      <span data-k="pasted image">{{ __("pasted image") }}</span>
+      <span data-k="heic">{{ __("HEIC isn't supported yet: export it as JPEG") }}</span>
+      <span data-k="not an image">{{ __("not a JPEG, PNG, GIF or WebP") }}</span>
+      <span data-k="not media">{{ __("not a JPEG, PNG, GIF, WebP or video") }}</span>
+      <span data-k="too big">{{ __("%{size} is over the %{max} limit") }}</span>
+      <span data-k="empty">{{ __("the file is empty") }}</span>
+      <span data-k="refused">{{ __("refused (%{status})") }}</span>
+      <span data-k="failed">{{ __("the upload failed") }}</span>
+      <span data-k="signed out">{{ __("signed out: sign in again and add them again") }}</span>
+      <span data-k="server failed">{{ __("the server failed (%{status})") }}</span>
+      <span data-k="dropped">{{ __("the connection dropped") }}</span>
+      <span data-k="cancelled">{{ __p("Upload state", "cancelled") }}</span>
+      <span data-k="processing failed">{{ __("processing failed (%{status})") }}</span>
+      <span data-k="retrying">{{ __("%{why}; retrying") }}</span>
+      <span data-k="cancel">{{ __p("Button: stop uploading", "cancel") }}</span>
+      <span data-k="close">{{ __p("Button: hide the upload tray", "close") }}</span>
+      <span data-k="retry">{{ __p("Button: send a failed upload again", "retry") }}</span>
+      <span data-k="waiting">{{ __p("Upload state", "waiting") }}</span>
+      <span data-k="processing">{{ __p("Upload state", "processing") }}</span>
+      <span data-k="done">{{ __p("Upload state", "done") }}</span>
+      <span data-k="uploaded of">{{ __("%{done} of %{total} uploaded") }}</span>
+      <span data-k="uploaded failed">{{ __("%{done} uploaded, %{failed} failed") }}</span>
+      <span data-k="rate">{{ __("%{rate}/s · %{left} left") }}</span>
+      <span data-k="bytes of">{{ __("%{sent} of %{total}") }}</span>
+      <span data-k="open the album">{{ __("open the album") }}</span>
+      <span data-k="hide">{{ __p("Button: fold the upload list", "hide") }}</span>
+      <span data-k="details">{{ __p("Button: unfold the upload list", "details") }}</span>
+    </template>
+  </body>
 {% endblock %}

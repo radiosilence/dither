@@ -1,15 +1,57 @@
 {% extends "sign/layout.html" %}
 {% block title %}{{ __("set up") }} · dither{% endblock %}
 {% block main %}
-<h1 class="m-0">{{ __("set up") }}</h1>
-<p class="m-0 text-meta text-muted">{{ __("This server has no account yet. Make the first one: it is an admin, and invites everyone else.") }}</p>
-{% include "sign/problem.html" %}
-{%- let form = kit::Form::plain("/setup") %}
-<form{{ form.attrs() }} class="grid gap-4">
-  {{ kit::Field::new(__("setup code"), kit::Input::text("code").autocomplete("off").attr("autocapitalize", "none").attr("spellcheck", "false").required().autofocus()).hint(__("The server writes the code to its log when it starts with no account.")) }}
-  {{ kit::Field::new(__("username"), kit::Input::text("username").value(username).autocomplete("username").attr("autocapitalize", "none").attr("spellcheck", "false").attr("maxlength", "64").required()) }}
-  {{ kit::Field::new(__("password"), kit::Input::password("password").autocomplete("new-password").attr("minlength", "8").required()) }}
-  {{ kit::Field::new(__("password again"), kit::Input::password("confirm").autocomplete("new-password").attr("minlength", "8").required()) }}
-  {{ form.submit(kit::Button::primary(__("make the account"))) }}
-</form>
+  <h1 class="m-0">{{ __("set up") }}</h1>
+  <p class="m-0 text-meta text-muted">{{
+      __(
+          "This server has no account yet. Make the first one: it is an admin, and invites everyone else.",
+      )
+  }}</p>
+  {% include "sign/problem.html" %}
+  {%- let form = kit::Form::plain("/setup") %}
+  <form{{ form.attrs() }} class="grid gap-4">
+    {{
+        kit::Field::new(
+            __("setup code"),
+            kit::Input::text("code")
+                .autocomplete("off")
+                .attr("autocapitalize", "none")
+                .attr("spellcheck", "false")
+                .required()
+                .autofocus(),
+        )
+        .hint(__("The server writes the code to its log when it starts with no account."))
+    }}
+    {{
+        kit::Field::new(
+            __("username"),
+            kit::Input::text("username")
+                .value(username)
+                .autocomplete("username")
+                .attr("autocapitalize", "none")
+                .attr("spellcheck", "false")
+                .attr("maxlength", "64")
+                .required(),
+        )
+    }}
+    {{
+        kit::Field::new(
+            __("password"),
+            kit::Input::password("password")
+                .autocomplete("new-password")
+                .attr("minlength", "8")
+                .required(),
+        )
+    }}
+    {{
+        kit::Field::new(
+            __("password again"),
+            kit::Input::password("confirm")
+                .autocomplete("new-password")
+                .attr("minlength", "8")
+                .required(),
+        )
+    }}
+    {{ form.submit(kit::Button::primary(__("make the account"))) }}
+  </form>
 {% endblock %}

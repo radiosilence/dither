@@ -1,23 +1,29 @@
 {% extends "public/layout.html" %}
 {% import "player.html" as player %}
 {% block main %}
-<main id="main" class="mx-auto max-w-[1000px] pt-8 pb-24 max-wide:pt-5">
-  <header class="mb-6 px-[22px]">
-    {% if !title.is_empty() %}<h1 class="normal-case">{{ title }}</h1>{% endif %}
-    {% if !description.is_empty() %}<div class="prose">{{ description }}</div>{% endif %}
-    <p class="text-meta text-muted">{{ __n("%{count} image", "%{count} images", *count) }}</p>
-  </header>
-  {% for p in pics %}
-  <figure id="{{ p.id }}" class="pic{% if p.tall %} tall{% endif %}">
-    {% if let Some(c) = p.clip.as_ref() %}
-    {% call player::clip(c) %}{% endcall %}
-    {% else %}
-    <a href="/{{ p.id }}">
-      <img{% if p.tall %} class="tall"{% endif %} src="{{ p.src }}"{% if !p.srcset.is_empty() %} srcset="{{ p.srcset }}" sizes="(max-width: 1000px) 100vw, 1000px"{% endif %} width="{{ p.width }}" height="{{ p.height }}" alt="{{ p.caption }}"{% if loop.first %} fetchpriority="high"{% else %} loading="lazy"{% endif %} decoding="async">
-    </a>
-    {% endif %}
-    {% if !p.caption_html.is_empty() %}<figcaption class="prose">{{ p.caption_html }}</figcaption>{% endif %}
-  </figure>
-  {% endfor %}
-</main>
+  <main id="main" class="mx-auto max-w-[1000px] pt-8 pb-24 max-wide:pt-5">
+    <header class="mb-6 px-[22px]">
+      {% if !title.is_empty() %}<h1 class="normal-case">{{ title }}</h1>{% endif %}
+      {% if !description.is_empty() %}<div class="prose">{{ description }}</div>{% endif %}
+      <p class="text-meta text-muted">{{ __n("%{count} image", "%{count} images", *count) }}</p>
+    </header>
+    {% for p in pics %}
+      <figure id="{{ p.id }}" class="pic{% if p.tall %} tall{% endif %}">
+        {% if let Some(c) = p.clip.as_ref() %}
+          {% call player::clip(c) %}{% endcall %}
+        {% else %}
+          <a href="/{{ p.id }}">
+            <img{% if p.tall %} class="tall"{% endif %}
+              src="{{ p.src }}"{% if !p.srcset.is_empty() %} srcset="{{ p.srcset }}" sizes="(max-width: 1000px) 100vw, 1000px"{% endif %}
+              width="{{ p.width }}"
+              height="{{ p.height }}"
+              alt="{{ p.caption }}"{% if loop.first %} fetchpriority="high"{% else %} loading="lazy"{% endif %}
+              decoding="async"
+            >
+          </a>
+        {% endif %}
+        {% if !p.caption_html.is_empty() %}<figcaption class="prose">{{ p.caption_html }}</figcaption>{% endif %}
+      </figure>
+    {% endfor %}
+  </main>
 {% endblock %}
