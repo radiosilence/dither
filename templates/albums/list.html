@@ -1,11 +1,12 @@
 {% import "macros.html" as m %}
-<div id="albums" class="albums">
+{#- The cards load their albums in place through the layout's navigation. #}
+<div id="albums" class="albums" data-kit-in-place>
 {% for c in cards %}
-  <a class="card" href="{{ c.href }}">
-    <span class="cover">{% if let Some(src) = c.cover.as_ref() %}<img src="{{ src }}" alt="" loading="lazy" decoding="async">{% endif %}</span>
-    <span class="name{% if c.title.is_empty() %} untitled{% endif %}">{% if c.title.is_empty() %}{{ __("untitled") }}{% else %}{{ c.title }}{% endif %}</span>
+  {% filter kit::wrap(kit::Link::to(c.href)) %}
+    <span class="album-cover">{% if let Some(src) = c.cover.as_ref() %}<img src="{{ src }}" alt="" loading="lazy" decoding="async">{% endif %}</span>
+    <span class="album-name{% if c.title.is_empty() %} untitled{% endif %}">{% if c.title.is_empty() %}{{ __("untitled") }}{% else %}{{ c.title }}{% endif %}</span>
     <span class="text-fine text-muted">{% call m::images(c.count, c.size) %}{% endcall %}{% if c.private %} · {{ __("private") }}{% endif %}</span>
-  </a>
+  {% endfilter %}
 {% endfor %}
 {% if cards.is_empty() %}
   {{ kit::Empty::new(__("No albums yet. Drop some images in to start one.")).class("col-span-full") }}

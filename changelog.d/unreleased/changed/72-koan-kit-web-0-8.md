@@ -1,0 +1,1 @@
+- **koan-kit-web 0.8.1.** The signed-in pages load in place through the kit's `Navigation`, so Back and Forward no longer reload a page, and a load that fails leaves the address as it was; the albums' cards load their album in place. A request that fails says so over the page, and one refused for want of a session goes to the sign-in page.

@@ -770,7 +770,7 @@ async fn deleting_an_album_deletes_its_files() {
     assert!(
         deleted
             .text()
-            .contains("data-href=\"/\" data-init=\"location.assign(el.dataset.href)\""),
+            .contains("data-go=\"/\" data-init=\"location.assign(el.dataset.go)\""),
         "{}",
         deleted.text()
     );
