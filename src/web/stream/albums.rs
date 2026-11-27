@@ -2,9 +2,8 @@
 //! change.
 
 use askama_datastar::Last;
-use axum::response::sse::Event;
 
-use super::{Changed, Live, Shown};
+use super::{Changed, Drawn, Live, Shown};
 use crate::auth::session::Session;
 use crate::web::AppState;
 use crate::web::layout::Draw;
@@ -23,20 +22,22 @@ impl Live for Albums {
         }
     }
 
-    async fn draw(&mut self, s: &AppState, session: &Session, c: &Changed) -> Vec<Event> {
+    async fn draw(&mut self, s: &AppState, session: &Session, c: &Changed) -> Drawn {
         if !c.mine {
-            return Vec::new();
+            return Drawn::sent(Vec::new());
         }
         match regions(s, &session.username).await {
-            Ok((list, usage)) => [self.list.send(&list.draw()), self.usage.send(&usage.draw())]
-                .into_iter()
-                .flatten()
-                .collect(),
+            Ok((list, usage)) => Drawn::sent(
+                [self.list.send(&list.draw()), self.usage.send(&usage.draw())]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            ),
             // A database that could not answer (a long write holding the
             // lock) is asked again on the next change.
             Err(e) => {
                 tracing::warn!(error = %e, "drawing the albums failed");
-                Vec::new()
+                Drawn::failed(Vec::new())
             }
         }
     }

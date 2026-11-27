@@ -174,6 +174,28 @@ pub fn delete_images(images: &[&str]) -> String {
     format!("{DELETE_IMAGES}?{}", query(&[("ids", &images.join(","))]))
 }
 
+// The uploader's JSON (`api`). The answers name the addresses that follow,
+// so a client formats none of its own.
+
+pub const API_ALBUMS: &str = "/api/albums";
+pub const API_UPLOADS: &str = "/api/albums/{id}/uploads";
+pub const API_UPLOAD: &str = "/api/uploads/{id}";
+pub const API_FINISH: &str = "/api/uploads/{id}/finish";
+
+/// Where an album's uploads are declared.
+pub fn api_uploads(album: &str) -> String {
+    format!("/api/albums/{album}/uploads")
+}
+
+/// An upload's own address: its chunks, its state, cancelling it.
+pub fn api_upload(id: &str) -> String {
+    format!("/api/uploads/{id}")
+}
+
+pub fn api_finish(id: &str) -> String {
+    format!("/api/uploads/{id}/finish")
+}
+
 // The accounts page's actions.
 
 pub const ACCOUNT_PASSWORD: &str = "/account/password";
@@ -244,6 +266,9 @@ mod tests {
         assert_eq!(viewer("x"), filled(VIEWER, "x"));
         assert_eq!(caption("x"), filled(CAPTION, "x"));
         assert_eq!(public_album("x"), filled(PUBLIC_ALBUM, "x"));
+        assert_eq!(api_uploads("x"), filled(API_UPLOADS, "x"));
+        assert_eq!(api_upload("x"), filled(API_UPLOAD, "x"));
+        assert_eq!(api_finish("x"), filled(API_FINISH, "x"));
         assert_eq!(
             account_action(7, AccountAction::Reset),
             ACCOUNT_ACTION

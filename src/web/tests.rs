@@ -7,6 +7,7 @@ use serde_json::json;
 use tower::ServiceExt;
 
 use super::fixture::*;
+use super::paths;
 use crate::auth::cookie::SESSION_COOKIE;
 use crate::store::{self, Variant};
 
@@ -888,37 +889,75 @@ async fn the_app_pages_draw_and_carry_their_policy() {
     );
 }
 
-#[tokio::test]
-async fn the_live_stream_opens_with_the_grid() {
-    let app = app().await;
-    let (album, _) = app.upload(&[&jpeg(40, 30)]).await;
+/// What the stream at `path` sends first, for a page at `url` holding `seen`,
+/// read for a moment, since a stream never ends by itself.
+async fn stream_opening(app: &App, path: &str, url: &str, seen: Option<&str>) -> String {
+    let signals = match seen {
+        Some(seen) => json!({ "url": url, "seen": seen }),
+        None => json!({ "url": url }),
+    };
+    let query: String = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("datastar", &signals.to_string())
+        .finish();
     let res = app
         .router
         .clone()
         .oneshot(
-            Request::get(format!(
-                "/stream/album?{}",
-                url::form_urlencoded::Serializer::new(String::new())
-                    .append_pair(
-                        "datastar",
-                        &json!({ "url": format!("/albums/{album}") }).to_string()
-                    )
-                    .finish()
-            ))
-            .header(header::HOST, "app.test")
-            .header(header::COOKIE, format!("{SESSION_COOKIE}={}", app.cookie))
-            .header(header::ACCEPT, "text/event-stream")
-            .body(Body::empty())
-            .unwrap(),
+            Request::get(format!("{path}?{query}"))
+                .header(header::HOST, "app.test")
+                .header(header::COOKIE, format!("{SESSION_COOKIE}={}", app.cookie))
+                .header("datastar-request", "true")
+                .body(Body::empty())
+                .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(res.headers()["content-type"], "text/event-stream");
     let mut body = res.into_body();
-    let frame = body.frame().await.unwrap().unwrap().into_data().unwrap();
-    let text = String::from_utf8_lossy(&frame);
+    let mut text = Vec::new();
+    let ends = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(ends, body.frame()).await {
+        if let Ok(data) = frame.into_data() {
+            text.extend_from_slice(&data);
+        }
+    }
+    String::from_utf8_lossy(&text).into_owned()
+}
+
+#[tokio::test]
+async fn the_live_stream_opens_with_the_grid() {
+    let app = app().await;
+    let (album, _) = app.upload(&[&jpeg(40, 30)]).await;
+    let text = stream_opening(&app, paths::STREAM_ALBUM, &paths::album(&album), None).await;
     assert!(text.contains("event: datastar-patch-elements"), "{text}");
     assert!(text.contains("id=\"grid\""), "{text}");
+}
+
+/// A stream reopens often, so it draws again only what the page lacks: the
+/// owner's changes since the page noted `seen`, or everything when what it
+/// noted is from before the server restarted.
+#[tokio::test]
+async fn a_reopened_stream_draws_only_what_the_page_lacks() {
+    let app = app().await;
+    app.upload(&[&jpeg(40, 30)]).await;
+    let now = app.state.db.seen("dev");
+    let (boot, count) = now.split_once('.').unwrap();
+    let app = &app;
+    let opening = |seen: String| async move {
+        stream_opening(app, paths::STREAM_ALBUMS, paths::ALBUMS, Some(&seen)).await
+    };
+    // Up to date: nothing is sent again.
+    let same = opening(now.clone()).await;
+    assert!(!same.contains("id=\"albums\""), "{same}");
+    // Behind: drawn, and `seen` brought up to date.
+    let count: u64 = count.parse().unwrap();
+    let behind = opening(format!("{boot}.{}", count - 1)).await;
+    assert!(behind.contains("id=\"albums\""), "{behind}");
+    assert!(behind.contains(&now), "{behind}");
+    // The same count from before a restart: the counts restarted with it.
+    let other = if boot.starts_with('0') { "1" } else { "0" };
+    let before = opening(format!("{other}{}.{count}", &boot[1..])).await;
+    assert!(before.contains("id=\"albums\""), "{before}");
 }
 
 #[tokio::test]

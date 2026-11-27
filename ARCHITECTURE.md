@@ -54,7 +54,10 @@ viewer is `page/album/viewer.rs` and `templates/album/viewer/`.
 - **Public**: the album and image pages, the files, `robots.txt`.
 
 Every route's pattern is a constant in `paths`, beside the function that
-fills it, and a test checks the two agree. Nothing else formats an address.
+fills it, and a test checks the two agree. Nothing else formats an address:
+the script reads the ones it posts to from the page (`data-albums-api`, an
+album's `data-uploads`, the selection's buttons), and the uploader's JSON
+names each upload's own (`url`, `finish`).
 
 ### Pages
 
@@ -103,11 +106,16 @@ draws the page the address names. `url` and `seen` are declared on every
 page; a signal `reopen_on` names that a page does not declare stops the
 stream reopening without a console message.
 
-An opening is cheap. `Db::seen` counts each owner's changes; a page records
-the count before its body is drawn (the `seen` signal), and its stream's first
-pass draws only if the count has moved since. After each pass the stream sets
-`seen`, so the stream that replaces it carries on from there. A stream never
-starts work: everything it draws is read from the database and the job hub.
+An opening is cheap. `Db::seen` says how far each owner's changes have gone:
+a random id drawn as the process starts, and a count of changes since. A page
+records it before its body is drawn (the `seen` signal), and its stream's
+first pass draws only if it has moved since; one recorded before a restart
+never matches, since the counts restart with the process. After a pass that
+drew the owner's regions, the stream sets `seen`, so the stream that replaces
+it carries on from there. A pass that drew none of them (a video's progress
+alone) or failed to (the database did not answer) leaves `seen` where it was,
+so the next stream draws them. A stream never starts work: everything it draws
+is read from the database and the job hub.
 
 ### Actions
 
@@ -179,7 +187,8 @@ in place, a full-screen media viewer) is tracked on radiosilence/koan#2365.
 `browser/app.ts` holds what lives in the browser: files on their way, what
 is selected, a drag in progress, the viewer's keys and swipes. Pages load in
 place, so it holds no element of a page: it listens on the document, observes
-`main`, and reads the addresses it posts to from the page as it acts. Every
+`main`, and reads the addresses it posts to from the page and the API's
+answers as it acts. Every
 word it shows is the layout's `<template id="copy">`.
 
 ### The guard
@@ -188,7 +197,10 @@ word it shows is the layout's `<template id="copy">`.
 (`web::fixture`), fills every field a person controls with markup-shaped
 text (a title, a description, a caption, an upload's name, a username), and
 requests every page whole and in place, every stream, every region a page
-reads, the public pages and a refused sign-in. `askama_datastar::escaping::Guard`,
+reads, the answers to the actions that draw what a person wrote (making an
+account, setting the cover, moving images), the public pages, joining, and a
+refused sign-in. The set-up page, which a server with accounts never shows,
+is checked drawn from its template (`sign::tests`). `askama_datastar::escaping::Guard`,
 told the hostile texts and the templates directory, finds markup of the
 templates' own escaped (a fragment spliced in as text), text escaped twice,
 or text left as markup, and the test checks each page shows the text as

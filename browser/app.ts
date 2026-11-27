@@ -221,6 +221,12 @@ document.addEventListener("keydown", (ev) => {
 
 const albumId = () => $(".album-head")?.dataset["album"] ?? null;
 
+/** Where the album on show takes uploads, as its page names it. */
+const albumUploads = () => $(".album-head")?.dataset["uploads"] ?? null;
+
+/** Where albums are made, as the layout names it. */
+const albumsApi = () => body.dataset["albumsApi"] ?? "";
+
 // ── Selection ────────────────────────────────────────────────────────────
 
 const selected = new Set<string>();
@@ -354,7 +360,7 @@ document.addEventListener("click", async (ev) => {
     if (res.ok) selecting(false);
     else flash(say("cover failed"), true);
   } else if (t.closest("[data-new-album]")) {
-    const res = await api("POST", "/api/albums", {});
+    const res = await api("POST", albumsApi(), {});
     const answer = await json<{ href: string }>(res);
     if (res.ok && answer.href) location.href = answer.href;
     else flash(say("album failed"), true);
@@ -598,8 +604,9 @@ interface Item {
   flight: number;
   state: State;
   error: string;
-  id?: string;
-  album?: string;
+  /** The upload's own address, and where it is finished, as the server names them. */
+  url?: string;
+  finish?: string;
   xhr?: XMLHttpRequest | null;
   preview?: string;
   row?: Row;
@@ -616,6 +623,7 @@ class Failure extends Error {
 const queue = {
   items: [] as Item[],
   active: 0,
+  /** Where the batch's album takes uploads. */
   album: null as string | null,
   /** The page of the album a batch made, to offer once it is done. */
   albumHref: null as string | null,
@@ -642,19 +650,22 @@ const retryable = (status: number) => status === 408 || status === 429 || (statu
 /** The album being made for a batch: a second drop while it is on its way joins it rather than making another. */
 let making: Promise<string> | null = null;
 
-/** Where this batch goes: the album on show, the one a batch still going went to, or a new one made for it. */
+/**
+ * Where this batch's uploads are declared: the album on show's, the one a batch still going went to, or a new one's,
+ * made for it.
+ */
 async function target(running: boolean) {
-  const shown = albumId();
+  const shown = albumUploads();
   if (shown) return shown;
   if (running && making) return making;
   if (running && queue.album) return queue.album;
   making = (async () => {
-    const res = await api("POST", "/api/albums", {});
-    const answer = await json<{ id: string; href: string }>(res);
-    if (!res.ok || !answer.id) throw new Failure(say("album failed"), false);
-    queue.album = answer.id;
+    const res = await api("POST", albumsApi(), {});
+    const answer = await json<{ uploads: string; href: string }>(res);
+    if (!res.ok || !answer.uploads) throw new Failure(say("album failed"), false);
+    queue.album = answer.uploads;
     queue.albumHref = answer.href ?? null;
-    return answer.id;
+    return answer.uploads;
   })();
   try {
     return await making;
@@ -706,18 +717,18 @@ async function add(list: FileList | File[]) {
   tray.open();
   if (!go.length) return tray.draw();
   try {
-    const album = await target(running);
-    const res = await api("POST", `/api/albums/${album}/uploads`, {
+    const uploads = await target(running);
+    const res = await api("POST", uploads, {
       files: go.map((i) => ({ name: i.name, size: i.size, type: i.file.type })),
       as_recorded: $<HTMLInputElement>("[data-as-recorded] input")?.checked ?? false,
     });
-    const answer = await json<{ uploads: { id: string }[]; error: string }>(res);
+    const answer = await json<{ uploads: { url: string; finish: string }[]; error: string }>(res);
     if (!res.ok || !answer.uploads) throw new Failure(answer.error || say("refused", { status: res.status }), false);
     answer.uploads.forEach((u, n) => {
       const item = go[n];
       if (item) {
-        item.id = u.id;
-        item.album = album;
+        item.url = u.url;
+        item.finish = u.finish;
       }
     });
   } catch (e) {
@@ -732,7 +743,7 @@ async function add(list: FileList | File[]) {
 
 function pump() {
   while (queue.active < PARALLEL) {
-    const next = queue.items.find((i) => i.state === "queued" && i.id);
+    const next = queue.items.find((i) => i.state === "queued" && i.url);
     if (!next) break;
     void send(next);
   }
@@ -743,7 +754,7 @@ function put(item: Item, start: number, end: number) {
   return new Promise<number>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     item.xhr = xhr;
-    xhr.open("PUT", `/api/uploads/${item.id}`);
+    xhr.open("PUT", item.url ?? "");
     xhr.setRequestHeader("x-dither", "1");
     xhr.setRequestHeader("content-range", `bytes ${start}-${end - 1}/${item.size}`);
     xhr.timeout = 120_000;
@@ -797,7 +808,7 @@ async function send(item: Item) {
         tray.draw();
         // Processing carries on if the connection drops, and asking again
         // joins it.
-        const res = await api("POST", `/api/uploads/${item.id}/finish`).catch(() => {
+        const res = await api("POST", item.finish ?? "").catch(() => {
           throw new Failure(say("dropped"), true);
         });
         const answer = await json<{ received: number; error: string }>(res);
@@ -819,7 +830,7 @@ async function send(item: Item) {
         tray.draw();
         await sleep(1000 * 2 ** (tries - 1));
         // Resume from what the server has, whatever the last answer said.
-        const res = await api("GET", `/api/uploads/${item.id}`).catch(() => null);
+        const res = await api("GET", item.url ?? "").catch(() => null);
         if (res?.ok) item.acked = (await json<{ received: number }>(res)).received ?? item.acked;
         item.error = "";
       }
@@ -837,7 +848,7 @@ async function send(item: Item) {
 }
 
 function retry(item: Item) {
-  if (!item.id) return;
+  if (!item.url) return;
   item.state = "queued";
   item.error = "";
   pump();
@@ -848,7 +859,7 @@ function cancelAll() {
     if (i.state === "processing") continue;
     i.state = "cancelled";
     i.xhr?.abort();
-    if (i.id) api("DELETE", `/api/uploads/${i.id}`).catch(() => {});
+    if (i.url) api("DELETE", i.url).catch(() => {});
   }
   tray.draw();
 }
@@ -990,7 +1001,7 @@ const tray: Tray = (() => {
         if (!r) return [];
         r.li.dataset["state"] = i.state;
         r.state.textContent = i.error || words[i.state] || human(i.size);
-        r.again.hidden = !(i.state === "failed" && i.id);
+        r.again.hidden = !(i.state === "failed" && i.url);
         return [r.li];
       });
       if (rows.length !== list.children.length || rows.some((r, n) => list.children[n] !== r)) {

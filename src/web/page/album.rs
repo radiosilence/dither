@@ -62,6 +62,9 @@ impl AlbumPage {
     fn move_url(&self) -> &'static str {
         paths::MOVE
     }
+    fn uploads_url(&self) -> String {
+        paths::api_uploads(&self.id)
+    }
     fn albums_url(&self) -> &'static str {
         paths::ALBUMS
     }
@@ -164,17 +167,6 @@ pub(in crate::web) struct ViewCounts {
     all: Line,
     shared: Vec<(String, u64)>,
     referrers: Vec<(String, u64)>,
-}
-
-impl ViewCounts {
-    /// The sites it was shared on, each with its count: names, not words.
-    fn shared_on(&self) -> String {
-        self.shared
-            .iter()
-            .map(|(name, n)| format!("{name} {n}"))
-            .collect::<Vec<_>>()
-            .join(" · ")
-    }
 }
 
 struct Line {

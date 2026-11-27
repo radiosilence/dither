@@ -22,6 +22,8 @@ use crate::auth::cookie::SESSION_COOKIE;
 const HOSTILE: &str = r#"<em>hostile "q" & 'x'</em>"#;
 /// A username shaped like markup: one may hold anything but spaces.
 const NAME: &str = r#"<b>who</b>"&'"#;
+/// The account an admin makes on the accounts page.
+const INVITED: &str = r#"<i>new</i>"&'"#;
 
 /// What the router answers to a GET of `uri` as `cookie`'s browser loading
 /// it, or as Datastar asking (`in_place`): a stream is cut off having sent
@@ -104,7 +106,7 @@ async fn markup_from_people_is_escaped_once_everywhere() {
     // A second album, for the move dialog to offer.
     app.post("/api/albums", json!({ "title": HOSTILE })).await;
 
-    let guard = Guard::new(&[HOSTILE, NAME])
+    let guard = Guard::new(&[HOSTILE, NAME, INVITED])
         .templates(concat!(env!("CARGO_MANIFEST_DIR"), "/templates"))
         .expect("templates/")
         // The kit's components write these.
@@ -162,6 +164,59 @@ async fn markup_from_people_is_escaped_once_everywhere() {
         let (status, text) = get(&app, &uri, "", false).await;
         check(&uri, status, &text, &[HOSTILE]);
     }
+    // The answers to actions, where they draw what a person wrote.
+    let made = app
+        .submit(
+            paths::ACCOUNTS,
+            &[("newuser", INVITED), ("newrole", "user")],
+            Some(&admin),
+        )
+        .await;
+    check("making an account", made.status, &made.text(), &[INVITED]);
+    let covered = app
+        .submit(&paths::album_cover_of(&album, &image), &[], Some(&owner))
+        .await;
+    check(
+        "setting the cover",
+        covered.status,
+        &covered.text(),
+        &[HOSTILE],
+    );
+    let moved = app
+        .submit(
+            paths::MOVE,
+            &[("ids", image.as_str()), ("to", ""), ("title", HOSTILE)],
+            Some(&owner),
+        )
+        .await;
+    check("moving an image", moved.status, &moved.text(), &[]);
+    // Joining: the page, and one refused, which names the invited account.
+    let (status, page) = get(&app, paths::JOIN, "", false).await;
+    check(paths::JOIN, status, &page, &[]);
+    let invited = app.state.db.account_named(INVITED).await.unwrap().unwrap();
+    let (_, token) = app
+        .state
+        .db
+        .invite(invited.id, app.state.config.signing_key.private.clone())
+        .await
+        .unwrap();
+    let refused = app
+        .send(
+            Request::post(paths::JOIN)
+                .header(header::HOST, "app.test")
+                .header(header::ORIGIN, "http://app.test")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    url::form_urlencoded::Serializer::new(String::new())
+                        .append_pair("invite", &token)
+                        .append_pair("password", "one password")
+                        .append_pair("confirm", "another password")
+                        .finish(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    check(paths::JOIN, StatusCode::OK, &refused.text(), &[INVITED]);
     // A refused sign-in shows the name it was given back.
     let refused = app
         .send(

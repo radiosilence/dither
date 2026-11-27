@@ -78,13 +78,13 @@ pub fn router(state: AppState) -> Router {
         .route(paths::MOVE, post(album::mover::move_images))
         .route(paths::DELETE_IMAGES, post(album::delete_images))
         // The uploader's JSON
-        .route("/api/albums", post(api::create_album))
-        .route("/api/albums/{id}/uploads", post(api::begin))
+        .route(paths::API_ALBUMS, post(api::create_album))
+        .route(paths::API_UPLOADS, post(api::begin))
         .route(
-            "/api/uploads/{id}",
+            paths::API_UPLOAD,
             put(api::chunk).get(api::status).delete(api::cancel),
         )
-        .route("/api/uploads/{id}/finish", post(api::finish));
+        .route(paths::API_FINISH, post(api::finish));
     // Accounts: the admins' page and its actions.
     let admin = Router::new()
         .route(

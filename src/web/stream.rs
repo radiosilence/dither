@@ -13,10 +13,12 @@
 //! then authenticated as things stand.
 //!
 //! Streams open often, so an opening is cheap: the page notes how far its
-//! owner's changes had gone as its body was drawn (`seen`), and the stream's
-//! first pass draws only if they have moved since. After each pass the stream
-//! sets `seen` to where it has drawn up to, so the stream that replaces it
-//! carries on from there.
+//! owner's changes had gone as its body was drawn (`seen`, `Db::seen`: the
+//! server's boot and a count), and the stream's first pass draws only if they
+//! have moved since. After a pass that drew the owner's regions as they stand,
+//! the stream sets `seen` to where it has drawn up to, so the stream that
+//! replaces it carries on from there. A pass that drew nothing of the owner's,
+//! or failed to, leaves `seen` where it was, so the next stream draws it.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -51,7 +53,45 @@ pub(super) trait Live: Sized + Send + 'static {
         s: &AppState,
         session: &Session,
         changed: &Changed,
-    ) -> impl Future<Output = Vec<Event>> + Send;
+    ) -> impl Future<Output = Drawn> + Send;
+}
+
+/// What a pass drew.
+pub(super) struct Drawn {
+    pub(super) events: Vec<Event>,
+    /// The owner's regions could not be drawn (the database did not answer),
+    /// so the page is not up to date with the changes the pass was for.
+    pub(super) failed: bool,
+}
+
+impl Drawn {
+    pub(super) fn sent(events: Vec<Event>) -> Self {
+        Self {
+            events,
+            failed: false,
+        }
+    }
+
+    pub(super) fn failed(events: Vec<Event>) -> Self {
+        Self {
+            events,
+            failed: true,
+        }
+    }
+}
+
+/// Whether a stream's first pass draws: unless the page says it drew the
+/// owner's changes as they stand now. A count from another boot, or none,
+/// never matches.
+fn stale(shown: Option<&str>, now: &str) -> bool {
+    shown != Some(now)
+}
+
+/// The `seen` a pass brings the page up to, when it is to be sent: only after
+/// a pass for the owner's changes that drew them, and only when it differs
+/// from what the page holds.
+fn handover(changed: &Changed, failed: bool, holds: Option<&str>) -> Option<String> {
+    (changed.mine && !failed && holds != Some(changed.seen.as_str())).then(|| changed.seen.clone())
 }
 
 /// A page with nothing live of its own: held open, so the page's stream
@@ -62,8 +102,8 @@ impl Live for Quiet {
     async fn open(_: &AppState, _: &Session, _: &Shown) -> Self {
         Self
     }
-    async fn draw(&mut self, _: &AppState, _: &Session, _: &Changed) -> Vec<Event> {
-        Vec::new()
+    async fn draw(&mut self, _: &AppState, _: &Session, _: &Changed) -> Drawn {
+        Drawn::sent(Vec::new())
     }
 }
 
@@ -76,7 +116,7 @@ pub(super) struct Shown {
     pub(super) url: String,
     /// How far its owner's changes had gone when it was last drawn. None from
     /// a page that does not say, which is drawn whole.
-    pub(super) seen: Option<u64>,
+    pub(super) seen: Option<String>,
 }
 
 /// What changed since the last redraw.
@@ -85,8 +125,9 @@ pub(super) struct Changed {
     pub(super) mine: bool,
     /// Videos' progress, in thousandths, by image.
     pub(super) progress: HashMap<String, u16>,
-    /// How far the owner's changes have gone, as this redraw draws them.
-    seen: u64,
+    /// How far the owner's changes have gone, as this redraw draws them:
+    /// read once whatever came in is gathered, and before anything is drawn.
+    seen: String,
 }
 
 /// What changes the page, gathered between redraws.
@@ -111,7 +152,7 @@ impl Sources {
         let mut changed = Changed {
             mine: false,
             progress: HashMap::new(),
-            seen: 0,
+            seen: String::new(),
         };
         loop {
             tokio::select! {
@@ -172,7 +213,7 @@ pub(super) async fn serve<L: Live>(
     // rather than missed.
     let seen = s.db.seen(&owner);
     let first = Changed {
-        mine: shown.seen != Some(seen),
+        mine: stale(shown.seen.as_deref(), &seen),
         progress: HashMap::new(),
         seen,
     };
@@ -200,17 +241,72 @@ pub(super) async fn serve<L: Live>(
             let (s, session) = (s.clone(), session.clone());
             async move {
                 let changed = changes.next().await?;
-                let mut events = page.draw(&s, &session, &changed).await;
+                let Drawn { mut events, failed } = page.draw(&s, &session, &changed).await;
+                let mut reported = reported;
                 // The page now has everything up to here, so a stream opened
                 // after this one carries on from it.
-                if reported != Some(changed.seen) {
-                    let seen = serde_json::json!({ "seen": changed.seen });
-                    events.push(PatchSignals::new(seen.to_string()).into());
+                if let Some(seen) = handover(&changed, failed, reported.as_deref()) {
+                    let signal = serde_json::json!({ "seen": seen });
+                    events.push(PatchSignals::new(signal.to_string()).into());
+                    reported = Some(seen);
                 }
-                Some((events, (changes, page, Some(changed.seen))))
+                Some((events, (changes, page, reported)))
             }
         },
     )
     .flat_map(futures_util::stream::iter);
     askama_datastar::stream(events)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn changed(mine: bool, seen: &str) -> Changed {
+        Changed {
+            mine,
+            progress: HashMap::new(),
+            seen: seen.into(),
+        }
+    }
+
+    #[test]
+    fn a_page_drawn_as_things_stand_is_not_drawn_again() {
+        assert!(!stale(Some("00ab.5"), "00ab.5"));
+    }
+
+    #[test]
+    fn a_page_drawn_before_a_change_or_a_restart_is_drawn_again() {
+        // A change since.
+        assert!(stale(Some("00ab.4"), "00ab.5"));
+        // The same count from another boot: the counts restart with it.
+        assert!(stale(Some("00cd.5"), "00ab.5"));
+        // A page that does not say.
+        assert!(stale(None, "00ab.5"));
+    }
+
+    #[test]
+    fn seen_moves_only_after_a_pass_that_drew_the_owners_changes() {
+        // Drawn: the page now holds them.
+        assert_eq!(
+            handover(&changed(true, "00ab.6"), false, Some("00ab.5")).as_deref(),
+            Some("00ab.6")
+        );
+        // Drawing failed: the next stream must draw them.
+        assert_eq!(
+            handover(&changed(true, "00ab.6"), true, Some("00ab.5")),
+            None
+        );
+        // A pass for progress alone drew none of the owner's changes, though
+        // one may have been counted meanwhile.
+        assert_eq!(
+            handover(&changed(false, "00ab.6"), false, Some("00ab.5")),
+            None
+        );
+        // Already held.
+        assert_eq!(
+            handover(&changed(true, "00ab.6"), false, Some("00ab.6")),
+            None
+        );
+    }
 }

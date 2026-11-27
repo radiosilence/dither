@@ -1,9 +1,11 @@
 //! The JSON the uploader speaks. It is also what an app would: create an
-//! album, declare a batch of files, send each in chunks, finish each.
+//! album, declare a batch of files, send each in chunks, finish each. Each
+//! answer names the addresses that follow from it (`uploads`, `url`,
+//! `finish`), so a client formats none of its own.
 //!
 //! ```text
-//! POST   /api/albums                 {title?}            → {id, href}
-//! POST   /api/albums/{id}/uploads    {files: [{name, size, type?}], as_recorded?} → {uploads: [{id}], chunk}
+//! POST   /api/albums                 {title?}            → {id, href, uploads}
+//! POST   /api/albums/{id}/uploads    {files: [{name, size, type?}], as_recorded?} → {uploads: [{id, url, finish}], chunk}
 //! PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 //! GET    /api/uploads/{id}                               → {received, size, image?, error?}
 //! POST   /api/uploads/{id}/finish                        → {image: {..., processing}} | {error}
@@ -169,7 +171,14 @@ pub async fn begin(
         .await
     {
         Ok(Some(uploads)) => Json(json!({
-            "uploads": uploads.iter().map(|u| json!({ "id": u.id })).collect::<Vec<_>>(),
+            "uploads": uploads
+                .iter()
+                .map(|u| json!({
+                    "id": u.id,
+                    "url": paths::api_upload(&u.id),
+                    "finish": paths::api_finish(&u.id),
+                }))
+                .collect::<Vec<_>>(),
             "chunk": CHUNK,
         }))
         .into_response(),

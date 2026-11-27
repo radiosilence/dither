@@ -6,9 +6,8 @@
 use std::collections::HashSet;
 
 use askama_datastar::Last;
-use axum::response::sse::Event;
 
-use super::{Changed, Live, Shown};
+use super::{Changed, Drawn, Live, Shown};
 use crate::auth::session::Session;
 use crate::error::AppError;
 use crate::web::layout::Draw;
@@ -46,8 +45,9 @@ impl Live for Album {
         }
     }
 
-    async fn draw(&mut self, s: &AppState, session: &Session, c: &Changed) -> Vec<Event> {
+    async fn draw(&mut self, s: &AppState, session: &Session, c: &Changed) -> Drawn {
         let mut events = Vec::new();
+        let mut failed = false;
         if c.mine && !self.gone {
             match owned(s, &session.username, &self.id).await {
                 Ok(album) => match regions(s, &album).await {
@@ -57,14 +57,20 @@ impl Live for Album {
                         events.extend(self.summary.send(&summary.draw()));
                         events.extend(self.foot.send(&foot.draw()));
                     }
-                    Err(e) => tracing::warn!(error = %e, "drawing an album failed"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "drawing an album failed");
+                        failed = true;
+                    }
                 },
                 Err(AppError::NotFound) => {
                     self.gone = true;
                     self.shown.clear();
                     events.push(Deleted.draw().patch().into());
                 }
-                Err(e) => tracing::warn!(error = %e, "reading an album failed"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "reading an album failed");
+                    failed = true;
+                }
             }
         }
         for (id, done) in &c.progress {
@@ -72,6 +78,6 @@ impl Live for Album {
                 events.push(progress(id, *done).html().patch().into());
             }
         }
-        events
+        Drawn { events, failed }
     }
 }

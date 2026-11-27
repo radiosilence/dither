@@ -64,7 +64,7 @@ impl Body {
 /// The signals every page starts with: the address it shows, and how far the
 /// owner's changes had gone as its body was drawn, which its stream carries
 /// on from.
-fn signals(url: &str, seen: u64) -> serde_json::Value {
+fn signals(url: &str, seen: &str) -> serde_json::Value {
     serde_json::json!({ "url": url, "seen": seen })
 }
 
@@ -93,7 +93,7 @@ pub(super) async fn respond<P: Page>(
             Html::from_iter([main, title, header, flash_cleared()])
                 .patch()
                 .into(),
-            PatchSignals::new(signals(url, seen).to_string()).into(),
+            PatchSignals::new(signals(url, &seen).to_string()).into(),
         ];
         return Ok(askama_datastar::events(events));
     }
@@ -102,7 +102,7 @@ pub(super) async fn respond<P: Page>(
         title,
         header,
         main,
-        signals: signals(url, seen).to_string(),
+        signals: signals(url, &seen).to_string(),
     };
     Ok(layout.draw().into_response())
 }

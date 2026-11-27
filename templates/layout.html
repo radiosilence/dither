@@ -6,7 +6,7 @@
 <script type="module" src="{{ player_js_url() }}"></script>
 {% endblock %}
 {% block body %}
-<body class="app" data-signals="{{ signals }}"{{ self.history() }} data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">
+<body class="app" data-signals="{{ signals }}" data-albums-api="{{ crate::web::paths::API_ALBUMS }}"{{ self.history() }} data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">
 {{ kit::SkipLink::new(__("skip to content"), "main") }}
 {{ header }}
 {{ main }}

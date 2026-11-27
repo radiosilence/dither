@@ -1,5 +1,5 @@
 {{ kit::Button::link(__("albums")).icon(kit::icon::CHEVRON_LEFT).href(self.albums_url()).in_place() }}
-<div class="album-head" data-album="{{ id }}">
+<div class="album-head" data-album="{{ id }}" data-uploads="{{ self.uploads_url() }}">
   {{ kit::Input::text("title").value(title).placeholder(__("untitled")).label(__("title")).autocomplete("off").attr("maxlength", title_max()).attr("spellcheck", "false").class("title-field").data("url", self.meta_url()).datastar("on:input__debounce.500ms", "@post(el.dataset.url, {payload: {title: el.value}})") }}
   {{ kit::Textarea::new("description").value(description).rows(1).placeholder(__("Add a description")).label(__("description")).attr("maxlength", text_max()).class("text-field").data("url", self.meta_url()).datastar("on:input__debounce.700ms", "@post(el.dataset.url, {payload: {description: el.value}})") }}
 </div>

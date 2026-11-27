@@ -404,6 +404,26 @@ pub(super) async fn logout(State(state): State<AppState>, headers: HeaderMap) ->
 mod tests {
     use super::*;
 
+    /// The set-up page shows the username it was given back when it refuses
+    /// one; the fixture's server has accounts, so it never shows the page,
+    /// and the guard checks it drawn here.
+    #[test]
+    fn the_setup_page_escapes_its_username_once() {
+        use askama_datastar::escaping::{Guard, escaped};
+        const NAME: &str = r#"<b>who</b>"&'"#;
+        let page = SetupPage {
+            username: NAME.into(),
+            problem: Some(Problem::Mismatch),
+        }
+        .render()
+        .unwrap();
+        let guard = Guard::new(&[NAME])
+            .templates(concat!(env!("CARGO_MANIFEST_DIR"), "/templates"))
+            .unwrap();
+        assert_eq!(guard.problems(&page), []);
+        assert!(page.contains(&escaped(NAME)));
+    }
+
     #[test]
     fn only_a_local_path_is_returned_to() {
         assert_eq!(local(Some("/albums/abc?x=1")), "/albums/abc?x=1");
