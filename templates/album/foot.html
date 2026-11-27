@@ -1,0 +1,10 @@
+{#- Deleting the album, asked with how much goes with it, which is the cue an irreversible delete needs. Live, since
+    uploads change the count. -#}
+{%- let button = kit::Button::quiet(__("delete album")).bad().icon(kit::icon::TRASH).post(self.delete_url()) %}
+<div id="foot" class="mt-16 flex justify-end">
+{%- if count == 0 %}
+  {{ button.confirm(__("Delete this album? Its link stops working. This can't be undone."), __p("Button", "delete")) }}
+{%- else %}
+  {{ button.confirm(__n("Delete this album and its image? Its link stops working. This can't be undone.", "Delete this album and its %{n} images? Its link stops working. This can't be undone.", *count).with("n", count), __p("Button", "delete")) }}
+{%- endif %}
+</div>

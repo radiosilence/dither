@@ -4,7 +4,7 @@
 {#- The kit's head: the charset, the viewport, both schemes, the typeface's preload and the stylesheet. A layout adds
     Datastar, or keeps its pages out of search engines. #}
 {% block kit %}{{ kit::Head::new(css_url()) }}{% endblock %}
-<title>{% block title %}dither{% endblock %}</title>
+{% block title_element %}<title>{% block title %}dither{% endblock %}</title>{% endblock %}
 <link rel="icon" href="{{ icon_svg_url() }}" type="image/svg+xml">
 <link rel="apple-touch-icon" href="{{ icon_png_url() }}">
 {% block head %}{% endblock %}

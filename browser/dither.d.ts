@@ -3,7 +3,7 @@
 interface Window {
   dither: {
     show(id: string): void;
-    selecting(on: boolean): void;
-    add(files: FileList | File[]): Promise<void>;
+    moved(): void;
+    remember(label: Element): void;
   };
 }

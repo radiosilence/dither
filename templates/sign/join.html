@@ -5,7 +5,7 @@
 <h1 class="m-0">{{ __("join") }}</h1>
 <p class="m-0 text-meta text-muted">{{ __("Choose a password for your account. The invite works once.") }}</p>
 {% include "sign/problem.html" %}
-{%- let form = kit::Form::plain("/join") %}
+{%- let form = kit::Form::plain(crate::web::paths::JOIN) %}
 <form{{ form.attrs() }} class="grid gap-4">
   {{ kit::Input::hidden("invite", invite) }}
   {{ kit::Field::text("username", __("username")).value(username).autocomplete("username").readonly() }}

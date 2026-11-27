@@ -359,7 +359,7 @@ Accounts are dither's own, through
 kōan's accounts and sign-in as a crate. Nobody signs up: an admin makes an
 account, with a username and a role, and sends its owner an invite link, with
 which they choose their password. Each account has albums of its own and sees
-nobody else's. An admin also manages the accounts on `/users`; a read-only
+nobody else's. An admin also manages the accounts on `/accounts`; a read-only
 account signs in and sees its albums, and changes nothing but its own password.
 
 Everyone changes their own password on `/account`, giving the current one, five

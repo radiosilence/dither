@@ -1,4 +1,0 @@
-{# How many images, and what they take when they take anything. #}
-{# Why an upload could not be made, from the key the worker recorded (`jobs::FAILED_*`). #}
-{% macro failure(why) %}{% match why.as_str() %}{% when "unreadable" %}{{ __("It can't be read: it may be damaged.") }}{% when "too-long" %}{{ __("It's longer than this server takes.") }}{% when "too-large" %}{{ __("It's larger than this server takes.") }}{% when "unsupported" %}{{ __("This server can't process videos.") }}{% else %}{{ __("It couldn't be processed. Delete it and upload it again.") }}{% endmatch %}{% endmacro %}
-{% macro images(count, size) %}{{ __n("%{count} image", "%{count} images", *count) }}{% if let Some(size) = size %} · {{ size }}{% endif %}{% endmacro %}

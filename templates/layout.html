@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block kit %}{{ kit::Head::new(css_url()).datastar("/assets/datastar.js") }}{% endblock %}
+{% block title_element %}{{ title }}{% endblock %}
+{% block head %}
+<script type="module" src="{{ app_js_url() }}"></script>
+<script type="module" src="{{ player_js_url() }}"></script>
+{% endblock %}
+{% block body %}
+<body class="app" data-signals="{{ signals }}"{{ self.history() }} data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">
+{{ kit::SkipLink::new(__("skip to content"), "main") }}
+{{ header }}
+{{ main }}
+<footer class="py-6 text-center">{{ kit::Release::new("dither", shell.version, "https://github.com/radiosilence/dither") }}</footer>
+<div id="drop" class="drop" hidden><p>{{ __("drop to upload") }}</p></div>
+<section id="tray" class="tray compact" hidden aria-label="{{ __("uploads") }}"></section>
+{#- The upload tray's parts, which the script clones: its heading line, and a row per file. #}
+<template id="tray-head">
+  <div class="tray-line">
+    <span class="tray-title" data-tray="title"></span>
+    <span class="flex-1"></span>
+    <span class="tray-rate" data-tray="rate"></span>
+    {{ kit::Button::quiet(__p("Button: unfold the upload list", "details")).data("tray", "toggle") }}
+    {{ kit::Button::quiet(__p("Button: stop uploading", "cancel")).data("tray", "cancel") }}
+    {{ kit::Button::quiet(__p("Button: hide the upload tray", "close")).data("tray", "close") }}
+  </div>
+  {{ kit::Meter::new(0, 1).data("tray", "meter") }}
+  <div class="tray-foot" data-tray="foot"></div>
+  <ol class="tray-list" data-tray="list"></ol>
+</template>
+<template id="tray-row">
+  <li class="tray-item">
+    <span class="tray-thumb" data-row="thumb"></span>
+    <div class="tray-main">
+      <div class="tray-text"><span class="tray-name" data-row="name"></span><span class="tray-state" data-row="state"></span></div>
+      {{ kit::Meter::new(0, 1).data("row", "meter") }}
+    </div>
+    {{ kit::Button::quiet(__p("Button: send a failed upload again", "retry")).data("row", "retry") }}
+  </li>
+</template>
+{{ kit::Confirm::new(__p("Button: dismiss a dialog", "cancel")) }}
+{{ kit::Flash::region() }}
+<input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp{% if shell.max_video.is_some() %},video/*,.mp4,.mov,.m4v,.3gp,.webm,.mkv{% endif %}" hidden>
+{# What the browser's script says, keyed by name. Placeholders it fills itself are left as written. A line with a
+   count comes once per plural form of the language, each rendered at a count in that form, which the script reads
+   to file it; `%{n}` is the count it fills in. #}
+<template id="copy">
+  {% for n in plural_samples() %}
+  <span data-k="n selected" data-n="{{ n }}">{{ __n("%{n} selected", "%{n} selected", *n) }}</span>
+  <span data-k="delete n?" data-n="{{ n }}">{{ __n("Delete this image? Links to it stop working. This can't be undone.", "Delete these %{n} images? Links to them stop working. This can't be undone.", *n) }}</span>
+  <span data-k="processing n" data-n="{{ n }}">{{ __n("processing %{n}…", "processing %{n}…", *n) }}</span>
+  {% endfor %}
+  <span data-k="hide">{{ __p("Button: fold the upload list", "hide") }}</span>
+  <span data-k="details">{{ __p("Button: unfold the upload list", "details") }}</span>
+  <span data-k="none selected">{{ __("none selected") }}</span>
+  <span data-k="cover failed">{{ __("Couldn't set the cover.") }}</span>
+  <span data-k="album failed">{{ __("Couldn't make an album.") }}</span>
+  <span data-k="order failed">{{ __("Couldn't save the new order; reload to see the album as it is.") }}</span>
+  <span data-k="pasted image">{{ __("pasted image") }}</span>
+  <span data-k="heic">{{ __("HEIC isn't supported yet: export it as JPEG") }}</span>
+  <span data-k="not an image">{{ __("not a JPEG, PNG, GIF or WebP") }}</span>
+  <span data-k="not media">{{ __("not a JPEG, PNG, GIF, WebP or video") }}</span>
+  <span data-k="too big">{{ __("%{size} is over the %{max} limit") }}</span>
+  <span data-k="empty">{{ __("the file is empty") }}</span>
+  <span data-k="refused">{{ __("refused (%{status})") }}</span>
+  <span data-k="failed">{{ __("the upload failed") }}</span>
+  <span data-k="signed out">{{ __("signed out: sign in again and add them again") }}</span>
+  <span data-k="server failed">{{ __("the server failed (%{status})") }}</span>
+  <span data-k="dropped">{{ __("the connection dropped") }}</span>
+  <span data-k="cancelled">{{ __p("Upload state", "cancelled") }}</span>
+  <span data-k="processing failed">{{ __("processing failed (%{status})") }}</span>
+  <span data-k="retrying">{{ __("%{why}; retrying") }}</span>
+  <span data-k="waiting">{{ __p("Upload state", "waiting") }}</span>
+  <span data-k="processing">{{ __p("Upload state", "processing") }}</span>
+  <span data-k="done">{{ __p("Upload state", "done") }}</span>
+  <span data-k="uploaded of">{{ __("%{done} of %{total} uploaded") }}</span>
+  <span data-k="uploaded failed">{{ __("%{done} uploaded, %{failed} failed") }}</span>
+  <span data-k="rate">{{ __("%{rate}/s · %{left} left") }}</span>
+  <span data-k="bytes of">{{ __("%{sent} of %{total}") }}</span>
+  <span data-k="open the album">{{ __("open the album") }}</span>
+</template>
+</body>
+{% endblock %}

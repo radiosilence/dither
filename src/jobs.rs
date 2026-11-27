@@ -35,6 +35,30 @@ pub const FAILED_TOO_LARGE: &str = "too-large";
 pub const FAILED_UNSUPPORTED: &str = "unsupported";
 pub const FAILED: &str = "failed";
 
+/// A failure key as the pages word it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    Unreadable,
+    TooLong,
+    TooLarge,
+    Unsupported,
+    /// Anything else: the worker failed, not the file.
+    Other,
+}
+
+impl Failure {
+    /// The failure `key` records.
+    pub fn of(key: &str) -> Self {
+        match key {
+            FAILED_UNREADABLE => Failure::Unreadable,
+            FAILED_TOO_LONG => Failure::TooLong,
+            FAILED_TOO_LARGE => Failure::TooLarge,
+            FAILED_UNSUPPORTED => Failure::Unsupported,
+            _ => Failure::Other,
+        }
+    }
+}
+
 /// How long a claim lasts unrenewed. A worker renews it well within this.
 pub const LEASE: Duration = Duration::from_secs(60);
 /// How long a worker's request for a job is held when none is waiting.

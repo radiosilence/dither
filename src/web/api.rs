@@ -2,7 +2,7 @@
 //! album, declare a batch of files, send each in chunks, finish each.
 //!
 //! ```text
-//! POST   /api/albums                 {title?}            → {id}
+//! POST   /api/albums                 {title?}            → {id, href}
 //! POST   /api/albums/{id}/uploads    {files: [{name, size, type?}], as_recorded?} → {uploads: [{id}], chunk}
 //! PUT    /api/uploads/{id}           Content-Range: bytes a-b/size, the bytes → {received}
 //! GET    /api/uploads/{id}                               → {received, size, image?, error?}
@@ -27,10 +27,10 @@ use axum::{Extension, Json};
 use serde_json::json;
 
 use crate::auth::session::Session;
-use crate::db::Upload;
+use crate::db::{TITLE_MAX, Upload, cut};
 use crate::error::{AppError, AppResult};
 use crate::upload::{CHUNK, ChunkError, Outcome};
-use crate::web::AppState;
+use crate::web::{AppState, human, paths};
 
 /// More files than this in one batch is refused: a client can send several.
 const BATCH_MAX: usize = 1000;
@@ -51,14 +51,14 @@ pub async fn create_album(
     Extension(session): Extension<Session>,
     body: Option<Json<NewAlbum>>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let title: String = body
-        .map(|b| b.0.title)
-        .unwrap_or_default()
-        .chars()
-        .take(300)
-        .collect();
-    let album = state.db.create_album(&session.username, &title).await?;
-    Ok(Json(json!({ "id": album.id })))
+    let title = body.map(|b| b.0.title).unwrap_or_default();
+    let album = state
+        .db
+        .create_album(&session.username, &cut(&title, TITLE_MAX))
+        .await?;
+    Ok(Json(
+        json!({ "id": album.id, "href": paths::album(&album.id) }),
+    ))
 }
 
 #[derive(serde::Deserialize)]
@@ -146,8 +146,8 @@ pub async fn begin(
             format!(
                 "{} is {}; the limit is {}",
                 f.name,
-                crate::web::human(f.size),
-                crate::web::human(max(f))
+                human(f.size),
+                human(max(f))
             ),
         );
     }
@@ -298,9 +298,9 @@ pub async fn finish(
                 let public = &state.config.public_url;
                 Json(json!({ "image": {
                     "id": i.id,
-                    "page": format!("{public}/{}", i.id),
-                    "file": format!("{public}/{}.{}", i.id, i.kind.ext()),
-                    "thumb": format!("/t/{}.webp", i.id),
+                    "page": paths::absolute(public, &paths::image_page(&i.id)),
+                    "file": paths::absolute(public, &paths::original(&i.id, i.kind.ext())),
+                    "thumb": paths::thumb(&i.id),
                     "width": i.width,
                     "height": i.height,
                     "bytes": i.bytes,

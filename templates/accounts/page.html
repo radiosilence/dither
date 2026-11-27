@@ -1,0 +1,11 @@
+<h1>{{ __("accounts") }}</h1>
+<p class="text-meta text-muted">{{ __("Each account has albums of its own and sees nobody else's. Admins manage the accounts; a read-only account sees its albums and changes nothing.") }}</p>
+{#- The name is bound to a signal of the page's own, so a made account's answer can empty it. -#}
+{%- let form = kit::Form::post(self.create_url()) %}
+<form{{ form.attrs() }} class="mt-6 flex flex-wrap items-end gap-3">
+  {{ kit::Field::new(__("username"), kit::Input::text("newuser").autocomplete("off").attr("autocapitalize", "none").attr("spellcheck", "false").attr("maxlength", "64").bind(crate::web::page::accounts::NEW_USER)) }}
+  {{ kit::Field::select("newrole", __("role"), crate::web::page::accounts::roles(__p("Role", "user"), __p("Role", "read-only"), __p("Role", "admin"))).selected("user") }}
+  {{ form.submit(kit::Button::primary(__("make an account"))) }}
+</form>
+{{ outcome }}
+{{ list }}

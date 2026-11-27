@@ -1,0 +1,1 @@
+<title id="title">{% match name %}{% when Name::Albums %}{{ __("albums") }}{% when Name::Album %}{% if heading.is_empty() %}{{ __("untitled") }}{% else %}{{ heading }}{% endif %}{% when Name::Account %}{{ __("account") }}{% when Name::Accounts %}{{ __("accounts") }}{% endmatch %} · dither</title>

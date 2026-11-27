@@ -45,6 +45,16 @@ const MIGRATIONS: &[&str] = &[
 /// steady state never opens one.
 const KEEP_IDLE: usize = 8;
 
+/// The longest album title kept, in characters.
+pub const TITLE_MAX: usize = 300;
+/// The longest album description or caption kept, in characters.
+pub const TEXT_MAX: usize = 20_000;
+
+/// `text` cut to `max` characters.
+pub fn cut(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
 pub fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -60,6 +70,9 @@ struct Pool {
     idle: parking_lot::Mutex<Vec<Connection>>,
     writes: watch::Sender<u64>,
     changes: broadcast::Sender<Arc<str>>,
+    /// How many calls have changed each owner's albums or images since the
+    /// process started.
+    counts: parking_lot::Mutex<std::collections::HashMap<Arc<str>, u64>>,
 }
 
 /// Who hears that a call changed something.
@@ -106,6 +119,7 @@ impl Db {
                 idle: parking_lot::Mutex::new(vec![conn]),
                 writes: watch::channel(0).0,
                 changes: broadcast::channel(1024).0,
+                counts: Default::default(),
             })))
         })
         .await?
@@ -160,6 +174,12 @@ impl Db {
     /// lagged, and redraws.
     pub fn changes(&self) -> broadcast::Receiver<Arc<str>> {
         self.0.changes.subscribe()
+    }
+
+    /// How many calls have changed `owner`'s albums or images: a page notes
+    /// it before it is drawn, and its stream draws again only once it moves.
+    pub fn seen(&self, owner: &str) -> u64 {
+        self.0.counts.lock().get(owner).copied().unwrap_or(0)
     }
 
     /// Run `f` on a pooled connection, on the blocking pool.
@@ -230,6 +250,7 @@ impl Db {
                     Announce::Writes => pool.writes.send_modify(|n| *n += 1),
                     Announce::Owner(owner) => {
                         pool.writes.send_modify(|n| *n += 1);
+                        *pool.counts.lock().entry(owner.clone()).or_default() += 1;
                         // No page listening is not an error.
                         let _ = pool.changes.send(owner);
                     }
