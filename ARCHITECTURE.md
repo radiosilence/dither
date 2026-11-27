@@ -113,8 +113,9 @@ first pass draws only if it has moved since; one recorded before a restart
 never matches, since the counts restart with the process. After a pass that
 drew the owner's regions, the stream sets `seen`, so the stream that replaces
 it carries on from there. A pass that drew none of them (a video's progress
-alone) or failed to (the database did not answer) leaves `seen` where it was,
-so the next stream draws them. A stream never starts work: everything it draws
+alone) leaves `seen` where it was. One that failed to draw them (the database
+did not answer) ends the stream with `seen` where it was, and the stream the
+page opens next draws from it. A stream never starts work: everything it draws
 is read from the database and the job hub.
 
 ### Actions
