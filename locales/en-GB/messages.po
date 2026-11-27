@@ -256,6 +256,10 @@ msgstr ""
 msgid "That account no longer exists."
 msgstr ""
 
+#: templates/layout/flash.html
+msgid "That didn't work. Try again."
+msgstr ""
+
 #: templates/sign/problem.html
 msgid "That isn't the setup code. It is in the server's log."
 msgstr ""
@@ -274,6 +278,10 @@ msgstr ""
 
 #: templates/sign/problem.html
 msgid "The passwords don't match."
+msgstr ""
+
+#: templates/layout/flash.html
+msgid "The server can't be reached."
 msgstr ""
 
 #: templates/account/outcome.html templates/sign/problem.html

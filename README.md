@@ -352,6 +352,12 @@ question before a delete, notices, meters, copy fields, the video player's
 buttons and the ensō it shows while it waits) and its stylesheet draws them, so dither draws them as kōan's other servers do;
 `styles/app.css` holds only dither's accent, layout and its own components.
 
+Moving between the signed-in pages loads them in place, Back and Forward
+included, and the address changes only once the new page has arrived, so a
+page that fails to load leaves the address and the page as they were. A
+request that fails says so over the page; one refused because the session has
+ended goes to the sign-in page.
+
 ## Signing in
 
 Accounts are dither's own, through

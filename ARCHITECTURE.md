@@ -74,11 +74,13 @@ impl Page for Albums {
 
 `page::respond` draws any page two ways. A browser asking for the address
 gets the layout around the body. The page itself asking, through a link that
-loads in place (`kit::Link::in_place`, `kit::Button::in_place`), gets the body
-morphed into `main`, the title and the header, and the address as `$url`
-(`askama_datastar::address`). The layout's `askama_datastar::history("url")`
-keeps the address bar on `$url`, so a reload, a shared link, back and forward
-all draw what the address names.
+loads in place (`kit::Link::in_place`, `kit::Button::in_place`, or a link
+inside an element marked `data-kit-in-place`, such as the albums' cards), gets
+the body morphed into `main`, the title and the header, and the address as
+`$url` (`askama_datastar::address`). The layout's `kit::Navigation` owns the
+history: it pushes `$url` once a load has settled, so a load that fails moves
+nothing, and Back and Forward load their entry in place rather than reloading.
+A reload or a shared link draws what the address names.
 
 ### Streams
 
@@ -177,11 +179,13 @@ same video. A tile is found by its `data-id`.
 
 ### The kit
 
-Every control, status, meter, notice, flash, empty state and question is a
-koan-kit-web component; templates add layout utilities only. The upload
+Every control, status, meter, notice, flash, empty state, question and card
+is a koan-kit-web component; templates add layout utilities only. The upload
 tray's parts are the layout's `<template>`s drawn with the kit, which the
-script clones and fills. What the kit cannot express yet (a card that loads
-in place, a full-screen media viewer) is tracked on radiosilence/koan#2365.
+script clones and fills. The layout's flash region (`layout/flash.html`) says
+over the page when a request's answer is an error or the server cannot be
+reached, and sends a 401 to sign in. What the kit cannot express yet (a
+full-screen media viewer, among others) is tracked on radiosilence/koan#2365.
 
 ### The script
 

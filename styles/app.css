@@ -130,27 +130,28 @@
     @apply grid grid-cols-2 gap-x-3 gap-y-6 wide:grid-cols-[repeat(auto-fill,minmax(200px,1fr))] wide:gap-x-5;
   }
 
-  .card {
-    @apply grid content-start gap-1 text-ink hover:no-underline;
+  /* The kit's card, laid out as a cover over a title and a count. */
+  .albums > .card {
+    @apply grid content-start gap-1;
   }
 
-  .card .cover {
+  .album-cover {
     @apply mb-1 block aspect-square overflow-hidden bg-surface;
   }
 
-  .card .cover img {
+  .album-cover img {
     @apply size-full object-cover;
   }
 
-  .card:hover .cover img {
+  .card:hover .album-cover img {
     @apply opacity-90;
   }
 
-  .card .name {
+  .album-name {
     @apply truncate text-control text-ink;
   }
 
-  .card .name.untitled {
+  .album-name.untitled {
     @apply text-muted lowercase;
   }
 

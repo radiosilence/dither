@@ -20,14 +20,6 @@ pub(super) struct Layout {
     pub(super) signals: String,
 }
 
-impl Layout {
-    /// The address bar following `$url`, the address a page loaded in place
-    /// shows.
-    fn history(&self) -> Html {
-        askama_datastar::history("url")
-    }
-}
-
 /// Facts about the server and the person the layout needs on every page.
 pub(super) struct Shell {
     pub(super) max_upload: u64,
@@ -110,7 +102,7 @@ impl Main<'_> {
     }
 }
 
-crate::i18n::translated!(Layout, Title<'_>, Header<'_>, Main<'_>);
+crate::i18n::translated!(Layout, Title<'_>, Header<'_>, Main<'_>, FlashRegion);
 
 /// A view rendered as markup, which another template embeds as it is:
 /// everything in it was escaped as the view was rendered. A view that fails to
@@ -120,6 +112,14 @@ pub(super) trait Draw: Template + Sized {
         Html::render(self).unwrap_or_else(|e| {
             tracing::error!(error = %e, "could not render a view");
             Html::new()
+        })
+    }
+
+    /// The view as markup for one of the kit's slots.
+    fn markup(&self) -> kit::Markup {
+        kit::Markup::render(self).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "could not render a view");
+            kit::Markup::default()
         })
     }
 }
@@ -209,9 +209,15 @@ impl Header<'_> {
     }
 }
 
-/// The kit's flash region, emptied as a page loads in place.
+/// The kit's flash region, which says over the page when a request fails and
+/// sends a request refused for want of a session to sign in. Placed in the
+/// layout, and sent empty as a page loads in place.
+#[derive(Template)]
+#[template(path = "layout/flash.html")]
+pub(super) struct FlashRegion;
+
 pub(super) fn flash_cleared() -> Html {
-    kit::Flash::region().html()
+    FlashRegion.draw()
 }
 
 #[cfg(test)]

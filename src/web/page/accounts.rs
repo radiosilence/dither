@@ -180,7 +180,7 @@ fn answer(shown: Shown, list: Option<Html>) -> Response {
 /// question, which stays open.
 fn asked(shown: Shown, list: Option<Html>) -> Response {
     if let Shown::Problem(problem) = shown {
-        return askama_datastar::events([kit::Confirm::error(Refused { problem }.draw()).into()]);
+        return askama_datastar::events([kit::Confirm::error(Refused { problem }.markup()).into()]);
     }
     let mut events = vec![
         kit::Confirm::close().into(),

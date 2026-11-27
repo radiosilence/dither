@@ -324,7 +324,7 @@ pub(in crate::web) async fn page(
 /// The answer to a change the page's question asked for that failed: why,
 /// inside the question, which stays open.
 fn refused(images: Option<u64>) -> Response {
-    askama_datastar::events([kit::Confirm::error(Refused { images }.draw()).into()])
+    askama_datastar::events([kit::Confirm::error(Refused { images }.markup()).into()])
 }
 
 /// Saved as it is typed: nothing is drawn again, since the fields already
@@ -416,9 +416,10 @@ pub(in crate::web) async fn delete(
     crate::store::discard(&state.store, &state.db, images).await;
     tracing::info!(album = %id, images = count, "album deleted");
     // The page it was asked on is gone with it.
-    Ok(askama_datastar::events([
-        kit::Confirm::go(paths::ALBUMS).into()
-    ]))
+    Ok(askama_datastar::events([askama_datastar::go(
+        paths::ALBUMS,
+    )
+    .into()]))
 }
 
 #[derive(serde::Deserialize)]
