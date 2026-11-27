@@ -14,4 +14,6 @@ aube = "2.8.5"
 # Typechecks browser/; build.rs strips its types.
 "github:microsoft/typescript-go" = { version = "7.0.2", version_prefix = "typescript/v" }
 # Formats and checks the askama templates (`just fmt`, `just check`), as the editor does.
-"github:radiosilence/askama-analyzer" = "latest"
+# Our own tool, so mise's wait before installing a new release is off: CI runs the
+# release the editor runs.
+"github:radiosilence/askama-analyzer" = { version = "latest", minimum_release_age = "0" }

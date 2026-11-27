@@ -1418,7 +1418,11 @@ async fn a_video_is_made_in_the_background_then_played_in_ranges_and_previewed()
         "{csp}"
     );
     assert!(page.contains("data-player"));
-    assert!(page.contains("<meta property=\"og:type\" content=\"video.other\">"));
+    let og_type = page
+        .split("<meta")
+        .find(|tag| tag.contains("property=\"og:type\""))
+        .expect("an og:type");
+    assert!(og_type.contains("content=\"video.other\""), "{og_type}");
     assert!(page.contains(&format!(
         "<meta property=\"og:video\" content=\"http://app.test/{id}.mp4\">"
     )));
