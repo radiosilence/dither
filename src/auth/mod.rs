@@ -10,5 +10,4 @@
 
 pub mod cookie;
 pub mod extract;
-pub mod routes;
 pub mod session;

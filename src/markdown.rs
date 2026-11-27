@@ -71,6 +71,18 @@ pub fn plain(text: &str) -> String {
     out.trim().to_string()
 }
 
+/// The first line of [`plain`]'s words that has any: what names a picture
+/// where one line is wanted, as alt text, a video's title in the media
+/// controls, and a link preview's.
+pub fn line(text: &str) -> String {
+    plain(text)
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn collect<'a>(node: &'a AstNode<'a>, out: &mut String) {
     let data = node.data();
     let value = &data.value;
@@ -166,5 +178,6 @@ mod tests {
         assert_eq!(plain("| a | b |\n|---|---|\n| 1 | 2 |"), "a b\n1 2");
         assert_eq!(plain("<b>x</b>"), "<b>x</b>");
         assert_eq!(plain("   "), "");
+        assert_eq!(line("\n\n  **first**  \nsecond"), "first");
     }
 }

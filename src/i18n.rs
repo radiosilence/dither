@@ -243,7 +243,7 @@ mod tests {
     fn the_script_and_its_copy_name_the_same_lines() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let script = std::fs::read_to_string(root.join("browser/app.ts")).unwrap();
-        let layout = std::fs::read_to_string(root.join("templates/app/layout.html")).unwrap();
+        let layout = std::fs::read_to_string(root.join("templates/layout.html")).unwrap();
         let (mut plain, mut counted) = (
             std::collections::BTreeSet::new(),
             std::collections::BTreeSet::new(),

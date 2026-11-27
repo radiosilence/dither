@@ -1,0 +1,37 @@
+{{ kit::Button::link(__("albums")).icon(kit::icon::CHEVRON_LEFT).href(self.albums_url()).in_place() }}
+<div class="album-head" data-album="{{ id }}" data-uploads="{{ self.uploads_url() }}">
+  {{ kit::Input::text("title").value(title).placeholder(__("untitled")).label(__("title")).autocomplete("off").attr("maxlength", title_max()).attr("spellcheck", "false").class("title-field").data("url", self.meta_url()).datastar("on:input__debounce.500ms", "@post(el.dataset.url, {payload: {title: el.value}})") }}
+  {{ kit::Textarea::new("description").value(description).rows(1).placeholder(__("Add a description")).label(__("description")).attr("maxlength", text_max()).class("text-field").data("url", self.meta_url()).datastar("on:input__debounce.700ms", "@post(el.dataset.url, {payload: {description: el.value}})") }}
+</div>
+<div class="controls mt-5 items-center">
+  {{ kit::CopyField::new(__("link to this album"), share, __("copy link")).copied(__p("A copy button, after copying", "copied")).name("share").class("share-url") }}
+  {{ kit::Button::bordered(__p("Button: open the album's public page", "open")).icon(kit::icon::OPEN_EXTERNAL).href(share).attr("target", "_blank").attr("rel", "noopener") }}
+  {#- A change bubbles from the box to its label, where the kit puts the attributes. #}
+  {{ kit::Check::new("private", __("private")).checked(private).class("ml-2").data("url", self.meta_url()).datastar("on:change", "@post(el.dataset.url, {payload: {private: evt.target.checked}})") }}
+</div>
+<div class="mt-4">{{ views }}</div>
+<div class="dropzone short" data-dropzone>
+  {{ kit::Button::primary(__("add images")).data("pick", "") }}
+  <p class="m-0 text-meta text-muted">{{ __("or drop them anywhere, or paste") }}</p>
+  {% if shell.max_video.is_some() %}{{ kit::Check::new("as-recorded", __("keep videos as recorded")).class("text-fine").attr("title", __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.")).data("as-recorded", "").datastar("init", "dither.remember(el)") }}{% endif %}
+</div>
+<div class="toolbar compact">
+  {{ summary }}
+  <span class="flex-1"></span>
+  {{ kit::Button::quiet(__p("Button: start choosing images", "select")).icon(kit::icon::SELECT).data("select-mode", "") }}
+</div>
+{#- The script writes the images chosen into the move and delete buttons' addresses, and their count into the
+    delete's question, as the choice changes. #}
+<div class="selectbar compact" data-selectbar hidden>
+  <span class="text-meta" data-selected-count>{{ __("none selected") }}</span>
+  <span class="flex-1"></span>
+  {{ kit::Button::standard(__p("Button: move images to another album", "move")).icon(kit::icon::ALBUM).get(self.mover_url()).data("base", self.mover_url()).data("move", "") }}
+  {{ kit::Button::standard(__p("Button: make the chosen image the album's cover", "cover")).data("cover", self.cover_url()) }}
+  {{ kit::Button::standard(__p("Button", "delete")).bad().icon(kit::icon::TRASH).post(self.delete_url()).confirm("", __p("Button", "delete")).data("base", self.delete_url()).data("delete", "") }}
+  {{ kit::Button::standard(__p("Button: stop choosing images", "done")).data("select-done", "") }}
+</div>
+<div data-order="{{ self.order_url() }}">{{ grid }}</div>
+{{ foot }}
+<dialog id="viewer" class="viewer" aria-label="{{ __p("Dialog name", "image") }}"><div id="viewer-body" class="viewer-body"></div></dialog>
+{#- The albums to move images to are read into it as it opens; the form they make posts with the sheet's own button. #}
+{% filter kit::wrap(kit::Sheet::new("mover", __("move to")).action(kit::Button::quiet(__p("Button: dismiss a dialog", "cancel")).closes("mover")).action(kit::Button::primary(__p("Button: move images to another album", "move")).post(self.move_url()).sends("mover-body"))) %}<div id="mover-body"></div>{% endfilter %}

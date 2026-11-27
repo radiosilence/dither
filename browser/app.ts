@@ -1,8 +1,12 @@
 // The browser's half of dither: the upload queue, selection, drag to
-// reorder, and moving images. Everything the server can draw, it draws and
-// Datastar patches in, the page's questions and its copy fields included;
-// this holds only what lives in the browser: files on their way, what is
-// selected, a drag in progress.
+// reorder, and the viewer's keys and swipes. Everything the server can draw,
+// it draws and Datastar patches in, the page's questions, its dialogs' bodies
+// and its copy fields included; this holds only what lives in the browser:
+// files on their way, what is selected, a drag in progress.
+//
+// Pages load in place, so nothing here holds on to an element of a page: it
+// listens on the document, observes `main`, which every page keeps, and
+// reads the addresses it posts to from the page as it acts.
 //
 // Uploads go in chunks (POST a batch, PUT each chunk with Content-Range, POST
 // finish), three files at a time. A chunk that fails on the network is sent
@@ -157,10 +161,15 @@ if (viewport) {
   publish();
 }
 
-$<HTMLDialogElement>("#viewer")?.addEventListener("close", () => {
-  // The next image opened draws into an empty viewer, not over the last one.
-  $("#viewer-body")?.replaceChildren();
-});
+// The next image opened draws into an empty viewer, not over the last one.
+// A dialog's close does not bubble, so it is heard on its way down.
+document.addEventListener(
+  "close",
+  (ev) => {
+    if (ev.target instanceof HTMLDialogElement && ev.target.id === "viewer") $("#viewer-body")?.replaceChildren();
+  },
+  true,
+);
 
 // ── The viewer: keys and swipes ──────────────────────────────────────────
 
@@ -176,22 +185,27 @@ document.addEventListener("keydown", (ev) => {
 
 {
   let start: { x: number; y: number } | null = null;
-  const viewer = $<HTMLDialogElement>("#viewer");
-  viewer?.addEventListener(
+  document.addEventListener(
     "touchstart",
     (ev) => {
       const touch = ev.touches[0];
       // A swipe on the player's controls is a scrub, not a move to the next image.
       const target = ev.target as Element;
-      if (target.closest(".stage") && !target.closest("[data-player-controls]") && ev.touches.length === 1 && touch) {
+      if (
+        target.closest("#viewer .stage") &&
+        !target.closest("[data-player-controls]") &&
+        ev.touches.length === 1 &&
+        touch
+      ) {
         start = { x: touch.clientX, y: touch.clientY };
       }
     },
     { passive: true },
   );
-  viewer?.addEventListener("touchend", (ev) => {
+  document.addEventListener("touchend", (ev) => {
     const t = ev.changedTouches[0];
-    if (!start || !t) return;
+    const viewer = $<HTMLDialogElement>("#viewer[open]");
+    if (!start || !t || !viewer) return;
     const dx = t.clientX - start.x;
     const dy = t.clientY - start.y;
     start = null;
@@ -207,6 +221,12 @@ document.addEventListener("keydown", (ev) => {
 
 const albumId = () => $(".album-head")?.dataset["album"] ?? null;
 
+/** Where the album on show takes uploads, as its page names it. */
+const albumUploads = () => $(".album-head")?.dataset["uploads"] ?? null;
+
+/** Where albums are made, as the layout names it. */
+const albumsApi = () => body.dataset["albumsApi"] ?? "";
+
 // ── Selection ────────────────────────────────────────────────────────────
 
 const selected = new Set<string>();
@@ -215,6 +235,8 @@ let suppressClick = false;
 // Writes only what differs: this also runs from a MutationObserver, and a
 // write that changed nothing would still be a mutation that runs it again.
 function paintSelection() {
+  // A page loaded in place without the album ends the choice.
+  if (!$("#grid") && body.classList.contains("selecting")) return selecting(false);
   const tiles = $$(".tile");
   // What was deleted, here or on another device, is no longer chosen; a
   // choice with nothing left in it is over.
@@ -231,14 +253,17 @@ function paintSelection() {
   const text = n === 0 ? say("none selected") : sayN("n selected", n);
   if (count && count.textContent !== text) count.textContent = text;
   for (const b of $$<HTMLButtonElement>("[data-move], [data-delete]")) if (b.disabled !== (n === 0)) b.disabled = n === 0;
-  const cover = $<HTMLButtonElement>("[data-make-cover]");
+  const cover = $<HTMLButtonElement>("[data-cover]");
   if (cover && cover.disabled !== (n !== 1)) cover.disabled = n !== 1;
-  // The page's question asks what this button holds when it is pressed: the
-  // images chosen, in its address, and how many, in its question.
+  // The move and delete buttons read what they hold when they are pressed:
+  // the images chosen, in their addresses, and how many, in the question.
+  const ids = new URLSearchParams({ ids: [...selected].join(",") });
+  for (const b of $$<HTMLButtonElement>("[data-move], [data-delete]")) {
+    const url = `${b.dataset["base"] ?? ""}?${ids}`;
+    if (b.dataset["url"] !== url) b.dataset["url"] = url;
+  }
   const remove = $<HTMLButtonElement>("[data-delete]");
-  const url = `/images/delete?${new URLSearchParams({ ids: [...selected].join(",") })}`;
   const ask = sayN("delete n?", n);
-  if (remove && remove.dataset["url"] !== url) remove.dataset["url"] = url;
   if (remove && remove.dataset["ask"] !== ask) remove.dataset["ask"] = ask;
 }
 
@@ -285,10 +310,10 @@ document.addEventListener(
 );
 
 // The grid is redrawn by the server as uploads land; the selection is put
-// back on whatever tiles it draws. Datastar morphs the grid in place, so the
-// element observed here is the one it keeps.
+// back on whatever tiles it draws. Datastar morphs the page in place, so
+// `main`, which every page has, is the element observed.
 {
-  const grid = $("#grid");
+  const grid = $("#main");
   if (grid) new MutationObserver(paintSelection).observe(grid, { childList: true, subtree: true });
   // A video the viewer shows while it is made is drawn again once it is
   // made, or failed: its tile has lost its waiting state. An image the viewer
@@ -300,7 +325,7 @@ document.addEventListener(
       const shown = viewer?.querySelector<HTMLElement>("[data-image]")?.dataset["image"];
       if (!viewer || !shown) return;
       const waiting = viewer.querySelector("[data-progress-of]") !== null;
-      const tile = $<HTMLElement>(`#i-${shown}`);
+      const tile = $<HTMLElement>(`#grid .tile[data-id="${CSS.escape(shown)}"]`);
       if (tile) {
         if (waiting && !tile.querySelector("progress") && !body.classList.contains("selecting")) tile.click();
         return;
@@ -326,21 +351,18 @@ document.addEventListener(
 
 document.addEventListener("click", async (ev) => {
   const t = ev.target as Element;
-  const album = albumId();
+  const cover = t.closest<HTMLElement>("[data-cover]");
   if (t.closest("[data-select-mode]")) selecting(!body.classList.contains("selecting"));
   else if (t.closest("[data-select-done]")) selecting(false);
-  else if (t.closest("[data-move]")) void openMover([...selected]);
-  else if (t.closest("[data-make-cover]") && selected.size === 1 && album) {
+  else if (cover && selected.size === 1) {
     const [image = ""] = selected;
-    const res = await api("POST", `/albums/${album}/cover?${new URLSearchParams({ image })}`);
+    const res = await api("POST", `${cover.dataset["cover"] ?? ""}?${new URLSearchParams({ image })}`);
     if (res.ok) selecting(false);
     else flash(say("cover failed"), true);
-  } else if (t.closest("[data-move-one]")) {
-    void openMover([t.closest<HTMLElement>("[data-move-one]")?.dataset["moveOne"] ?? ""]);
   } else if (t.closest("[data-new-album]")) {
-    const res = await api("POST", "/api/albums", {});
-    const answer = await json<{ id: string }>(res);
-    if (res.ok && answer.id) location.href = `/albums/${answer.id}`;
+    const res = await api("POST", albumsApi(), {});
+    const answer = await json<{ href: string }>(res);
+    if (res.ok && answer.href) location.href = answer.href;
     else flash(say("album failed"), true);
   } else if (t.closest("[data-pick]")) {
     $<HTMLInputElement>("#pick")?.click();
@@ -348,35 +370,15 @@ document.addEventListener("click", async (ev) => {
 });
 
 // ── Moving images to another album ───────────────────────────────────────
+//
+// The move dialog's body is the server's, read in and posted through
+// Datastar; once the move is made its answer empties the body and calls this.
 
-let moving: string[] = [];
-
-async function openMover(ids: string[]) {
-  const album = albumId();
-  if (!ids.length || !album) return;
-  moving = ids;
-  const res = await fetch(`/albums/${album}/picker`, { headers: { "x-dither": "1" } });
-  const target = $("#mover-body");
-  if (!res.ok || !target) return flash(say("albums failed"), true);
-  target.outerHTML = await res.text();
-  show("mover");
-}
-
-document.addEventListener("click", async (ev) => {
-  if (!(ev.target as Element).closest("[data-move-confirm]")) return;
-  const dialog = $<HTMLDialogElement>("#mover");
-  if (!dialog) return;
-  const to = dialog.querySelector<HTMLInputElement>("input[name=to]:checked")?.value || null;
-  const title = dialog.querySelector<HTMLInputElement>("input[name=title]")?.value ?? "";
-  const res = await api("POST", "/images/move", { ids: moving, to, title });
-  if (!res.ok) return flash(say("move failed"), true);
-  const { moved = 0, to: dest } = await json<{ moved: number; to: string }>(res);
-  dialog.close();
+function moved() {
+  $<HTMLDialogElement>("#mover")?.close();
   $<HTMLDialogElement>("#viewer")?.close();
   selecting(false);
-  // The count says if some did not move: gone meanwhile, or not theirs.
-  flash(sayN("moved n", moved), false, dest ? { href: `/albums/${dest}`, label: say("open that album") } : undefined);
-});
+}
 
 // Typing a new album's name picks that option.
 document.addEventListener("input", (ev) => {
@@ -512,9 +514,9 @@ interface Drag {
       setTimeout(() => (suppressClick = false), 0);
       const ids = g ? $$(".tile", g).map((t) => t.dataset["id"] ?? "") : [];
       g?.removeAttribute("data-ignore-morph");
-      const album = albumId();
-      if (commit && album && ids.join() !== d.order) {
-        const res = await api("POST", `/albums/${album}/order`, { ids });
+      const order = g?.closest<HTMLElement>("[data-order]")?.dataset["order"];
+      if (commit && order && ids.join() !== d.order) {
+        const res = await api("POST", order, { ids });
         if (!res.ok) flash(say("order failed"), true);
       }
     } else if (d.armed && d.touch && commit) {
@@ -602,8 +604,9 @@ interface Item {
   flight: number;
   state: State;
   error: string;
-  id?: string;
-  album?: string;
+  /** The upload's own address, and where it is finished, as the server names them. */
+  url?: string;
+  finish?: string;
   xhr?: XMLHttpRequest | null;
   preview?: string;
   row?: Row;
@@ -620,8 +623,10 @@ class Failure extends Error {
 const queue = {
   items: [] as Item[],
   active: 0,
+  /** Where the batch's album takes uploads. */
   album: null as string | null,
-  albumIsNew: false,
+  /** The page of the album a batch made, to offer once it is done. */
+  albumHref: null as string | null,
   samples: [] as [number, number][],
 };
 
@@ -645,19 +650,22 @@ const retryable = (status: number) => status === 408 || status === 429 || (statu
 /** The album being made for a batch: a second drop while it is on its way joins it rather than making another. */
 let making: Promise<string> | null = null;
 
-/** Where this batch goes: the album on show, the one a batch still going went to, or a new one made for it. */
+/**
+ * Where this batch's uploads are declared: the album on show's, the one a batch still going went to, or a new one's,
+ * made for it.
+ */
 async function target(running: boolean) {
-  const shown = albumId();
+  const shown = albumUploads();
   if (shown) return shown;
   if (running && making) return making;
   if (running && queue.album) return queue.album;
   making = (async () => {
-    const res = await api("POST", "/api/albums", {});
-    const answer = await json<{ id: string }>(res);
-    if (!res.ok || !answer.id) throw new Failure(say("album failed"), false);
-    queue.album = answer.id;
-    queue.albumIsNew = true;
-    return answer.id;
+    const res = await api("POST", albumsApi(), {});
+    const answer = await json<{ uploads: string; href: string }>(res);
+    if (!res.ok || !answer.uploads) throw new Failure(say("album failed"), false);
+    queue.album = answer.uploads;
+    queue.albumHref = answer.href ?? null;
+    return answer.uploads;
   })();
   try {
     return await making;
@@ -702,25 +710,25 @@ async function add(list: FileList | File[]) {
     for (const i of queue.items) if (i.preview) URL.revokeObjectURL(i.preview);
     queue.items = [];
     queue.samples = [];
-    queue.albumIsNew = false;
+    queue.albumHref = null;
   }
   queue.items.push(...items);
   const go = items.filter((i) => i.state === "queued");
   tray.open();
   if (!go.length) return tray.draw();
   try {
-    const album = await target(running);
-    const res = await api("POST", `/api/albums/${album}/uploads`, {
+    const uploads = await target(running);
+    const res = await api("POST", uploads, {
       files: go.map((i) => ({ name: i.name, size: i.size, type: i.file.type })),
       as_recorded: $<HTMLInputElement>("[data-as-recorded] input")?.checked ?? false,
     });
-    const answer = await json<{ uploads: { id: string }[]; error: string }>(res);
+    const answer = await json<{ uploads: { url: string; finish: string }[]; error: string }>(res);
     if (!res.ok || !answer.uploads) throw new Failure(answer.error || say("refused", { status: res.status }), false);
     answer.uploads.forEach((u, n) => {
       const item = go[n];
       if (item) {
-        item.id = u.id;
-        item.album = album;
+        item.url = u.url;
+        item.finish = u.finish;
       }
     });
   } catch (e) {
@@ -735,7 +743,7 @@ async function add(list: FileList | File[]) {
 
 function pump() {
   while (queue.active < PARALLEL) {
-    const next = queue.items.find((i) => i.state === "queued" && i.id);
+    const next = queue.items.find((i) => i.state === "queued" && i.url);
     if (!next) break;
     void send(next);
   }
@@ -746,7 +754,7 @@ function put(item: Item, start: number, end: number) {
   return new Promise<number>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     item.xhr = xhr;
-    xhr.open("PUT", `/api/uploads/${item.id}`);
+    xhr.open("PUT", item.url ?? "");
     xhr.setRequestHeader("x-dither", "1");
     xhr.setRequestHeader("content-range", `bytes ${start}-${end - 1}/${item.size}`);
     xhr.timeout = 120_000;
@@ -800,7 +808,7 @@ async function send(item: Item) {
         tray.draw();
         // Processing carries on if the connection drops, and asking again
         // joins it.
-        const res = await api("POST", `/api/uploads/${item.id}/finish`).catch(() => {
+        const res = await api("POST", item.finish ?? "").catch(() => {
           throw new Failure(say("dropped"), true);
         });
         const answer = await json<{ received: number; error: string }>(res);
@@ -822,7 +830,7 @@ async function send(item: Item) {
         tray.draw();
         await sleep(1000 * 2 ** (tries - 1));
         // Resume from what the server has, whatever the last answer said.
-        const res = await api("GET", `/api/uploads/${item.id}`).catch(() => null);
+        const res = await api("GET", item.url ?? "").catch(() => null);
         if (res?.ok) item.acked = (await json<{ received: number }>(res)).received ?? item.acked;
         item.error = "";
       }
@@ -840,7 +848,7 @@ async function send(item: Item) {
 }
 
 function retry(item: Item) {
-  if (!item.id) return;
+  if (!item.url) return;
   item.state = "queued";
   item.error = "";
   pump();
@@ -851,7 +859,7 @@ function cancelAll() {
     if (i.state === "processing") continue;
     i.state = "cancelled";
     i.xhr?.abort();
-    if (i.id) api("DELETE", `/api/uploads/${i.id}`).catch(() => {});
+    if (i.url) api("DELETE", i.url).catch(() => {});
   }
   tray.draw();
 }
@@ -874,48 +882,50 @@ const tray: Tray = (() => {
   let expanded = matchMedia("(min-width: 721px)").matches;
   let target = { sent: 0, total: 0, live: 0 };
 
-  const make = <K extends keyof HTMLElementTagNameMap>(tag: K, cls = "", text = "") => {
-    const e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text) e.textContent = text;
-    return e;
+  // The tray's parts are the layout's (`<template id="tray-head">` and
+  // `"tray-row"`), drawn by the kit; this fills them in.
+  const head = $<HTMLTemplateElement>("#tray-head")?.content.cloneNode(true);
+  const part = <T extends Element = HTMLElement>(name: string) =>
+    head instanceof DocumentFragment ? head.querySelector<T>(`[data-tray="${name}"]`) : null;
+  const title = part("title");
+  const rate = part("rate");
+  const toggleButton = part<HTMLButtonElement>("toggle");
+  const cancel = part<HTMLButtonElement>("cancel");
+  const close = part<HTMLButtonElement>("close");
+  const meter = part<HTMLProgressElement>("meter");
+  const foot = part("foot");
+  const list = part("list");
+  const label = (b: HTMLButtonElement | null, text: string) => {
+    const words = b?.querySelector(".label") ?? b;
+    if (words && words.textContent !== text) words.textContent = text;
   };
 
-  const title = make("span", "tray-title");
-  const rate = make("span", "tray-rate");
-  const toggleButton = make("button", "quiet");
-  const cancel = make("button", "quiet", say("cancel"));
-  const close = make("button", "quiet", say("close"));
-  const meter = make("progress", "meter");
-  const foot = make("div", "tray-foot");
-  const list = make("ol", "tray-list");
-  meter.max = 1;
-  meter.value = 0;
-
   const build = () => {
-    if (built || !root) return;
+    if (built || !root || !(head instanceof DocumentFragment)) return;
     built = true;
-    const line = make("div", "tray-line");
-    line.append(title, make("span", "flex-1"), rate, toggleButton, cancel, close);
-    root.append(line, meter, foot, list);
-    toggleButton.onclick = () => {
-      expanded = !expanded;
-      draw();
-    };
-    cancel.onclick = cancelAll;
-    close.onclick = () => {
-      root.hidden = true;
-      for (const i of queue.items) if (i.preview) URL.revokeObjectURL(i.preview);
-      queue.items = queue.items.filter((i) => pending().includes(i));
-    };
+    root.append(head);
+    if (toggleButton)
+      toggleButton.onclick = () => {
+        expanded = !expanded;
+        draw();
+      };
+    if (cancel) cancel.onclick = cancelAll;
+    if (close)
+      close.onclick = () => {
+        root.hidden = true;
+        for (const i of queue.items) if (i.preview) URL.revokeObjectURL(i.preview);
+        queue.items = queue.items.filter((i) => pending().includes(i));
+      };
   };
 
   const row = (item: Item) => {
     if (!item.row) {
-      const li = make("li", "tray-item");
-      const thumb = make("span", "tray-thumb");
-      if (TYPES.has(item.file.type)) {
-        const img = make("img");
+      const li = $<HTMLTemplateElement>("#tray-row")?.content.firstElementChild?.cloneNode(true);
+      if (!(li instanceof HTMLLIElement)) return null;
+      const bit = <T extends Element = HTMLElement>(name: string) => li.querySelector<T>(`[data-row="${name}"]`);
+      const thumb = bit("thumb");
+      if (thumb && TYPES.has(item.file.type)) {
+        const img = document.createElement("img");
         item.preview = URL.createObjectURL(item.file);
         img.src = item.preview;
         img.alt = "";
@@ -923,17 +933,13 @@ const tray: Tray = (() => {
         img.decoding = "async";
         thumb.append(img);
       }
-      const name = make("span", "tray-name", item.name);
-      const state = make("span", "tray-state");
-      const bar = make("progress", "meter");
-      bar.max = 1;
-      const again = make("button", "quiet", say("retry"));
+      const name = bit("name");
+      if (name) name.textContent = item.name;
+      const state = bit("state");
+      const bar = bit<HTMLProgressElement>("meter");
+      const again = bit<HTMLButtonElement>("retry");
+      if (!state || !bar || !again) return null;
       again.onclick = () => retry(item);
-      const text = make("div", "tray-text");
-      text.append(name, state);
-      const main = make("div", "tray-main");
-      main.append(text, bar);
-      li.append(thumb, main, again);
       item.row = { li, state, meter: bar, again };
     }
     return item.row;
@@ -963,6 +969,7 @@ const tray: Tray = (() => {
     const [t0, b0] = queue.samples[0] ?? [now, sent];
     const bps = now - t0 > 400 ? ((sent - b0) * 1000) / (now - t0) : 0;
 
+    if (!title || !rate || !foot || !list || !cancel || !close) return { sent, total, live: live.length };
     if (live.length) {
       title.textContent =
         processing && sent >= total
@@ -977,23 +984,25 @@ const tray: Tray = (() => {
       rate.textContent = "";
     }
     foot.replaceChildren(say("bytes of", { sent: human(Math.min(sent, total)), total: human(total) }));
-    if (!live.length && queue.albumIsNew && queue.album && done) {
-      const a = make("a", "", say("open the album"));
-      a.href = `/albums/${queue.album}`;
+    if (!live.length && queue.albumHref && done) {
+      const a = document.createElement("a");
+      a.textContent = say("open the album");
+      a.href = queue.albumHref;
       foot.append(" · ", a);
     }
     cancel.hidden = !live.some((i) => i.state !== "processing");
     close.hidden = live.length > 0;
-    toggleButton.textContent = expanded ? say("hide") : say("details");
+    label(toggleButton, expanded ? say("hide") : say("details"));
     list.hidden = !expanded;
 
     if (expanded) {
-      const rows = items.map((i) => {
+      const rows = items.flatMap((i) => {
         const r = row(i);
+        if (!r) return [];
         r.li.dataset["state"] = i.state;
         r.state.textContent = i.error || words[i.state] || human(i.size);
-        r.again.hidden = !(i.state === "failed" && i.id);
-        return r.li;
+        r.again.hidden = !(i.state === "failed" && i.url);
+        return [r.li];
       });
       if (rows.length !== list.children.length || rows.some((r, n) => list.children[n] !== r)) {
         list.replaceChildren(...rows);
@@ -1024,7 +1033,7 @@ const tray: Tray = (() => {
     // Close enough, or nothing on its way and the goal behind what is shown
     // (a file failed or was cancelled): settle, rather than run backwards.
     if (Math.abs(goal - shown) < 0.0005 || (!target.live && shown > goal)) shown = goal;
-    meter.value = shown;
+    if (meter) meter.value = shown;
     for (const i of queue.items) {
       if (!i.row || !expanded) continue;
       const m = i.row.meter;
@@ -1106,20 +1115,26 @@ addEventListener("paste", (ev) => {
 });
 
 // Whether videos are kept as recorded is remembered between visits: a
-// preference, not something the server keeps.
-for (const box of $$<HTMLInputElement>("[data-as-recorded] input")) {
+// preference, not something the server keeps. Each box is set as it appears
+// (`data-init`), whichever page brought it.
+function remember(label: Element) {
+  const box = label.querySelector("input");
+  if (!box) return;
   try {
     box.checked = localStorage.getItem("dither.as-recorded") === "true";
   } catch {}
-  box.addEventListener("change", () => {
-    try {
-      localStorage.setItem("dither.as-recorded", String(box.checked));
-    } catch {}
-  });
 }
 
+document.addEventListener("change", (ev) => {
+  const box = ev.target;
+  if (!(box instanceof HTMLInputElement) || !box.closest("[data-as-recorded]")) return;
+  try {
+    localStorage.setItem("dither.as-recorded", String(box.checked));
+  } catch {}
+});
+
 // Datastar expressions reach these.
-window.dither = { show, selecting, add };
+window.dither = { show, moved, remember };
 
 // A module, so nothing above becomes a global a page could collide with.
 export {};

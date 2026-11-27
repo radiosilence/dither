@@ -12,7 +12,7 @@
     {% if let Some(c) = p.clip.as_ref() %}
     {% call player::clip(c) %}{% endcall %}
     {% else %}
-    <a href="/{{ p.id }}">
+    <a href="{{ p.page }}">
       <img{% if p.tall %} class="tall"{% endif %} src="{{ p.src }}"{% if !p.srcset.is_empty() %} srcset="{{ p.srcset }}" sizes="(max-width: 1000px) 100vw, 1000px"{% endif %} width="{{ p.width }}" height="{{ p.height }}" alt="{{ p.caption }}"{% if loop.first %} fetchpriority="high"{% else %} loading="lazy"{% endif %} decoding="async">
     </a>
     {% endif %}

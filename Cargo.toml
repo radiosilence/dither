@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 askama = "0.16.1"
-askama_datastar = "0.3"
+askama_datastar = "0.3.2"
 askama_gettext = { git = "https://github.com/radiosilence/blit", rev = "e59c04abc9d81d6922028974f233f9c408443f99", version = "0.1.0" }
 # Arc rather than Rc in the plural rules' data, so the catalogues can be shared
 # between the server's threads.

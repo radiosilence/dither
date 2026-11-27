@@ -1,0 +1,16 @@
+<div class="flex items-baseline justify-between gap-4">
+  <h1>{{ __("albums") }}</h1>
+  {{ kit::Button::quiet(__("new album")).icon(kit::icon::PLUS).data("new-album", "") }}
+</div>
+<div class="dropzone" data-dropzone>
+  {{ kit::Button::primary(__("choose images")).data("pick", "") }}
+  <p class="m-0 text-meta text-muted">{{ __("or drop them anywhere, or paste. Each batch becomes an album.") }}</p>
+  {% if shell.max_video.is_some() %}
+  <p class="m-0 text-fine text-muted">{{ __("JPEG, PNG, GIF or WebP up to %{max} each, and videos up to %{video}. Where a photo or video was taken and what took it are removed before anything is stored.").with("max", self.max_label()).with("video", self.max_video_label()) }}</p>
+  {{ kit::Check::new("as-recorded", __("keep videos as recorded")).class("text-fine").attr("title", __("Otherwise a video is converted to H.264 at its own size, which plays everywhere.")).data("as-recorded", "").datastar("init", "dither.remember(el)") }}
+  {% else %}
+  <p class="m-0 text-fine text-muted">{{ __("JPEG, PNG, GIF or WebP, up to %{max} each. Where a photo was taken and what took it are removed before anything is stored.").with("max", self.max_label()) }}</p>
+  {% endif %}
+</div>
+{{ list }}
+{{ usage }}

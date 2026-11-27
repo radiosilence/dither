@@ -4,7 +4,7 @@
 <h1 class="m-0">{{ __("set up") }}</h1>
 <p class="m-0 text-meta text-muted">{{ __("This server has no account yet. Make the first one: it is an admin, and invites everyone else.") }}</p>
 {% include "sign/problem.html" %}
-{%- let form = kit::Form::plain("/setup") %}
+{%- let form = kit::Form::plain(crate::web::paths::SETUP) %}
 <form{{ form.attrs() }} class="grid gap-4">
   {{ kit::Field::new(__("setup code"), kit::Input::text("code").autocomplete("off").attr("autocapitalize", "none").attr("spellcheck", "false").required().autofocus()).hint(__("The server writes the code to its log when it starts with no account.")) }}
   {{ kit::Field::new(__("username"), kit::Input::text("username").value(username).autocomplete("username").attr("autocapitalize", "none").attr("spellcheck", "false").attr("maxlength", "64").required()) }}

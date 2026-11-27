@@ -1,0 +1,4 @@
+{# Why an upload could not be made (`jobs::Failure`). #}
+{% macro failure(why) %}{% match why %}{% when crate::jobs::Failure::Unreadable %}{{ __("It can't be read: it may be damaged.") }}{% when crate::jobs::Failure::TooLong %}{{ __("It's longer than this server takes.") }}{% when crate::jobs::Failure::TooLarge %}{{ __("It's larger than this server takes.") }}{% when crate::jobs::Failure::Unsupported %}{{ __("This server can't process videos.") }}{% when crate::jobs::Failure::Other %}{{ __("It couldn't be processed. Delete it and upload it again.") }}{% endmatch %}{% endmacro %}
+{# How many images, and what they take when they take anything. #}
+{% macro images(count, size) %}{{ __n("%{count} image", "%{count} images", *count) }}{% if let Some(size) = size %} · {{ size }}{% endif %}{% endmacro %}

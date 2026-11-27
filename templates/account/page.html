@@ -1,0 +1,14 @@
+<h1>{{ __("account") }}</h1>
+<p class="text-meta text-muted">{% match role %}{% when koan_auth::Role::Admin %}{{ __("Signed in as %{name}, an admin.").with("name", login) }}{% when koan_auth::Role::Readonly %}{{ __("Signed in as %{name}, read-only: you see your albums, and change nothing but your password.").with("name", login) }}{% when koan_auth::Role::User %}{{ __("Signed in as %{name}.").with("name", login) }}{% endmatch %} {{ kit::Button::link(__("sign out")).href(self.logout()) }}</p>
+<h2>{{ __("password") }}</h2>
+<p class="text-meta text-muted">{{ __("Changing it signs you out everywhere but here.") }}</p>
+{#- The username is there for a password manager to save the new one under. -#}
+{%- let form = kit::Form::post(self.password_url()) %}
+<form{{ form.attrs() }} class="grid max-w-form gap-3">
+  {{ kit::Field::text("username", __("username")).value(login).autocomplete("username").readonly() }}
+  {{ kit::Field::new(__("current password"), kit::Input::password("current").autocomplete("current-password").required().bind(crate::web::page::account::CURRENT)) }}
+  {{ kit::Field::new(__("new password"), kit::Input::password("password").autocomplete("new-password").attr("minlength", "8").required().bind(crate::web::page::account::PASSWORD)) }}
+  {{ kit::Field::new(__("new password again"), kit::Input::password("confirm").autocomplete("new-password").attr("minlength", "8").required().bind(crate::web::page::account::CONFIRM)) }}
+  {{ form.submit(kit::Button::primary(__("change password"))) }}
+</form>
+{{ outcome }}

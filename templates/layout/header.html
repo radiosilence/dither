@@ -1,0 +1,7 @@
+<header id="header" class="topbar">
+  <a href="{{ self.albums() }}" class="wordmark" aria-label="{{ __("dither: your albums") }}">dither</a>
+  <span class="flex-1"></span>
+  {% if admin %}{{ kit::Link::new(__("accounts"), self.accounts()).in_place().current(name == Name::Accounts).class("text-meta") }}{% endif %}
+  {{ kit::Link::new(login, self.account()).in_place().current(name == Name::Account).class("truncate text-meta").attr("title", __("your account")) }}
+  {{ kit::Link::new(__("sign out"), self.logout()).class("text-meta") }}
+</header>

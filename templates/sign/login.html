@@ -3,7 +3,7 @@
 {% block main %}
 <h1 class="m-0">{{ __("sign in") }}</h1>
 {% include "sign/problem.html" %}
-{%- let form = kit::Form::plain("/login") %}
+{%- let form = kit::Form::plain(crate::web::paths::LOGIN) %}
 <form{{ form.attrs() }} class="grid gap-4">
   {{ kit::Input::hidden("next", next) }}
   {{ kit::Field::new(__("username"), kit::Input::text("username").value(username).autocomplete("username").attr("autocapitalize", "none").attr("spellcheck", "false").required().autofocus()) }}

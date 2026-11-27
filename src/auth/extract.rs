@@ -59,7 +59,7 @@ pub async fn require_session(
         }
         None if is_page_load(request.headers()) => {
             let path = request.uri().path_and_query().map_or("/", |p| p.as_str());
-            Redirect::to(&crate::auth::routes::login_url(path)).into_response()
+            Redirect::to(&crate::web::paths::login_next(path)).into_response()
         }
         None => StatusCode::UNAUTHORIZED.into_response(),
     }
