@@ -84,8 +84,10 @@ versions:
         exit 1
     fi
 
+# Format the Rust and the templates
 fmt:
     cargo fmt --all
+    askama-analyzer fmt
 
 # Install the git hooks
 hooks:
