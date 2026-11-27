@@ -13,7 +13,7 @@ aube = "2.8.5"
 "github:tailwindlabs/tailwindcss" = "4.3.3"
 # Typechecks browser/; build.rs strips its types.
 "github:microsoft/typescript-go" = { version = "7.0.2", version_prefix = "typescript/v" }
-# Formats and checks the askama templates (`just fmt`, `just check`), as the editor does.
+# Formats the askama templates (`just fmt`) and checks them in CI, as the editor does.
 # Our own tool, so mise's wait before installing a new release is off: CI runs the
 # release the editor runs.
 "github:radiosilence/askama-analyzer" = { version = "latest", minimum_release_age = "0" }

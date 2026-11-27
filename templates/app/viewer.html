@@ -4,153 +4,41 @@
   <div class="viewer-bar">
     <span class="text-meta text-muted">{{ __("%{n} of %{total}").with("n", position).with("total", total) }}</span>
     <span class="flex-1"></span>
-    {% if progress.is_none() && failure.is_none() %}{{
-        kit::Button::quiet(__("download"))
-            .icon_only(kit::icon::DOWNLOAD)
-            .href(file)
-            .attr("download", download)
-    }}{% endif %}
-    {{
-        kit::Button::quiet(__p("Button: close the viewer", "close"))
-            .icon_only(kit::icon::CLOSE)
-            .closes("viewer")
-    }}
+    {% if progress.is_none() && failure.is_none() %}{{ kit::Button::quiet(__("download")).icon_only(kit::icon::DOWNLOAD).href(file).attr("download", download) }}{% endif %}
+    {{ kit::Button::quiet(__p("Button: close the viewer", "close")).icon_only(kit::icon::CLOSE).closes("viewer") }}
   </div>
   <div class="stage">
     {% if let Some(c) = clip.as_ref() %}
-      {% call player::clip(c) %}{% endcall %}
+    {% call player::clip(c) %}{% endcall %}
     {% else if let Some(done) = progress %}
-      <div class="stage-wait"><p>{{ __("Processing. It can be shared once it's done.") }}</p>{{ kit::Meter::new(done, 1000).data("progress-of", id) }}</div>
+    <div class="stage-wait"><p>{{ __("Processing. It can be shared once it's done.") }}</p>{{ kit::Meter::new(done, 1000).data("progress-of", id) }}</div>
     {% else if let Some(why) = failure.as_ref() %}
-      <div class="stage-wait bad">{{ kit::icon::WARNING.svg(22) }}<p>{% call m::failure(why) %}{% endcall %}</p></div>
+    <div class="stage-wait bad">{{ kit::icon::WARNING.svg(22) }}<p>{% call m::failure(why) %}{% endcall %}</p></div>
     {% else %}
-      <img
-        src="{{ src }}"
-        width="{{ width }}"
-        height="{{ height }}"
-        alt="{{ alt }}"
-        decoding="async"
-        draggable="false"
-      >
+    <img src="{{ src }}" width="{{ width }}" height="{{ height }}" alt="{{ alt }}" decoding="async" draggable="false">
     {% endif %}
-    {% if let Some(p) = prev.as_ref() %}{{
-        kit::Button::quiet(__("previous image"))
-            .icon_only(kit::icon::CHEVRON_LEFT)
-            .get(self.view_url(p))
-            .class("nav prev")
-            .data("key", "ArrowLeft")
-    }}{% endif %}
-    {% if let Some(n) = next.as_ref() %}{{
-        kit::Button::quiet(__("next image"))
-            .icon_only(kit::icon::CHEVRON_RIGHT)
-            .get(self.view_url(n))
-            .class("nav next")
-            .data("key", "ArrowRight")
-    }}{% endif %}
+    {% if let Some(p) = prev.as_ref() %}{{ kit::Button::quiet(__("previous image")).icon_only(kit::icon::CHEVRON_LEFT).get(self.view_url(p)).class("nav prev").data("key", "ArrowLeft") }}{% endif %}
+    {% if let Some(n) = next.as_ref() %}{{ kit::Button::quiet(__("next image")).icon_only(kit::icon::CHEVRON_RIGHT).get(self.view_url(n)).class("nav next").data("key", "ArrowRight") }}{% endif %}
   </div>
   <div class="viewer-panel">
     {#- Its own id per image: morphed into the next image's, a textarea that
         has been typed in keeps what was typed, whatever the new one holds.
         Leaving it, as moving on does, saves at once. -#}
-    {{
-        kit::Textarea::new("caption")
-            .id(self.caption_id())
-            .value(caption)
-            .rows(2)
-            .placeholder(__("Add a caption"))
-            .label(__("caption"))
-            .attr("maxlength", "20000")
-            .class("text-field")
-            .data("url", self.caption_url())
-            .datastar(
-                "on:input__debounce.600ms",
-                "@post(el.dataset.url, {payload: {caption: el.value}})",
-            )
-            .datastar("on:change", "@post(el.dataset.url, {payload: {caption: el.value}})")
-    }}
+    {{ kit::Textarea::new("caption").id(self.caption_id()).value(caption).rows(2).placeholder(__("Add a caption")).label(__("caption")).attr("maxlength", "20000").class("text-field").data("url", self.caption_url()).datastar("on:input__debounce.600ms", "@post(el.dataset.url, {payload: {caption: el.value}})").datastar("on:change", "@post(el.dataset.url, {payload: {caption: el.value}})") }}
     {% if progress.is_none() && failure.is_none() %}
-      {%- let copied = __p("A copy button, after copying", "copied") %}
-      {%- let copy = __p("A copy button", "copy") %}
-      {%-
-          let page = kit::Pairs::new()
-              .pair(
-                  __p("Share link: the image's page", "page"),
-                  kit::CopyField::new(__("link to the image's page"), links.page, copy.clone())
-                      .copied(copied.clone())
-                      .name("page")
-                      .icon_only()
-                      .compact(),
-              )
-              .pair(
-                  __p("Share link: the image file", "image"),
-                  kit::CopyField::new(__("link to the image file"), links.file, copy.clone())
-                      .copied(copied.clone())
-                      .name("file")
-                      .icon_only()
-                      .compact(),
-              )
-      %}
-      {%- if video %}
-        {{
-            page.pair(
-                __p("Share link: the image in HTML", "html"),
-                kit::CopyField::new(__("the image in HTML"), links.html, copy)
-                    .copied(copied)
-                    .name("html")
-                    .icon_only()
-                    .compact(),
-            )
-        }}
-      {%- else %}
-        {{
-            page.pair(
-                __p("Share link: the image in Markdown", "markdown"),
-                kit::CopyField::new(__("the image in Markdown"), links.markdown, copy.clone())
-                    .copied(copied.clone())
-                    .name("markdown")
-                    .icon_only()
-                    .compact(),
-            )
-            .pair(
-                __p("Share link: the image in forum BBCode", "bbcode"),
-                kit::CopyField::new(__("the image in BBCode"), links.bbcode, copy.clone())
-                    .copied(copied.clone())
-                    .name("bbcode")
-                    .icon_only()
-                    .compact(),
-            )
-            .pair(
-                __p("Share link: the image in HTML", "html"),
-                kit::CopyField::new(__("the image in HTML"), links.html, copy)
-                    .copied(copied)
-                    .name("html")
-                    .icon_only()
-                    .compact(),
-            )
-        }}
-      {%- endif %}
+    {%- let copied = __p("A copy button, after copying", "copied") %}
+    {%- let copy = __p("A copy button", "copy") %}
+    {%- let page = kit::Pairs::new().pair(__p("Share link: the image's page", "page"), kit::CopyField::new(__("link to the image's page"), links.page, copy.clone()).copied(copied.clone()).name("page").icon_only().compact()).pair(__p("Share link: the image file", "image"), kit::CopyField::new(__("link to the image file"), links.file, copy.clone()).copied(copied.clone()).name("file").icon_only().compact()) %}
+    {%- if video %}
+    {{ page.pair(__p("Share link: the image in HTML", "html"), kit::CopyField::new(__("the image in HTML"), links.html, copy).copied(copied).name("html").icon_only().compact()) }}
+    {%- else %}
+    {{ page.pair(__p("Share link: the image in Markdown", "markdown"), kit::CopyField::new(__("the image in Markdown"), links.markdown, copy.clone()).copied(copied.clone()).name("markdown").icon_only().compact()).pair(__p("Share link: the image in forum BBCode", "bbcode"), kit::CopyField::new(__("the image in BBCode"), links.bbcode, copy.clone()).copied(copied.clone()).name("bbcode").icon_only().compact()).pair(__p("Share link: the image in HTML", "html"), kit::CopyField::new(__("the image in HTML"), links.html, copy).copied(copied).name("html").icon_only().compact()) }}
+    {%- endif %}
     {% endif %}
     <div class="compact flex flex-wrap gap-2">
       {% if is_cover %}{{ kit::Button::bordered(__("album cover")).disabled(true) }}{% else %}{{ kit::Button::bordered(__("make cover")).post(self.cover_url()) }}{% endif %}
-      {{
-          kit::Button::bordered(__p("Button: move images to another album", "move"))
-              .icon(kit::icon::ALBUM)
-              .data("move-one", id)
-      }}
-      {{
-          kit::Button::bordered(__p("Button", "delete"))
-              .bad()
-              .icon(kit::icon::TRASH)
-              .post(self.delete_url())
-              .confirm(
-                  __n(
-                      "Delete this image? Links to it stop working. This can't be undone.",
-                      "Delete these %{n} images? Links to them stop working. This can't be undone.",
-                      1,
-                  ),
-                  __p("Button", "delete"),
-              )
-      }}
+      {{ kit::Button::bordered(__p("Button: move images to another album", "move")).icon(kit::icon::ALBUM).data("move-one", id) }}
+      {{ kit::Button::bordered(__p("Button", "delete")).bad().icon(kit::icon::TRASH).post(self.delete_url()).confirm(__n("Delete this image? Links to it stop working. This can't be undone.", "Delete these %{n} images? Links to them stop working. This can't be undone.", 1), __p("Button", "delete")) }}
     </div>
     {{ views }}
     <p class="m-0 text-fine break-all text-muted">{{ name }}{% if progress.is_none() && failure.is_none() %} · {{ width_full }}×{{ height_full }}{% endif %}{% if let Some(length) = length.as_ref() %} · {{ length }}{% endif %} · {{ size }}{% if animated %} · {{ __("animated") }}{% endif %}</p>

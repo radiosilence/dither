@@ -18,13 +18,11 @@ dev:
     trap 'kill %1 2>/dev/null || true; rm -rf "$STATE_DIR"' EXIT
     cargo run -q -- serve
 
-# What CI checks, short of the audit and the release builds. Format covers the
-# Rust and the templates.
+# What CI checks, short of the audit and the release builds.
 check:
     actionlint
     git diff --quiet Cargo.lock || { echo 'Cargo.lock has uncommitted changes'; exit 1; }
     cargo fmt --all -- --check
-    askama-analyzer fmt --check
     cargo clippy --all-targets --locked -- -D warnings
     cargo test --locked
     cd deploy/pulumi && aube install --frozen-lockfile && aube run check && aube run build
@@ -38,7 +36,6 @@ check:
 fast:
     git diff --quiet Cargo.lock || { echo 'Cargo.lock has uncommitted changes'; exit 1; }
     cargo fmt --all -- --check
-    askama-analyzer fmt --check
 
 # Point styles/kit at koan-kit-web's source, the version Cargo.lock names, so the stylesheet is compiled from the same
 # kit release as the markup its components write. The link is gitignored.

@@ -1,50 +1,19 @@
 {% extends "app/layout.html" %}
 {% block title %}{{ __("account") }} · dither{% endblock %}
 {% block main %}
-  <h1>{{ __("account") }}</h1>
-  <p class="text-meta text-muted">{% match role %}{% when "admin" %}{{ __("Signed in as %{name}, an admin.").with("name", shell.login) }}{% when "readonly" %}{{ __("Signed in as %{name}, read-only: you see your albums, and change nothing but your password.").with("name", shell.login) }}{% else %}{{ __("Signed in as %{name}.").with("name", shell.login) }}{% endmatch %} {{ kit::Button::link(__("sign out")).href("/auth/logout") }}</p>
-  <h2>{{ __("password") }}</h2>
-  <p class="text-meta text-muted">{{ __("Changing it signs you out everywhere but here.") }}</p>
-  {#- The passwords are bound to signals of the page's own, which are never sent, so a changed password's answer can
-      empty them. The username is there for a password manager to save the new one under. -#}
-  {%- let form = kit::Form::post("/account/password") %}
-  <form{{ form.attrs() }} class="grid max-w-form gap-3">
-    {{
-        kit::Field::text("username", __("username"))
-            .value(shell.login)
-            .autocomplete("username")
-            .readonly()
-    }}
-    {{
-        kit::Field::new(
-            __("current password"),
-            kit::Input::password("current")
-                .autocomplete("current-password")
-                .required()
-                .bind("_current"),
-        )
-    }}
-    {{
-        kit::Field::new(
-            __("new password"),
-            kit::Input::password("password")
-                .autocomplete("new-password")
-                .attr("minlength", "8")
-                .required()
-                .bind("_password"),
-        )
-    }}
-    {{
-        kit::Field::new(
-            __("new password again"),
-            kit::Input::password("confirm")
-                .autocomplete("new-password")
-                .attr("minlength", "8")
-                .required()
-                .bind("_confirm"),
-        )
-    }}
-    {{ form.submit(kit::Button::primary(__("change password"))) }}
-  </form>
-  {{ result }}
+<h1>{{ __("account") }}</h1>
+<p class="text-meta text-muted">{% match role %}{% when "admin" %}{{ __("Signed in as %{name}, an admin.").with("name", shell.login) }}{% when "readonly" %}{{ __("Signed in as %{name}, read-only: you see your albums, and change nothing but your password.").with("name", shell.login) }}{% else %}{{ __("Signed in as %{name}.").with("name", shell.login) }}{% endmatch %} {{ kit::Button::link(__("sign out")).href("/auth/logout") }}</p>
+<h2>{{ __("password") }}</h2>
+<p class="text-meta text-muted">{{ __("Changing it signs you out everywhere but here.") }}</p>
+{#- The passwords are bound to signals of the page's own, which are never sent, so a changed password's answer can
+    empty them. The username is there for a password manager to save the new one under. -#}
+{%- let form = kit::Form::post("/account/password") %}
+<form{{ form.attrs() }} class="grid max-w-form gap-3">
+  {{ kit::Field::text("username", __("username")).value(shell.login).autocomplete("username").readonly() }}
+  {{ kit::Field::new(__("current password"), kit::Input::password("current").autocomplete("current-password").required().bind("_current")) }}
+  {{ kit::Field::new(__("new password"), kit::Input::password("password").autocomplete("new-password").attr("minlength", "8").required().bind("_password")) }}
+  {{ kit::Field::new(__("new password again"), kit::Input::password("confirm").autocomplete("new-password").attr("minlength", "8").required().bind("_confirm")) }}
+  {{ form.submit(kit::Button::primary(__("change password"))) }}
+</form>
+{{ result }}
 {% endblock %}

@@ -1,16 +1,13 @@
 {% import "app/macros.html" as m %}
 <div id="albums" class="albums">
-  {% for c in cards %}
-    <a class="card" href="/albums/{{ c.id }}">
-      <span class="cover">{% if let Some(src) = c.cover.as_ref() %}<img src="{{ src }}" alt="" loading="lazy" decoding="async">{% endif %}</span>
-      <span class="name{% if c.title.is_empty() %} untitled{% endif %}">{% if c.title.is_empty() %}{{ __("untitled") }}{% else %}{{ c.title }}{% endif %}</span>
-      <span class="text-fine text-muted">{% call m::images(c.count, c.size) %}{% endcall %}{% if c.private %} · {{ __("private") }}{% endif %}</span>
-    </a>
-  {% endfor %}
-  {% if cards.is_empty() %}
-    {{
-        kit::Empty::new(__("No albums yet. Drop some images in to start one."))
-            .class("col-span-full")
-    }}
-  {% endif %}
+{% for c in cards %}
+  <a class="card" href="/albums/{{ c.id }}">
+    <span class="cover">{% if let Some(src) = c.cover.as_ref() %}<img src="{{ src }}" alt="" loading="lazy" decoding="async">{% endif %}</span>
+    <span class="name{% if c.title.is_empty() %} untitled{% endif %}">{% if c.title.is_empty() %}{{ __("untitled") }}{% else %}{{ c.title }}{% endif %}</span>
+    <span class="text-fine text-muted">{% call m::images(c.count, c.size) %}{% endcall %}{% if c.private %} · {{ __("private") }}{% endif %}</span>
+  </a>
+{% endfor %}
+{% if cards.is_empty() %}
+  {{ kit::Empty::new(__("No albums yet. Drop some images in to start one.")).class("col-span-full") }}
+{% endif %}
 </div>

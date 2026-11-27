@@ -4,38 +4,35 @@
 {% block title %}{% call og_title() %}{% endcall %}{% endblock %}
 {% block kit %}{{ kit::Head::new(css_url()).noindex() }}{% endblock %}
 {% block head %}
-  {% if video %}<script type="module" src="{{ player_js_url() }}"></script>{% endif %}
-  <link rel="canonical" href="{{ og.url }}">
-  <meta
-    property="og:type"
-    content="{% if og.video.is_some() %}video.other{% else %}website{% endif %}"
-  >
-  <meta property="og:title" content="{% call og_title() %}{% endcall %}">
-  <meta property="og:url" content="{{ og.url }}">
-  {% if !og.description.is_empty() %}
-    <meta name="description" content="{{ og.description }}">
-    <meta property="og:description" content="{{ og.description }}">
-  {% endif %}
-  {% if let Some(img) = og.image.as_ref() %}
-    <meta property="og:image" content="{{ img.url }}">
-    <meta property="og:image:type" content="{{ img.mime }}">
-    <meta property="og:image:width" content="{{ img.width }}">
-    <meta property="og:image:height" content="{{ img.height }}">
-    {% if !img.alt.is_empty() %}<meta property="og:image:alt" content="{{ img.alt }}">{% endif %}
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:image" content="{{ img.url }}">
-  {% endif %}
-  {% if let Some(v) = og.video.as_ref() %}
-    <meta property="og:video" content="{{ v.url }}">
-    <meta property="og:video:secure_url" content="{{ v.url }}">
-    <meta property="og:video:type" content="video/mp4">
-    <meta property="og:video:width" content="{{ v.width }}">
-    <meta property="og:video:height" content="{{ v.height }}">
-  {% endif %}
-  <meta name="twitter:title" content="{% call og_title() %}{% endcall %}">
+{% if video %}<script type="module" src="{{ player_js_url() }}"></script>{% endif %}
+<link rel="canonical" href="{{ og.url }}">
+<meta property="og:type" content="{% if og.video.is_some() %}video.other{% else %}website{% endif %}">
+<meta property="og:title" content="{% call og_title() %}{% endcall %}">
+<meta property="og:url" content="{{ og.url }}">
+{% if !og.description.is_empty() %}
+<meta name="description" content="{{ og.description }}">
+<meta property="og:description" content="{{ og.description }}">
+{% endif %}
+{% if let Some(img) = og.image.as_ref() %}
+<meta property="og:image" content="{{ img.url }}">
+<meta property="og:image:type" content="{{ img.mime }}">
+<meta property="og:image:width" content="{{ img.width }}">
+<meta property="og:image:height" content="{{ img.height }}">
+{% if !img.alt.is_empty() %}<meta property="og:image:alt" content="{{ img.alt }}">{% endif %}
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="{{ img.url }}">
+{% endif %}
+{% if let Some(v) = og.video.as_ref() %}
+<meta property="og:video" content="{{ v.url }}">
+<meta property="og:video:secure_url" content="{{ v.url }}">
+<meta property="og:video:type" content="video/mp4">
+<meta property="og:video:width" content="{{ v.width }}">
+<meta property="og:video:height" content="{{ v.height }}">
+{% endif %}
+<meta name="twitter:title" content="{% call og_title() %}{% endcall %}">
 {% endblock %}
 {% block body %}
-  <body class="public">
-    {% block main %}{% endblock %}
-  </body>
+<body class="public">
+{% block main %}{% endblock %}
+</body>
 {% endblock %}

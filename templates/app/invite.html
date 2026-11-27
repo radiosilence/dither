@@ -1,21 +1,9 @@
 {% import "app/problems.html" as problems %}
 <div id="invite">{% match shown %}{% when Shown::Nothing %}{% when Shown::Invite with { username, link, reset } %}
-      <div class="my-4 grid gap-2">
-        <p class="m-0">{% if *reset %}{{
-            __(
-                "%{name}'s password is reset: they are signed out everywhere, and earlier links no longer work. Send them this link to choose a new one.",
-            )
-            .with("name", username)
-        }}{% else %}{{
-            __("Send %{name} this link. They choose a password with it; it works once, for a week.")
-                .with("name", username)
-        }}{% endif %}</p>
-        {{
-            kit::CopyField::new(__("invite link"), link, __("copy link"))
-                .copied(__p("A copy button, after copying", "copied"))
-                .name("invite")
-        }}
-      </div>
-    {% when Shown::Problem with (p) %}
-      {% filter kit::wrap(kit::Notice::bad("")) %}{% call problems::says(p) %}{% endcall %}{% endfilter %}
+  <div class="my-4 grid gap-2">
+    <p class="m-0">{% if *reset %}{{ __("%{name}'s password is reset: they are signed out everywhere, and earlier links no longer work. Send them this link to choose a new one.").with("name", username) }}{% else %}{{ __("Send %{name} this link. They choose a password with it; it works once, for a week.").with("name", username) }}{% endif %}</p>
+    {{ kit::CopyField::new(__("invite link"), link, __("copy link")).copied(__p("A copy button, after copying", "copied")).name("invite") }}
+  </div>
+{% when Shown::Problem with (p) %}
+  {% filter kit::wrap(kit::Notice::bad("")) %}{% call problems::says(p) %}{% endcall %}{% endfilter %}
 {% endmatch %}</div>

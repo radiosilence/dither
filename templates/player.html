@@ -3,80 +3,19 @@
    a GIF. Datastar leaves a player it redraws alone (`data-ignore-morph`), so the same video keeps playing, and its id
    keeps it from being reshaped into another video's. #}
 {% macro clip(c) %}<div id="player-{{ c.id }}" class="player{% if c.looping %} looping{% endif %}" data-player data-ignore-morph data-length="{{ c.seconds }}" data-title="{% if c.title.is_empty() %}{{ __("a video") }}{% else %}{{ c.title }}{% endif %}">
-    <video
-      src="{{ c.src }}"
-      poster="{{ c.poster }}"
-      width="{{ c.width }}"
-      height="{{ c.height }}"
-      preload="metadata"
-      playsinline
-      controls{% if c.looping %} muted loop{% endif %}
-    ></video>
-    {{
-        kit::Button::quiet(__p("Button: start a video", "play"))
-            .icon_only(kit::icon::PLAY)
-            .class("player-start")
-            .data("act", "play")
-            .attr("hidden", "")
-    }}
-    {{ kit::Spinner::new().large().over().class("player-busy") }}
-    <span class="player-jump" aria-hidden="true"></span>
-    <p class="player-failed" hidden>{{ __("This video can't play here.") }} <a href="{{ c.file }}" download>{{ __("Download it") }}</a></p>
-    <div class="player-controls" data-player-controls hidden>
-      {{
-          kit::Button::quiet(__p("Button: play a video", "play"))
-              .icon_only(kit::icon::PLAY)
-              .toggles(kit::icon::PAUSE, false)
-              .class("shrink-0")
-              .data("act", "toggle")
-      }}
-      <span class="player-time"><span data-now>0:00</span><span class="text-muted"> / {{ c.duration() }}</span></span>
-      <input
-        type="range"
-        class="player-seek"
-        data-seek
-        min="0"
-        max="{{ c.seconds }}"
-        step="any"
-        value="0"
-        aria-label="{{ __("position in the video") }}"
-      >
-      {% if c.audio %}{{
-          kit::Button::quiet(__p("Button: silence a video", "mute"))
-              .icon_only(kit::icon::VOLUME)
-              .toggles(kit::icon::MUTED, false)
-              .class("shrink-0")
-              .data("act", "mute")
-      }}
-        <input
-          type="range"
-          class="player-volume"
-          data-volume
-          min="0"
-          max="1"
-          step="0.05"
-          value="1"
-          aria-label="{{ __("volume") }}"
-        >{% endif %}
-      {{
-          kit::Button::quiet("1×")
-              .class("player-speed shrink-0")
-              .attr("aria-label", __("playback speed"))
-              .data("act", "speed")
-      }}
-      {{
-          kit::Button::quiet(__("picture in picture"))
-              .icon_only(kit::icon::PICTURE_IN_PICTURE)
-              .class("shrink-0")
-              .data("act", "pip")
-              .attr("hidden", "")
-      }}
-      {{
-          kit::Button::quiet(__("full screen"))
-              .icon_only(kit::icon::FULL_SCREEN)
-              .toggles(kit::icon::LEAVE_FULL_SCREEN, false)
-              .class("shrink-0")
-              .data("act", "full")
-      }}
-    </div>
+  <video src="{{ c.src }}" poster="{{ c.poster }}" width="{{ c.width }}" height="{{ c.height }}" preload="metadata" playsinline controls{% if c.looping %} muted loop{% endif %}></video>
+  {{ kit::Button::quiet(__p("Button: start a video", "play")).icon_only(kit::icon::PLAY).class("player-start").data("act", "play").attr("hidden", "") }}
+  {{ kit::Spinner::new().large().over().class("player-busy") }}
+  <span class="player-jump" aria-hidden="true"></span>
+  <p class="player-failed" hidden>{{ __("This video can't play here.") }} <a href="{{ c.file }}" download>{{ __("Download it") }}</a></p>
+  <div class="player-controls" data-player-controls hidden>
+    {{ kit::Button::quiet(__p("Button: play a video", "play")).icon_only(kit::icon::PLAY).toggles(kit::icon::PAUSE, false).class("shrink-0").data("act", "toggle") }}
+    <span class="player-time"><span data-now>0:00</span><span class="text-muted"> / {{ c.duration() }}</span></span>
+    <input type="range" class="player-seek" data-seek min="0" max="{{ c.seconds }}" step="any" value="0" aria-label="{{ __("position in the video") }}">
+    {% if c.audio %}{{ kit::Button::quiet(__p("Button: silence a video", "mute")).icon_only(kit::icon::VOLUME).toggles(kit::icon::MUTED, false).class("shrink-0").data("act", "mute") }}
+    <input type="range" class="player-volume" data-volume min="0" max="1" step="0.05" value="1" aria-label="{{ __("volume") }}">{% endif %}
+    {{ kit::Button::quiet("1×").class("player-speed shrink-0").attr("aria-label", __("playback speed")).data("act", "speed") }}
+    {{ kit::Button::quiet(__("picture in picture")).icon_only(kit::icon::PICTURE_IN_PICTURE).class("shrink-0").data("act", "pip").attr("hidden", "") }}
+    {{ kit::Button::quiet(__("full screen")).icon_only(kit::icon::FULL_SCREEN).toggles(kit::icon::LEAVE_FULL_SCREEN, false).class("shrink-0").data("act", "full") }}
+  </div>
 </div>{% endmacro %}
