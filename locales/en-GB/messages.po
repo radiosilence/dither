@@ -66,6 +66,12 @@ msgstr ""
 msgid "%{sent} of %{total}"
 msgstr ""
 
+#: templates/album/views.html
+msgid "%{site} %{count}"
+msgid_plural "%{site} %{count}"
+msgstr[0] ""
+msgstr[1] ""
+
 #: templates/layout.html
 msgid "%{size} is over the %{max} limit"
 msgstr ""
@@ -537,8 +543,10 @@ msgid "original"
 msgstr ""
 
 #: templates/album/views.html
-msgid "other sites"
-msgstr ""
+msgid "other sites %{count}"
+msgid_plural "other sites %{count}"
+msgstr[0] ""
+msgstr[1] ""
 
 #: templates/account/page.html templates/sign/join.html templates/sign/login.html templates/sign/setup.html
 msgid "password"
