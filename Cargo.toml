@@ -23,7 +23,7 @@ httpdate = "1.0.3"
 koan-auth = "0.75.2"
 # The kōan web kit's components and the stylesheet they are drawn with. Its slots take askama_datastar's `Html`, so the
 # two move together: kit 0.9 is askama_datastar 0.3.2.
-koan-kit-web = "0.9.1"
+koan-kit-web = "0.10.0"
 ipnet = "2.12.2"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 object_store = { version = "0.14.2", features = ["aws"] }
