@@ -1,0 +1,1 @@
+- **koan-kit-web 0.9.1.** The move sheet hides its buttons while it reads the albums and closes with a flash if it cannot, and a live page reconnecting its stream no longer reports a failed request.

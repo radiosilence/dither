@@ -365,15 +365,6 @@ document.addEventListener(
   true,
 );
 
-// A read that fails closes the sheet, or its ensō would turn for good and the
-// flash saying why sit under it.
-document.addEventListener("datastar-fetch", (ev) => {
-  if (!(ev instanceof CustomEvent) || typeof ev.detail !== "object" || !ev.detail) return;
-  const { el, type } = ev.detail;
-  if (el instanceof HTMLDialogElement && el.id === "mover" && (type === "error" || type === "retries-failed"))
-    el.close();
-});
-
 // A move made ends the viewer and the choice.
 addEventListener("dither-moved", () => {
   $<HTMLDialogElement>("#viewer")?.close();
