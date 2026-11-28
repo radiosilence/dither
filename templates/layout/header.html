@@ -1,4 +1,4 @@
-{% filter kit::wrap(kit::TopBar::new("dither", self.albums()).home_label(__("dither: your albums")).id("header")) %}
+{% filter kit::wrap(kit::TopBar::new("dither", self.albums()).home_label(__("dither: your albums")).id("header").in_place()) %}
   {% if admin %}{{ kit::Link::new(__("accounts"), self.accounts()).in_place().current(name == Name::Accounts) }}{% endif %}
   {{ kit::Link::new(login, self.account()).in_place().current(name == Name::Account).class("truncate").attr("title", __("your account")) }}
   {{ kit::Link::new(__("sign out"), self.logout()) }}

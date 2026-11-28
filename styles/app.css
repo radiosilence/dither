@@ -35,11 +35,6 @@
 @layer components {
   /* ── The app's frame ───────────────────────────────────────────────── */
 
-  /* The sign-in pages' wordmark, standing alone over the form; the app's pages have the kit's top bar. */
-  main > .wordmark {
-    @apply text-title-sm font-extralight text-strong lowercase hover:no-underline;
-  }
-
   .page {
     @apply mx-auto max-w-[1240px] px-[22px] pt-6 pb-32 sm:px-8;
   }

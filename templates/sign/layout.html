@@ -6,7 +6,7 @@
 {% block body %}
 <body class="public">
 <main id="main" class="mx-auto grid max-w-form gap-4 px-[22px] py-24">
-  <a href="{{ crate::web::paths::ALBUMS }}" class="wordmark" aria-label="{{ __("dither: your albums") }}">dither</a>
+  {{ kit::Wordmark::new("dither", crate::web::paths::ALBUMS).home_label(__("dither: your albums")) }}
   {% block main %}{% endblock %}
 </main>
 </body>
