@@ -283,6 +283,16 @@ async fn nobody_reaches_someone_elses_album() {
 }
 
 #[tokio::test]
+async fn a_new_album_names_where_its_uploads_go() {
+    let app = app().await;
+    let made = app.write("POST", "/api/albums", json!({}), None).await;
+    assert_eq!(made.status, StatusCode::OK);
+    let answer = made.json();
+    let id = answer["id"].as_str().unwrap();
+    assert_eq!(answer["uploads"], format!("/api/albums/{id}/uploads"));
+}
+
+#[tokio::test]
 async fn a_write_without_the_marker_header_is_refused() {
     let app = app().await;
     let forged = app

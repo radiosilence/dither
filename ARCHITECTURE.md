@@ -130,7 +130,7 @@ An action changes something and answers with as little as it can:
 - When nothing streams the region (the accounts page, a password change, the
   viewer), the action answers with the region it changed.
 - When the action removes the page (deleting the album), it sends the browser
-  elsewhere (`kit::Confirm::go`).
+  elsewhere (`askama_datastar::go`).
 - Fields saved as they are typed (a title, a caption) answer with nothing.
 
 A button posts the page's signals rather than a form, so the images it acts
@@ -168,23 +168,32 @@ where the server sends a region again, declared once in its template:
 |---|---|
 | Layout | `title`, `header`, `main` |
 | Albums | `albums`, `usage` |
-| Album | `grid`, `summary`, `foot`, each video's bar `vp-<id>`, `viewer-body`, `mover-body` |
+| Album | `grid`, `summary`, `foot`, each video's bar `vp-<id>`, `viewer-body` |
 | Account, Accounts | `outcome`; `accounts` |
 
 Dialogs carry ids the buttons that open and close them name (`viewer`,
-`mover`). Two ids are the morph's identity rather than targets: a caption's
+`mover`). The move sheet is a `kit::Sheet::loads`. As a button opens it, the
+script sets its `data-url` from that button's (the images chosen, or the
+viewer's one), and closes it again if the read fails, since the flash saying so
+would sit under the sheet. Its handler answers `kit::Sheet::fill`; a move made
+answers `kit::Sheet::dismiss` and `dither-moved`, which the script hears to end
+the viewer and the choice, so a cancel or a failed read ends neither.
+
+Two ids are the morph's identity rather than targets: a caption's
 `caption-<id>`, so text typed into one image's caption is not carried into
 the next, and a player's `player-<id>`, so a redrawn viewer keeps playing the
 same video. A tile is found by its `data-id`.
 
 ### The kit
 
-Every control, status, meter, notice, flash, empty state, question and card
-is a koan-kit-web component; templates add layout utilities only. The upload
-tray's parts are the layout's `<template>`s drawn with the kit, which the
-script clones and fills. The layout's flash region (`layout/flash.html`) says
-over the page when a request's answer is an error or the server cannot be
-reached, and sends a 401 to sign in. What the kit cannot express yet (a
+Every control, status, meter, notice, flash, empty state, question, card and
+list, the top bar and footer, and the rendered Markdown's `prose`, is
+koan-kit-web's; templates add layout utilities only. The upload tray's parts
+are the layout's `<template>`s drawn with the kit, which the script clones and
+fills. The layout's flash region says over the page when a request's answer is
+an error or the server cannot be reached, and sends a 401 to sign in; a page
+loaded in place sends the region empty, which leaves its failure handlers
+(`#flash-failures`) where they are. What the kit cannot express yet (a
 full-screen media viewer, among others) is tracked on radiosilence/koan#2365.
 
 ### The script

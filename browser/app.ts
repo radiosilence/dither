@@ -139,28 +139,6 @@ function show(id: string) {
   if (d instanceof HTMLDialogElement && !d.open) d.showModal();
 }
 
-// iOS shrinks the visual viewport for its keyboard and not the layout one a
-// fixed sheet sits in, so a sheet on a phone would open under the keyboard.
-// The kit lifts it by `--keyboard-inset`, the height the keyboard covers; a
-// browser that resizes the layout viewport itself measures zero.
-const viewport = globalThis.visualViewport;
-if (viewport) {
-  let published = -1;
-  const publish = () => {
-    const covered = Math.round(
-      Math.max(0, document.documentElement.clientHeight - viewport.height - viewport.offsetTop),
-    );
-    // Most visualViewport scrolls report the same figure; skipping them keeps
-    // a pan from invalidating style.
-    if (covered === published) return;
-    published = covered;
-    document.documentElement.style.setProperty("--keyboard-inset", `${covered}px`);
-  };
-  viewport.addEventListener("resize", publish);
-  viewport.addEventListener("scroll", publish);
-  publish();
-}
-
 // The next image opened draws into an empty viewer, not over the last one.
 // A dialog's close does not bubble, so it is heard on its way down.
 document.addEventListener(
@@ -371,14 +349,36 @@ document.addEventListener("click", async (ev) => {
 
 // ── Moving images to another album ───────────────────────────────────────
 //
-// The move dialog's body is the server's, read in and posted through
-// Datastar; once the move is made its answer empties the body and calls this.
+// The move sheet reads its body from the address of the images to move, which
+// the button that opens it holds: the selection bar's, or the viewer's one
+// image. The command is heard on its way down, before the sheet reads it.
+document.addEventListener(
+  "command",
+  (ev) => {
+    const sheet = ev.target;
+    if (!(sheet instanceof HTMLDialogElement) || sheet.id !== "mover") return;
+    const source = "source" in ev ? ev.source : null;
+    if (!(source instanceof HTMLElement)) return;
+    const url = source.dataset["mover"] ?? source.dataset["url"];
+    if (url) sheet.dataset["url"] = url;
+  },
+  true,
+);
 
-function moved() {
-  $<HTMLDialogElement>("#mover")?.close();
+// A read that fails closes the sheet, or its ensō would turn for good and the
+// flash saying why sit under it.
+document.addEventListener("datastar-fetch", (ev) => {
+  if (!(ev instanceof CustomEvent) || typeof ev.detail !== "object" || !ev.detail) return;
+  const { el, type } = ev.detail;
+  if (el instanceof HTMLDialogElement && el.id === "mover" && (type === "error" || type === "retries-failed"))
+    el.close();
+});
+
+// A move made ends the viewer and the choice.
+addEventListener("dither-moved", () => {
   $<HTMLDialogElement>("#viewer")?.close();
   selecting(false);
-}
+});
 
 // Typing a new album's name picks that option.
 document.addEventListener("input", (ev) => {
@@ -1134,7 +1134,7 @@ document.addEventListener("change", (ev) => {
 });
 
 // Datastar expressions reach these.
-window.dither = { show, moved, remember };
+window.dither = { show, remember };
 
 // A module, so nothing above becomes a global a page could collide with.
 export {};

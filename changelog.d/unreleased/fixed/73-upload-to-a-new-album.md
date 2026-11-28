@@ -1,0 +1,1 @@
+- **Uploading from the albums page.** Images dropped or chosen there made an empty album and then failed, since the answer making the album no longer said where its uploads go.

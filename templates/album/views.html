@@ -1,15 +1,23 @@
-{#- What the public routes served of an image or album: its owner's alone. The sites it was shared on and those linking to it are
-    counted in loops, so they are rows of the block, after the rows given. -#}
+{#- What the public routes served of an image or album: its owner's alone. The sites it was shared on and those
+    linking to it are rows of the block, after the rows given, each a list: a host comes from a Referer header, which
+    anyone can write, so each is an item of its own rather than run into its neighbours. -#}
 {%- filter kit::wrap(kit::Pairs::new().class("views")
   .pair(__("last 30 days"), __("%{views} · %{visitors} · %{size} served").with("views", __n("%{count} view", "%{count} views", *recent.views)).with("visitors", __n("%{count} visitor", "%{count} visitors", *recent.visitors)).with("size", recent.size))
   .pair(__("all time"), __("%{views} · %{visitors} · %{size} served").with("views", __n("%{count} view", "%{count} views", *all.views)).with("visitors", __n("%{count} visitor", "%{count} visitors", *all.visitors)).with("size", all.size))
   ) %}
   {%- if !shared.is_empty() %}
   <dt>{{ __("shared on") }}</dt>
-  <dd>{% for (site, n) in shared %}{% if !loop.first %} · {% endif %}{{ site }} {{ n }}{% endfor %}</dd>
+  <dd>{% filter kit::wrap(kit::List::new(None::<&str>)) %}
+    {%- for (site, n) in shared %}<li>{{ __n("%{site} %{count}", "%{site} %{count}", **n).with("site", site) }}</li>{% endfor %}
+  {%- endfilter %}</dd>
   {%- endif %}
   {%- if !referrers.is_empty() %}
   <dt>{{ __("linked from") }}</dt>
-  <dd>{% for (host, n) in referrers %}{% if !loop.first %} · {% endif %}{% if host.is_empty() %}{{ __("other sites") }}{% else %}{{ host }}{% endif %} {{ n }}{% endfor %}</dd>
+  <dd>{% filter kit::wrap(kit::List::new(None::<&str>)) %}
+    {%- for (host, n) in referrers %}<li>
+      {%- if host.is_empty() %}{{ __n("other sites %{count}", "other sites %{count}", **n) }}
+      {%- else %}{{ __n("%{site} %{count}", "%{site} %{count}", **n).with("site", host) }}{% endif -%}
+    </li>{% endfor %}
+  {%- endfilter %}</dd>
   {%- endif %}
 {%- endfilter %}

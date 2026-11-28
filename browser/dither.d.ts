@@ -3,7 +3,6 @@
 interface Window {
   dither: {
     show(id: string): void;
-    moved(): void;
     remember(label: Element): void;
   };
 }

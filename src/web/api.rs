@@ -58,9 +58,11 @@ pub async fn create_album(
         .db
         .create_album(&session.username, &cut(&title, TITLE_MAX))
         .await?;
-    Ok(Json(
-        json!({ "id": album.id, "href": paths::album(&album.id) }),
-    ))
+    Ok(Json(json!({
+        "id": album.id,
+        "href": paths::album(&album.id),
+        "uploads": paths::api_uploads(&album.id),
+    })))
 }
 
 #[derive(serde::Deserialize)]

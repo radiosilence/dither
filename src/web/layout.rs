@@ -102,7 +102,7 @@ impl Main<'_> {
     }
 }
 
-crate::i18n::translated!(Layout, Title<'_>, Header<'_>, Main<'_>, FlashRegion);
+crate::i18n::translated!(Layout, Title<'_>, Header<'_>, Main<'_>);
 
 /// A view rendered as markup, which another template embeds as it is:
 /// everything in it was escaped as the view was rendered. A view that fails to
@@ -209,15 +209,10 @@ impl Header<'_> {
     }
 }
 
-/// The kit's flash region, which says over the page when a request fails and
-/// sends a request refused for want of a session to sign in. Placed in the
-/// layout, and sent empty as a page loads in place.
-#[derive(Template)]
-#[template(path = "layout/flash.html")]
-pub(super) struct FlashRegion;
-
+/// The kit's flash region, emptied as a page loads in place. Its failure
+/// handlers, placed once by the layout, are beside it and stay.
 pub(super) fn flash_cleared() -> Html {
-    FlashRegion.draw()
+    kit::Flash::region().html()
 }
 
 #[cfg(test)]

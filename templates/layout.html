@@ -6,14 +6,14 @@
 <script type="module" src="{{ player_js_url() }}"></script>
 {% endblock %}
 {% block body %}
-<body class="app" data-signals="{{ signals }}" data-albums-api="{{ crate::web::paths::API_ALBUMS }}"data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">
+<body class="app" data-signals="{{ signals }}" data-albums-api="{{ crate::web::paths::API_ALBUMS }}" data-max-upload="{{ shell.max_upload }}"{% if let Some(max) = shell.max_video %} data-max-video="{{ max }}"{% endif %} data-chunk="{{ shell.chunk }}">
 {{ kit::SkipLink::new(__("skip to content"), "main") }}
 {#- The one owner of the history: in-place links and the album grid load through it, and Back and Forward load in
     place, the address following `$url`. #}
 {{ kit::Navigation::new() }}
 {{ header }}
 {{ main }}
-<footer class="py-6 text-center">{{ kit::Release::new("dither", shell.version, "https://github.com/radiosilence/dither") }}</footer>
+{{ kit::Footer::new().body(kit::Release::new("dither", shell.version, "https://github.com/radiosilence/dither")) }}
 <div id="drop" class="drop" hidden><p>{{ __("drop to upload") }}</p></div>
 <section id="tray" class="tray compact" hidden aria-label="{{ __("uploads") }}"></section>
 {#- The upload tray's parts, which the script clones: its heading line, and a row per file. #}
@@ -41,7 +41,8 @@
   </li>
 </template>
 {{ kit::Confirm::new(__p("Button: dismiss a dialog", "cancel")) }}
-{% include "layout/flash.html" %}
+{#- It says over the page when a request fails, from a hidden element beside the region that no flash replaces. #}
+{{ kit::Flash::region().failed(__("That didn't work. Try again.")).unreachable(__("The server can't be reached.")).sign_in(crate::web::paths::LOGIN) }}
 <input type="file" id="pick" multiple accept="image/jpeg,image/png,image/gif,image/webp{% if shell.max_video.is_some() %},video/*,.mp4,.mov,.m4v,.3gp,.webm,.mkv{% endif %}" hidden>
 {# What the browser's script says, keyed by name. Placeholders it fills itself are left as written. A line with a
    count comes once per plural form of the language, each rendered at a count in that form, which the script reads

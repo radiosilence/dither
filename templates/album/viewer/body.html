@@ -37,7 +37,7 @@
     {% endif %}
     <div class="compact flex flex-wrap gap-2">
       {% if is_cover %}{{ kit::Button::bordered(__("album cover")).disabled(true) }}{% else %}{{ kit::Button::bordered(__("make cover")).post(self.cover_url()) }}{% endif %}
-      {{ kit::Button::bordered(__p("Button: move images to another album", "move")).icon(kit::icon::ALBUM).get(self.mover_url()) }}
+      {{ kit::Button::bordered(__p("Button: move images to another album", "move")).icon(kit::icon::ALBUM).opens("mover").data("mover", self.mover_url()) }}
       {{ kit::Button::bordered(__p("Button", "delete")).bad().icon(kit::icon::TRASH).post(self.delete_url()).confirm(__n("Delete this image? Links to it stop working. This can't be undone.", "Delete these %{n} images? Links to them stop working. This can't be undone.", 1), __p("Button", "delete")) }}
     </div>
     {{ views }}

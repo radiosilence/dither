@@ -47,8 +47,7 @@ impl Mover {
     }
 }
 
-/// The answer to a move: the dialog's body emptied, which closes it, and a
-/// flash leading to where they went.
+/// The flash answering a move, leading to where the images went.
 #[derive(Template)]
 #[template(path = "album/moved.html")]
 struct Moved {
@@ -57,6 +56,11 @@ struct Moved {
 }
 
 crate::i18n::translated!(Mover, Moved);
+
+/// What tells the page that a move was made, so its script closes the viewer
+/// and ends the choice: a cancel or a failed read does neither.
+const MOVED: &str =
+    r#"<i hidden data-init="el.remove(), dispatchEvent(new CustomEvent('dither-moved'))"></i>"#;
 
 /// `/albums/<id>/mover?ids=…`: every other album of the person's, to move
 /// the images named to.
@@ -79,7 +83,11 @@ pub(in crate::web) async fn mover(
             .map(CardView::new)
             .collect(),
     };
-    Ok(askama_datastar::events([mover.draw().patch().into()]))
+    Ok(askama_datastar::events([kit::Sheet::fill(
+        "mover",
+        mover.markup(),
+    )
+    .into()]))
 }
 
 #[derive(serde::Deserialize)]
@@ -111,11 +119,17 @@ pub(in crate::web) async fn move_images(
     };
     // The count says if some did not move: gone meanwhile, or not theirs.
     let count = state.db.move_images(&session.username, ids, &to).await?;
-    Ok(askama_datastar::events([Moved {
+    let moved = Moved {
         count: count as u64,
         to: paths::album(&to),
-    }
-    .draw()
-    .patch()
-    .into()]))
+    };
+    Ok(askama_datastar::events([
+        kit::Sheet::dismiss("mover").into(),
+        moved.draw().patch().into(),
+        askama_datastar::Html::trusted(MOVED)
+            .patch()
+            .selector("body")
+            .mode(askama_datastar::ElementPatchMode::Append)
+            .into(),
+    ]))
 }
