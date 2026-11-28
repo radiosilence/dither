@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.18.1
+
+### Changed
+
+- **koan-kit-web 0.10.** The sign-in pages draw the kit's wordmark rather than their own, the top bar's link to the albums loads in place like the app's other links, and the move sheet closes with the unreachable flash after about a second when the server cannot be reached, rather than staying busy for minutes.
+
 ## 0.18.0
 
 ### Changed
