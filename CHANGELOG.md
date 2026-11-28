@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.0
+
+### Changed
+
+- **koan-kit-web 0.8.1.** The signed-in pages load in place through the kit's `Navigation`, so Back and Forward no longer reload a page, and a load that fails leaves the address as it was; the albums' cards load their album in place. A request that fails says so over the page, and one refused for want of a session goes to the sign-in page.
+- **koan-kit-web 0.9.** The top bar, footer, rendered Markdown and move sheet are the kit's: the move sheet reads its albums as it opens and closes itself once a move is made or when the albums cannot be read, the sites linking to an image are listed one to a line, and the invite link's words describe its field. A flash no longer stops later failed requests from being reported.
+- **koan-kit-web 0.9.1.** The move sheet hides its buttons while it reads the albums and closes with a flash if it cannot, and a live page reconnecting its stream no longer reports a failed request.
+
+### Fixed
+
+- **Uploading from the albums page.** Images dropped or chosen there made an empty album and then failed, since the answer making the album no longer said where its uploads go.
+
 ## 0.17.0
 
 ### Changed
